@@ -62,6 +62,47 @@ _STOP = {
            "door", "maar", "ook", "worden", "deze", "naar", "wordt"},
 }
 _NON_EN_DIACRITICS = set("àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœđłşţğıåäö")
+
+# --- Turkish routing support ---
+# Turkish. Without this entry Turkish text scores 0 on every stopword list, so
+# `guess_latin_language` returns None and `analyse` reports is_english=True --
+# routing Turkish to the English checkpoint, which collapses on it (0.140
+# accuracy at ECE 0.788 versus 0.370 for the multilingual checkpoint).
+# Both real and ASCII-folded spellings are listed so diacritic-less Turkish,
+# which is common in practice, still scores.
+_STOP["tr"] = {
+    # function words (real spellings + ASCII-folded, because Turkish is routinely
+    # typed without diacritics: "ucretlendirildi")
+    "ve", "bir", "bu", "şu", "su", "için", "icin", "ile", "da", "de", "ki",
+    "mi", "mı", "mu", "mü", "ne", "nasıl", "nasil", "kaç", "kac",
+    "hangi", "her", "en", "çok", "cok", "az", "daha", "ama", "fakat", "ancak",
+    "veya", "eğer", "eger", "ise", "olarak", "olan", "olduğu", "oldugu",
+    "var", "yok", "değil", "degil", "gibi", "göre", "gore", "kadar",
+    "sonra", "önce", "once", "üzere", "uzere", "tüm", "tum",
+    "bütün", "butun", "bazı", "bazi", "hiç", "hic",
+    "zaman", "yıl", "yil", "ay", "gün", "gun", "listele", "göster",
+    "goster", "getir", "hesapla", "nedir",
+    # hospital vocabulary
+    "hasta", "hastane", "hastanın", "hastanin", "hastalar", "bölüm",
+    "bolum", "bölüme", "bolume", "bölümde", "bolumde", "servis",
+    "doktor", "ilaç", "ilac", "tedavi", "test", "tetkik", "sonuç", "sonuc",
+    "sonuçları", "sonuclari", "sayı", "sayi", "sayısı", "sayisi",
+    "oran", "oranı", "orani", "toplam", "ortalama", "yatış", "yatis",
+    "taburcu", "poliklinik", "muayene", "reçete", "recete", "doz",
+    "laboratuvar", "kreatinin", "hemoglobin", "ücret", "ucret", "tahsilat",
+    "gelir", "maliyet", "iade", "kez", "lütfen", "lutfen", "adet", "tane",
+    "kaçtır", "kactir",
+    # Turkish verb / participle forms: Laya requires >=2 non-English stopword hits,
+    # and most Turkish sentences carry at least one of these.
+    "edildi", "edilmis", "edilen", "yapildi", "yapilan", "oldu", "olan", "verildi",
+    "verilen", "alindi", "alinan", "istendi", "istenen", "gonderildi", "yazildi",
+    "kullanildi", "kullanilan", "bildirildi", "goruldu", "saptandi", "konuldu",
+    "cikarildi", "tamamlandi", "uygulandi", "planlandi", "degerlendirildi",
+    "kaydedildi", "hesaplandi", "listelendi", "gosterildi",
+}
+# ş, ğ and the dotless ı do not occur in English at all, so their presence is a
+# sufficient signal on its own.
+_NON_EN_DIACRITICS |= set("şğıŞĞİ")
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 
