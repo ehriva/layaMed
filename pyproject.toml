@@ -49,6 +49,9 @@ fast = ["tilelang>=0.1.14"]
 # `pip install laya[mcp]` adds the MCP stdio server (laya.mcp / the laya-mcp-server CLI).
 mcp = ["mcp>=2.2.0"]
 
+# `pip install laya[structured]` adds pydantic for the typed-model helpers (laya/structured.py).
+structured = ["pydantic>=2.0.0"]
+
 onnx = ["onnx", "onnxruntime"]
 
 # `pip install laya[langchain]` adds the LangChain / LangGraph integrations (laya.integrations).

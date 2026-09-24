@@ -107,6 +107,14 @@ export function confidenceFromProbs(p: number[]): number {
   const ent = -p.reduce((a, v) => a + v * Math.log(Math.max(v, 1e-12)), 0);
   return Math.min(1, Math.max(0, 1 - ent / Math.log(k)));
 }
+export function answerConfidence(p: number[]): number {
+  // Probability mass on the reported answer: max(p). This is the quantity temperature
+  // scaling fits and the one every calibration figure is computed on, so it is stable
+  // across option counts and comparable across question types -- unlike
+  // confidenceFromProbs, whose entropy scale moves with k.
+  if (p.length < 1) return 1.0;
+  return Math.min(1, Math.max(0, Math.max(...p)));
+}
 export const TEMP_MIN = 0.5, TEMP_MAX = 5.0;
 export function clampTemperature(t: unknown): number {
   if (t === null || t === undefined || t === "" || typeof t === "boolean") return 1.0;

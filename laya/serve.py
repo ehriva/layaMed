@@ -34,9 +34,17 @@ and touches no GPU -- which is what keeps the Nix ``pythonImportsCheck`` honest.
 """
 import hmac
 import json
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
+
+# A failed inference is reported to the client as a fixed 500 so nothing about paths,
+# weights or memory state leaks, which leaves the server log as the only place the
+# actual cause can appear. Uvicorn configures the root logger, so a module logger
+# propagates there without this module setting up any handlers.
+_log = logging.getLogger("laya.serve")
 
 # The three checkpoint names the router understands; used to decide whether a
 # client's `model` field names a Laya checkpoint (honour it) or is some other
@@ -252,12 +260,12 @@ def create_app(router: Optional[Any] = None):
                 pass
         raw = await _read_body_capped(request)
         try:
-            # Every parse failure a client can cause is a ValueError: JSONDecodeError for
-            # malformed/empty/truncated bodies, UnicodeDecodeError for invalid UTF-8. A
-            # broader catch would also swallow ClientDisconnect and Starlette's own
-            # stream errors, reporting a transport or server fault as the client's.
+            # A client can cause ValueError (JSONDecodeError for malformed/empty/truncated
+            # bodies, UnicodeDecodeError for invalid UTF-8) or RecursionError (deeply nested
+            # arrays/objects). A broader catch would also swallow ClientDisconnect and
+            # Starlette's own stream errors, reporting a transport or server fault as the client's.
             body = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             raise HTTPException(status_code=400, detail="request body must be valid JSON")
         if not isinstance(body, dict) or "questions" not in body:
             raise HTTPException(status_code=400, detail="request body must be an object with a 'questions' field")
@@ -272,14 +280,29 @@ def create_app(router: Optional[Any] = None):
             # hs-jev decodes `answers` and `usage` and ignores the rest.
             async with gate:
                 loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(
+                t0 = time.perf_counter()
+                result = await loop.run_in_executor(
                     pool, lambda: router.predict(state, questions, model=model))
+                infer_ms = (time.perf_counter() - t0) * 1000.0
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    content=result,
+                    headers={
+                        "Server-Timing": f"inference;dur={infer_ms:.2f}",
+                        "X-Inference-Time-Ms": f"{infer_ms:.2f}"
+                    }
+                )
         except HTTPException:
             raise
         except ValueError as e:
             # Question validation errors name the question and what to fix: safe for clients.
             raise HTTPException(status_code=422, detail=str(e))
         except Exception:  # noqa: BLE001 -- never leak paths/weights/OOM text to clients
+            # The client still learns nothing, but the operator gets the traceback. Without
+            # this the container logs show only the 500, so a deterministic failure such as a
+            # missing C compiler for triton's JIT (#365) is invisible from the running server
+            # and has to be reproduced in-process to be diagnosed at all.
+            _log.exception("inference failed for model=%s", model)
             raise HTTPException(status_code=500, detail="inference failed")
 
     return app

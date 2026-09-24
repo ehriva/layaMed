@@ -35,7 +35,16 @@ jobs:
       # --strict fails on every warning, including links the site cannot resolve.
       # Use absolute GitHub URLs for files outside docs/ so links work when pages in docs/
       # are read on GitHub or on the site.
-      - run: zensical build --strict
+      # Griffe's docstring warnings (a parameter the signature does not have, a missing type)
+      # are printed but pass --strict, and the API reference is built from those docstrings.
+      # --clean because a cached build skips unchanged modules and prints no warnings for them.
+      - run: |
+          set -o pipefail
+          zensical build --strict --clean 2>&1 | tee "$RUNNER_TEMP/docs-build.log"
+          if grep '^griffe:' "$RUNNER_TEMP/docs-build.log"; then
+            echo "::error::Fix the docstring warnings above; the API reference is built from them."
+            exit 1
+          fi
 
       - uses: actions/upload-pages-artifact@v5
         if: github.event_name != 'pull_request'

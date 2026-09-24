@@ -415,7 +415,7 @@ router.predict(state, questions, lang_guess=lambda s: my_lid(s))
 router = Router(preload=True, lang_guess=my_lid)
 ```
 
-The hint only decides *English or not*: a code whose primary subtag is `en`, `eng` or `english` routes to the English checkpoint and everything else routes to the multilingual one. `"en_US"` and `"en_US.UTF-8"` are read as English, so `$LANG` can be passed straight through. Returning `None`, or an empty code, makes it abstain and the built-in detector decides as before — so a LID model that is unsure does not force a checkpoint. An explicit `model=`, `task=` or `lang=` still wins, and the default path is unchanged.
+The hint only decides *English or not*: a code whose primary subtag is `en`, `eng` or `english` routes to the English checkpoint, and every other code that names a language routes to the multilingual one. `"en_US"` and `"en_US.UTF-8"` are read as English, so `$LANG` can be passed straight through. Returning `None`, or a code that names no language, makes it abstain and the built-in detector decides as before — so a LID model that is unsure does not force a checkpoint. `C`, `POSIX` and `C.UTF-8` abstain, which matters because `C.UTF-8` is the default `$LANG` in the official Python image: passing it through no longer pins every request to the multilingual checkpoint, which is what it used to do. The ISO 639-2 special codes `und`, `zxx` and `mul` abstain for the same reason. An explicit `model=`, `task=` or `lang=` still wins, and the default path is unchanged.
 
 ---
 
@@ -448,6 +448,12 @@ physical cores), `LAYA_AUTO_TASK`, and `LAYA_API_KEY` (when set, clients must
 send `Authorization: Bearer <key>`). A client's `model` field is honoured when it
 names a Laya checkpoint (`english`/`multilingual`/`typed-decisions`), otherwise
 the router auto-selects by script/language.
+
+Three things differ from Jev when you port a client:
+
+* **Options per question.** A question's options share the checkpoint's option budget, `head_max_len` (192 tokens on `laya`, 256 on the other two), not Jev's cap of 255 options. Once they overflow it, around 20 options with a short description each, every option is trimmed to fit, so long or similar labels can reach the model reading the same ([Where Jev leads](#where-jev-leads)). Once they no longer fit the window at all, the request is rejected with 422. With short labels such as `Queue 042: Tickets routed to queue 42` that happens above 126 options on `laya` and 254 on the other two; the exact point moves with the length of the instructions and labels. For more candidates, narrow them first with `predict_shortlist` ([Honest limits](#honest-limits)).
+* **Score levels.** Every level needs a description. A `null` level is rejected with 422 rather than scored and echoed back in `legend`.
+* **`confidence`** on `choice` and `score` answers is 1 minus normalised entropy, a measure of how concentrated the distribution is, not Jev's `(n·p_max − 1)/(n − 1)`. A threshold carried over from Jev does not transfer. For one calibrated number on every question type, gate on `answer_confidence`, the probability of the reported answer.
 
 ### Nix / NixOS
 
@@ -572,13 +578,13 @@ Because Laya's probabilities are trained with strictly proper scoring rules (RLC
 dept = answers["department"]["choice"]
 conf = answers["department"]["confidence"]
 
-if conf >= 0.85:
-    # High confidence: automated action without human in the loop
-    route_automatically(dept)
+if conf >= THRESHOLD:               # refit and validate THRESHOLD on your own held-out data
+    route_automatically(dept)       # above it: act, and sample the decisions you act on
 else:
-    # Low confidence: escalate to human triage
     escalate_to_human_agent(dept, reason=f"Low confidence ({conf:.2f})")
 ```
+
+A threshold is a policy you choose from measured accuracy at that coverage on your data, not a property of the model. Both checkpoints are over-confident as shipped and `laya-multilingual` has no fitted temperatures at all, so fit them before relying on these numbers — see [Calibration](#calibration) above, and the [fine-tuning notebook](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb) for the fitting loop itself. Then pick the point where the errors you accept are ones you can live with. Confidence orders decisions; it does not establish that a decision is correct.
 
 ---
 
@@ -891,6 +897,13 @@ failure; it does not establish calibrated confidence.
   current checkpoints can follow labels such as `true`/`false` or `yes`/`no` instead of the option
   descriptions. Use semantic labels or opaque labels such as `A`/`B`, and validate them on the
   checkpoint and states you serve.
+* **Semantic `choice` labels do not make negation safe.** In the five cancellation examples from
+  [#377](https://github.com/NandhaKishorM/laya/issues/377), a CPU run on Laya 0.3.20 with
+  `no_action` / `cancel_account` keys selected `cancel_account` for all four negated requests on
+  `laya` and two on `laya-multilingual`; one multilingual answer assigned it probability `0.9998`.
+  The positive control passed on both checkpoints. These are narrow cancellation examples, not
+  evidence that every negated state fails. Validate the exact checkpoint and wording you serve;
+  using semantic keys alone does not avoid this failure.
 * **High-cardinality choice questions and token budgets:** Sequences split into an option prompt budget (`head_max_len`) and the remaining document/state budget (`max_len - head_max_len`):
   * `laya` (English) defaults to 512 context (`head_max_len = 192`, ~320 tokens for state).
   * `laya-multilingual` and `laya-typed-decisions` default to 1,024 context (`head_max_len = 256`, ~768 tokens for state; mmBERT-base encoder supports up to 8,192 with RoPE).

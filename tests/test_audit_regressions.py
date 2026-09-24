@@ -93,7 +93,15 @@ def test_onnx_long_list_state_keeps_newest_turn(monkeypatch):
     agent.cfg = {"max_len": 32, "head_max_len": 16}
     agent.temperature = [1.0, 1.0, 1.0]
     agent.temperature_by_options = {}
-    agent.tok = object()
+    class _StubTokenizer:
+        # _infer tokenizes the shared state once before build_sequence (#343), so the stub
+        # needs the two things that step reads; build_sequence itself is patched out above.
+        mask_token = "<mask>"
+
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": []}
+
+    agent.tok = _StubTokenizer()
     try:
         ONNXAgent._infer(agent, [{"text": "old"}, {"text": "new"}], {
             "q": {"type": "noul", "instructions": "?"}

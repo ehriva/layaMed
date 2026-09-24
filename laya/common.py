@@ -52,8 +52,16 @@ def render_options(q: Dict) -> List[str]:
     if t != "noul" and "labels" in q:
         raise ValueError("labels is only supported for noul questions")
     if t == "choice":
-        # only None/"" mean "no description"; 0 and False are legitimate criterion values
-        return [k if v is None or v == "" else "%s: %s" % (k, render_criterion(v)) for k, v in crit.items()]
+        # only None/"" mean "no description"; 0 and False are legitimate criterion values.
+        # `str(k)` unconditionally: a label with no description is rendered as itself, so an int
+        # label used to come back as an int from a function annotated `-> List[str]` and then
+        # reached `build_sequence`, which calls `.replace` on it and raised an AttributeError
+        # naming neither the question nor the label. With a description the same label already
+        # went through `"%s: %s" %` and was a str, which is why only the undescribed form broke.
+        # `structured._enum_field` stringifies labels the same way; the returned answer still
+        # carries the caller's original label, which is unchanged.
+        return [str(k) if v is None or v == "" else "%s: %s" % (k, render_criterion(v))
+                for k, v in crit.items()]
     if t == "score":
         return ["level %d: %s" % (i, render_criterion(c)) for i, c in enumerate(crit)]
     crit = crit or {}

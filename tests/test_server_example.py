@@ -96,6 +96,10 @@ def main():
         ok("POST /predict rejects choice with no criteria as 422, not 500", r.status_code == 422, str(r.status_code))
         r = client.post("/predict", json={"state": "hi", "questions": {"x": {"type": "score", "instructions": "?"}}})
         ok("POST /predict rejects score with no criteria as 422, not 500", r.status_code == 422, str(r.status_code))
+        # a null level used to be scored as the text "level 1: null" and echoed back in the legend (#302)
+        r = client.post("/predict", json={"state": "hi", "questions": {"x": {
+            "type": "score", "instructions": "?", "criteria": ["low", None, "high"]}}})
+        ok("POST /predict rejects a null score level as 422", r.status_code == 422, str(r.status_code) + " " + r.text[:200])
 
         # /gui is the form-post path the builder JS uses -- this is what caught the
         # missing python-multipart dependency during manual verification.

@@ -45,7 +45,15 @@ const DEVICE_FOOTER = new RegExp(
   "i",
 );
 const DISCLAIMER = new RegExp(
-  "(confidential|intended (solely )?for the (use of the )?(named )?(addressee|recipient)|" +
+  // English is tied to a disclaimer noun and a disclaimer tail, the way the Portuguese branches
+  // below are. The bare word matched any sentence that merely mentioned it, so "Is this
+  // confidential?" and "Confidential: I need a refund." were deleted whole and the model was
+  // scored on an empty state. `[^.]` rather than `[^.\n]`: a footer wraps, so "are\nconfidential"
+  // must still match.
+  "(\\b(e-?mail|message|information|communication|transmission|contents?)\\b[^.]{0,60}" +
+    "\\bconfidential\\b[^.]{0,60}\\b(intended|solely|addressee|recipient|privileged|" +
+    "disclos|unauthori[sz]ed)|" +
+    "\\bconfidential\\b[^.]{0,60}\\b(and (may|is) (also )?privileged)|" +
     "if you (have )?received this (e-?mail|message) in error|" +
     "\\b(esta|este) (mensagem|e-?mail|mensaje|correo)\\b[^.]{0,80}(confidencia|sigilos|privilegiad)|" +
     "\\b(uso exclusivo|exclusivamente|únicamente|unicamente)\\b[^.]{0,30}" +

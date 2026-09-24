@@ -1,5 +1,6 @@
 import { analyse, type AnalyseResult } from "./lang.js";
 import type { PredictOptions, QuestionDef, SystemOneResult } from "./agent.js";
+import { decide, type DecideOptions, type DecisionResult } from "./structured.js";
 import {
   HookRegistry,
   PredictContext,
@@ -439,7 +440,11 @@ export class Router extends HookRegistry {
     // Per-call hooks apply to the whole call, including onRoute inside route().
     const decision = this.route(state, questions, opts);
     const agent = (await this.load(decision.model)) as {
-      systemOne(s: unknown, q: Record<string, QuestionDef>): Promise<SystemOneResult>;
+      systemOne(
+        s: unknown,
+        q: Record<string, QuestionDef>,
+        opts?: { lang?: string | null },
+      ): Promise<SystemOneResult>;
     };
     const ctx = new PredictContext({
       states: [state],
@@ -452,9 +457,18 @@ export class Router extends HookRegistry {
     try {
       dispatch(active, "onPredictStart", ctx, { raiseErrors });
       if (ctx.results === null) {
+        // Python parity (router.py predict): the request's language also shapes the answer
+        // distribution through the agent's lang_temperatures. An explicit lang wins;
+        // otherwise forward the language the router detected for the routing decision.
+        // TS analyse() names English "en" where Python's analyse returns None (it only
+        // ever names non-English), so a detected "en" forwards as null — in Python only an
+        // explicit lang="en" can select an "en" override.
+        const detected = decision.detection?.language;
+        const effectiveLang = opts.lang ?? (detected && detected !== "en" ? detected : null);
         const result = (await agent.systemOne(
           ctx.states[0],
           ctx.questions as Record<string, QuestionDef>,
+          { lang: effectiveLang },
         )) as RoutedResult;
         result["routing"] = { ...decision };
         ctx.results = [result as unknown as Record<string, unknown>];
@@ -486,6 +500,29 @@ export class Router extends HookRegistry {
       }
     }
     return (ctx.results as unknown as RoutedResult[])[0];
+  }
+
+  /**
+   * Answer `state` against a JSON schema (or explicit `opts.questions`) and return typed
+   * values — see `structured.ts`. Routing options (`model`, `task`, ...) are forwarded to
+   * `predict`.
+   */
+  async decide(
+    state: unknown,
+    schema: unknown,
+    opts: DecideOptions & RouteOptions & PredictOptions & { returnDetails: true },
+  ): Promise<DecisionResult>;
+  async decide(
+    state: unknown,
+    schema?: unknown,
+    opts?: DecideOptions & RouteOptions & PredictOptions,
+  ): Promise<Record<string, unknown>>;
+  async decide(
+    state: unknown,
+    schema?: unknown,
+    opts: DecideOptions & RouteOptions & PredictOptions = {},
+  ): Promise<Record<string, unknown> | DecisionResult> {
+    return decide(this, state, schema, opts);
   }
 
   async systemOne(

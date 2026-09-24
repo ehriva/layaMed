@@ -40,7 +40,13 @@ const STOP: Record<string, Set<string>> = {
     "merci", "bonjour", "jour", "jours", "mois", "fois", "quand", "comment", "pourquoi",
     "alors", "donc"]),
   de: new Set(["der", "die", "das", "und", "ist", "ein", "eine", "den", "dem", "nicht", "mit", "für",
-    "auf", "von", "zu", "sich", "auch", "werden", "wurde", "haben", "sind", "oder", "aber"]),
+    "auf", "von", "zu", "sich", "auch", "werden", "wurde", "haben", "sind", "oder", "aber",
+    "ich", "wir", "mir", "mich", "dir", "dich", "uns", "mein", "meine", "meinen",
+    "meinem", "meiner", "diese", "dieser", "diesen", "dieses", "einen", "einem", "einer",
+    "wie", "wo", "wann", "welche", "im", "zum", "zur", "aus", "bei", "nach", "noch", "bitte",
+    "heute", "jetzt", "kann", "kannst", "habe", "gibt", "wird",
+    // shared with English on purpose: counted for English alone, they outvoted short German
+    "in", "was"]),
   es: new Set(["el", "los", "las", "que", "por", "con", "para", "una", "es", "se", "del", "como",
     "pero", "son", "está", "este", "esta", "todo", "más", "muy", "hay", "sus",
     "la", "un", "y", "al", "lo", "le", "les", "su", "mi", "tu", "nos",
@@ -118,7 +124,11 @@ const SHARED_WORDS: Set<string> = (() => {
 })();
 
 const WORD_RE = /[^\W\d_]+/gu;
-const IDENTIFIER_RE = /[\p{L}\p{N}_-]*(?:[.@][\p{L}\p{N}_-]+)+/gu;
+// Lookbehind for the same reason as the Python side (see laya/lang.py): without it the
+// greedy prefix is retried at every offset inside a run of word characters, which is
+// quadratic in the run's length -- 50 000 characters of one token took 1540 ms here.
+// It removes no match, because a leftmost match can only begin at a run start.
+const IDENTIFIER_RE = /(?<![\p{L}\p{N}_-])[\p{L}\p{N}_-]*(?:[.@][\p{L}\p{N}_-]+)+/gu;
 const IS_ALPHA_RE = /\p{L}/u;
 
 // Python uses two different boundaries on purpose: detect_script/script_profile count the IPA

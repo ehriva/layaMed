@@ -246,6 +246,18 @@ The best setting is the physical core count plus a little, not one thread per vC
 
 On laya_router's 180 requests (zero-shot, one 3-tier `choice`), nearly every configuration we measured was **under**-confident (the few exceptions were +0.01 to +0.06, and among the least accurate). Mean P(chosen) (the chosen option's probability, not the entropy-based `confidence` field) sat below accuracy, by −0.18 on the root checkpoint with example-led tier descriptions (0.562 vs 0.744) and by −0.19 on `typed-decisions` (0.501 vs 0.694). This is one task and one set of labels, so it does not contradict the over-confidence reported above. It does mean the direction of the miscalibration depends on the task, and a temperature fit on your own data is the right fix either way.
 
+## Server CPU: AMD EPYC 9R14, 4 cores, Linux
+
+`research/scripts/bench_latency.py` ran in-process and unchanged at v0.3.20 on an AWS `m7a.xlarge`: 4 physical cores (no SMT), 16 GiB RAM. The run used `OMP_NUM_THREADS=4`, `device="cpu"`, fp32, torch 2.14.0, transformers 5.17.0, Python 3.14.4, and checkpoints at revision `55cf4c4`. Questions alternate a 3-option `choice` and a `noul`. Each row is 10 timed calls after 2 warm-up calls. Raw results: `research/results/latency_cpu_m7a_xlarge_20260924.json`.
+
+| checkpoint | 1 question | 5 | 10 | 50 | cold load |
+|---|---|---|---|---|---|
+| english | 580 ms | 3,072 ms | 6,244 ms | 35,969 ms | 4.4 s |
+| multilingual | 193 ms | 912 ms | 1,842 ms | 11,157 ms | 2.5 s |
+| typed-decisions | 584 ms | 2,819 ms | 6,031 ms | 35,653 ms | 0.5 s |
+
+Values are p50. p95 is within 2% of p50 on every row. Up to 10 questions, each question costs about 600 ms on `english` and `typed-decisions` and about 185 ms on `multilingual`. At 50 questions, the cost per question rises by 15–20% on all three. Batching questions saves little on CPU, unlike the GB10 above. Cold load depends on the OS file cache, so treat that column as approximate. Peak memory for the whole script, with up to five checkpoints loaded at once, was 9.3 GiB (maximum RSS).
+
 ---
 
 ## Limits, stated plainly

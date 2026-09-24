@@ -67,6 +67,36 @@ class MetricsHook extends BaseHook {
 setDefaultHooks([new MetricsHook()]);  // addDefaultHook(...) appends; clearDefaultHooks() resets
 ```
 
+## Structured decisions (`decide`)
+
+Turn a JSON schema into typed values in one call — the port of Python's `laya.structured`
+(#280). Enum properties become choice questions, booleans become noul, bounded integers
+become scores; anything the fixed-option model cannot answer (free strings, arrays, nested
+objects, `$ref`) is rejected with a `SchemaError` naming the path:
+
+```ts
+import { Agent, decide } from "laya-ts";
+
+const agent = await Agent.load("./dist/laya");
+const values = await agent.decide(ticketText, {
+  type: "object",
+  properties: {
+    department: { type: "string", enum: ["billing", "support", "sales"] },
+    urgency: { type: "integer", minimum: 0, maximum: 2 },
+    needs_human: { type: "boolean" },
+  },
+});
+// { department: "billing", urgency: 2, needs_human: false }
+```
+
+`router.decide(...)` works the same way (routing options are forwarded to `predict`), and the
+free `decide(runner, state, schema, opts)` accepts anything with a `predict` method. Pass
+`{ returnDetails: true }` for per-field confidence and probabilities, or `{ questions }`
+instead of a schema to get raw answers. Zod/TypeBox users can pass `z.toJSONSchema(Model)` —
+any object with a `toJSONSchema()` method is accepted. `planFromJsonSchema`,
+`questionsFromJsonSchema` and `answersToJson` expose the planning and projection steps.
+
+## Shortlist (many labels)
 ## Shortlist (many labels)
 
 ```ts
@@ -77,6 +107,29 @@ const out = await predictShortlist(agent, state, questions, embedFn, 20);
 // out.shortlist[qid] = { labels, scores, k, n, passthrough }
 // embedFnFromAgent(agent) mean-pools the loaded encoder; a dedicated bi-encoder usually shortlists better.
 ```
+
+## Per-language calibration (`lang_temperatures`)
+
+Port of the Python `Agent(lang_temperatures=...)` knob. A language override replaces the
+checkpoint's temperature for matching requests — keys normalise to the base subtag
+(`de-AT` → `de`), an omitted `temperature` inherits the base one, and
+`temperature_by_options` works per option-count bucket as usual:
+
+```ts
+const agent = await Agent.load("convaiinnovations/laya", {
+  lang_temperatures: {
+    de: { temperature: [1.2, 1.2, 1.2] },                 // fitted on German evals
+    ja: { temperature_by_options: { "choice:11+": 1.4 } }, // buckets only, base temperature kept
+  },
+});
+await agent.systemOne(state, questions, { lang: "de" });   // uses the German temperature
+await router.predict(state, questions);                    // Router forwards the detected language
+```
+
+`Router.predict` forwards an explicit `lang` verbatim and otherwise the detected language
+(never `"en"` — matching Python, where detection only names non-English languages), so an
+override applies exactly to the requests it was fitted on.
+
 
 ## Example (repo root)
 

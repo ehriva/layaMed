@@ -939,6 +939,59 @@ try:
 finally:
     _hooks.clear_default_hooks()
 
+# A default hook has to reach the Router as well as the Agent: `set_default_hooks` documents
+# "every Agent, Router and ONNXAgent in the process", and `predict_batch` promises each request
+# its own PredictContext. It read `list(self.hooks)` at its dispatch site instead of composing
+# with the registry, so a process-wide hook saw the Agent-level events and none of the
+# Router-level ones -- invisible unless the hook records which level it ran at, which is why
+# the checks above never caught it.
+events = []
+
+
+class LevelTag:
+    def __init__(self, tag):
+        self.tag = tag
+
+    def on_predict_start(self, ctx):
+        events.append((self.tag, "start", "router" if getattr(ctx, "router", None) is not None
+                                         else "agent"))
+
+    def on_predict_end(self, ctx):
+        events.append((self.tag, "end", "router" if getattr(ctx, "router", None) is not None
+                                       else "agent"))
+
+
+_hooks.set_default_hooks([LevelTag("default")])
+try:
+    r, en, ml = batch_router()
+    events.clear()
+    r.predict_batch([req("a"), req("b")])
+    # `BatchFake` replaces the agent wholesale, so the only events that can come from this
+    # Router are its own. That is exactly what the defect removed.
+    check("defaults/reach the Router on predict_batch",
+          events, [("default", "start", "router"), ("default", "start", "router"),
+                   ("default", "end", "router"), ("default", "end", "router")])
+
+    # `predict` was already correct; assert the two entry points agree, which is the property
+    # that was actually violated.
+    events.clear()
+    r.predict("a", QUESTIONS, model="english")
+    via_predict = list(events)
+    events.clear()
+    r.predict_batch([req("a")])
+    check("defaults/predict and predict_batch give the same event shape",
+          events, via_predict)
+
+    # An instance hook is composed the same way and must not be affected either way.
+    events.clear()
+    r2, _, _ = batch_router(hooks=[LevelTag("instance")])
+    r2.predict_batch([req("a")])
+    check("defaults/instance hooks still fire once alongside defaults",
+          [e for e in events if e[0] == "instance"],
+          [("instance", "start", "router"), ("instance", "end", "router")])
+finally:
+    _hooks.clear_default_hooks()
+
 
 class LifeDefaults(BaseHook):
     def __init__(self):

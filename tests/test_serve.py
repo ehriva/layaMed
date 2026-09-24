@@ -4,6 +4,7 @@ A fake Router is injected so nothing loads a checkpoint; we only assert that the
 HTTP layer maps requests/responses and enforces auth as hs-jev expects.
 """
 import json
+import logging
 
 import pytest
 
@@ -97,6 +98,7 @@ def test_missing_questions_is_400(monkeypatch):
     b"",                    # empty body
     b"\xff\xfe\x00bad",     # invalid UTF-8
     b'{"questions": ',      # truncated
+    pytest.param(b"[" * 100000, id="deeply-nested"),  # raises RecursionError, not ValueError
 ])
 def test_malformed_json_body_is_400(monkeypatch, payload):
     """A body that isn't valid JSON must not fall through to an unstyled 500."""
@@ -315,3 +317,88 @@ def test_health_stays_available_during_inference(monkeypatch):
     assert seen["slow"] == 200
     assert seen["health"] == 200 and seen["payload"]["status"] == "ok"
     assert fake.threads and "MainThread" not in fake.threads, fake.threads
+
+
+class ExplodingRouter:
+    """Fails the way a container missing triton's C compiler does (#365).
+
+    The message is the shape a real failure takes: it names a path and a tool, which is
+    exactly what must not reach the client and exactly what the operator needs.
+    """
+
+    loaded = ["multilingual"]
+
+    def __init__(self, message):
+        self.message = message
+
+    def predict(self, state, questions, model=None):
+        raise RuntimeError(self.message)
+
+
+def test_inference_failure_is_logged_and_not_leaked(monkeypatch, caplog):
+    """A failed inference still returns a bare 500, but the cause reaches the log.
+
+    The client-facing message is deliberately fixed, so the server log is the only place
+    the real exception can appear. Before this, the log carried nothing at all: a
+    deterministic failure was visible only as `POST /v1/systemone HTTP/1.1" 500`, and the
+    cause had to be reproduced in-process to be found.
+    """
+    secret = ("Failed to find C compiler. Please specify via CC environment variable "
+              "or set triton.knobs.build.impl (/opt/venv/lib/python3.11/site-packages/triton)")
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    client = TestClient(create_app(router=ExplodingRouter(secret)), raise_server_exceptions=False)
+
+    with caplog.at_level(logging.ERROR, logger="laya.serve"):
+        response = client.post("/v1/systemone", json=REQ)
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "inference failed"}
+    for leaked in ("C compiler", "triton", "/opt/venv", "site-packages"):
+        assert leaked not in response.text, response.text
+
+    logged = "\n".join(r.getMessage() if isinstance(r.getMessage(), str) else str(r.msg)
+                       for r in caplog.records)
+    assert any(r.levelno == logging.ERROR for r in caplog.records), caplog.records
+    # the traceback has to be in the record, not only the summary line
+    assert any(r.exc_info for r in caplog.records), "no exc_info on the failure record"
+    assert "inference failed" in logged
+
+
+def test_validation_errors_are_not_logged_as_failures(monkeypatch, caplog):
+    """A 422 is the caller's mistake and must not be logged as a server error.
+
+    `ValueError` from the router is mapped to 422 with its message intact, because those
+    messages name the question and what to fix. Only the bare `except Exception` below it
+    reports a server fault, so only that branch logs.
+    """
+    class RejectingRouter:
+        loaded = ["english"]
+
+        def predict(self, state, questions, model=None):
+            raise ValueError("question 'q': a choice question needs at least one criterion")
+
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    client = TestClient(create_app(router=RejectingRouter()), raise_server_exceptions=False)
+
+    with caplog.at_level(logging.ERROR, logger="laya.serve"):
+        response = client.post("/v1/systemone", json=REQ)
+
+    assert response.status_code == 422, response.text
+    assert "at least one criterion" in response.text, response.text
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR], caplog.records
+
+
+def test_inference_timing_headers():
+    """POST /v1/systemone returns Server-Timing and X-Inference-Time-Ms headers."""
+    router = FakeRouter()
+    client = TestClient(create_app(router=router))
+    res = client.post("/v1/systemone", json={
+        "state": "test timing",
+        "questions": {"dept": {"type": "choice", "instructions": "which?", "criteria": {"billing": "invoices"}}}
+    })
+    assert res.status_code == 200
+    assert "Server-Timing" in res.headers
+    assert res.headers["Server-Timing"].startswith("inference;dur=")
+    assert "X-Inference-Time-Ms" in res.headers
+    dur = float(res.headers["X-Inference-Time-Ms"])
+    assert dur >= 0.0

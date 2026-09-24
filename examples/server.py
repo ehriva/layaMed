@@ -43,6 +43,20 @@ from pydantic import ValidationError as PydanticValidationError
 
 import laya
 from laya import Router
+# The same per-request bounds laya.serve enforces on the shipped HTTP surface, read from
+# it rather than restated so this demo cannot drift from the server it demonstrates.
+# Importing laya.serve pulls in no heavy module (torch, fastapi and the router are all
+# deferred inside it).
+#
+# `getattr` with the 0.3.10 defaults -- the release that introduced these names (#250) --
+# in the same shape as the getattr(laya, ...) lookups below, so `python examples/server.py`
+# keeps working against an older installed laya. The trade is deliberate: on a laya
+# predating them the demo falls back to the 0.3.10 numbers rather than refusing to start,
+# and the fallback is dead code on every release since.
+import laya.serve as _laya_serve
+
+MAX_QUESTIONS = getattr(_laya_serve, "MAX_QUESTIONS", 64)
+MAX_STATE_CHARS = getattr(_laya_serve, "MAX_STATE_CHARS", 50_000)
 
 # --------------------------------------------------------------------------- #
 # Request / response models
@@ -218,8 +232,35 @@ def presets() -> Dict[str, Any]:
     return PRESETS
 
 
+def _check_request_limits(state: Any, questions: Dict[str, Any]) -> None:
+    """Refuse an oversized request, as `laya.serve._check_request_limits` does.
+
+    Laya encodes the state once per question, so cost is questions x state size,
+    collated into one tensor. The state length is measured exactly as laya.serve
+    measures it -- `len(v)` for a string, `len(str(v))` for a dict or list.
+
+    Checked here rather than declared as pydantic constraints on the request models,
+    for two reasons: a `Field(max_length=...)` violation is reported as 422 where
+    laya.serve answers 413, and FastAPI's validation-error response includes the
+    offending `input`, so rejecting a 5 MB state would echo all 5 MB back to the
+    caller -- turning a size limit into an amplifier.
+    """
+    if len(questions) > MAX_QUESTIONS:
+        raise HTTPException(
+            status_code=413,
+            detail="too many questions (%d > %d)" % (len(questions), MAX_QUESTIONS),
+        )
+    size = len(state) if isinstance(state, str) else len(str(state))
+    if size > MAX_STATE_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="state too large (%d > %d chars)" % (size, MAX_STATE_CHARS),
+        )
+
+
 @app.post("/predict")
 def predict(req: PredictRequest) -> Dict[str, Any]:
+    _check_request_limits(req.state, req.questions)
     try:
         return _predict(
             req.state,
@@ -238,6 +279,8 @@ def predict(req: PredictRequest) -> Dict[str, Any]:
 
 @app.post("/predict/batch")
 def predict_batch(req: BatchRequest) -> Dict[str, Any]:
+    for state in req.states:
+        _check_request_limits(state, req.questions)
     questions = _questions(req.questions)
     results: List[Dict[str, Any]] = []
     for i, state in enumerate(req.states):

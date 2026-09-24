@@ -202,6 +202,28 @@ for name in ("compose.yaml", "compose.example.yml", "compose.cuda.yaml", "compos
              "compose.spark.yaml"):
     check_true("compose/%s exists" % name, os.path.exists(name))
 
+# --------------------------------------------------------------- declared extras
+# The runtime error in laya/structured.py tells users to install `laya[structured]`, and the
+# docs and README repeat it. A reference to an extra pyproject.toml does not declare is a dead
+# end for anyone who follows it, so every `laya[...]` in the code and docs must resolve (#348).
+_extra_section = pyproject.split("[project.optional-dependencies]")[1].split("\n[")[0]
+_declared_extras = set(re.findall(r"^([a-z][\w-]*)\s*=\s*\[", _extra_section, re.M))
+_referenced_extras = {}
+for _dirpath, _dirnames, _filenames in os.walk("."):
+    # `.venv` is where CONTRIBUTING tells contributors to install, and it is not the repository.
+    _dirnames[:] = [d for d in _dirnames
+                    if d not in (".git", "__pycache__", "node_modules", ".pytest_cache", ".venv")]
+    for _f in _filenames:
+        if not _f.endswith((".py", ".md", ".yml", ".toml")):
+            continue
+        _p = os.path.normpath(os.path.join(_dirpath, _f))
+        for _group in re.findall(r"laya\[([a-z][\w,-]*)\]", read(_p)):
+            for _extra in _group.split(","):
+                _referenced_extras.setdefault(_extra.strip(), set()).add(_p)
+
+check("extras/every referenced extra is declared",
+      sorted(set(_referenced_extras) - _declared_extras), [])
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)

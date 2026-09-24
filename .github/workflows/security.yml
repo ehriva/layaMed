@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "17 6 * * 1"     # Monday morning: catch CVEs disclosed since the last push
 
+# Cancel outdated pull request runs; let runs on main finish.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Read-only by default. Jobs that need more ask for it explicitly.
 permissions: read-all
 
@@ -14,6 +19,7 @@ jobs:
   secrets:
     name: secret scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,6 +45,7 @@ jobs:
   deps:
     name: dependency CVEs
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,6 +70,7 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       security-events: write
       actions: read
@@ -78,6 +86,7 @@ jobs:
   supply_chain:
     name: no unsafe deserialization
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Weights must load through safetensors, never pickle
@@ -85,11 +94,11 @@ jobs:
           # torch.load / pickle execute arbitrary code during deserialization. Laya loads
           # checkpoints from the Hub, so a pickle path would be remote code execution on
           # `laya.load("someone/their-model")`.
-          if grep -rnE "\bpickle\b|torch\.load\(|joblib\.load\(|yaml\.load\(" laya/; then
+          if grep -rnE --include='*.py' "\bpickle\b|torch\.load\(|joblib\.load\(|yaml\.load\(" laya/ laya-ts/scripts/; then
             echo "::error::unsafe deserialization in the shipped package - use safetensors"
             exit 1
           fi
-          echo "OK: no pickle/torch.load/yaml.load in laya/"
+          echo "OK: no unsafe deserialization in laya/ or laya-ts/scripts/"
       - name: No shell-out or dynamic exec in the shipped package
         run: |
           if grep -rnE "os\.system\(|subprocess\.|shell=True|\beval\(|\bexec\(" laya/ \
@@ -98,3 +107,5 @@ jobs:
             exit 1
           fi
           echo "OK: no os.system/subprocess/eval/exec in laya/"
+      - name: ONNX exporter requires safetensors weights
+        run: python tests/test_export_onnx_safety.py

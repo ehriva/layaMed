@@ -128,10 +128,12 @@ checkpoints need no token.
 
 ## Fine-tuned checkpoints
 
-This image runs inference. Training scripts are tracked in
+This image runs inference. Fine-tuning happens outside it — the
+[fine-tuning notebook](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)
+runs the whole loop on Kaggle's free 2xT4 GPUs and exports a checkpoint this image can
+serve. Background and open questions about the training interface stay in
 [#4](https://github.com/NandhaKishorM/laya/issues/4) and
-[#26](https://github.com/NandhaKishorM/laya/issues/26); training commands can follow
-once that interface is available.
+[#26](https://github.com/NandhaKishorM/laya/issues/26).
 
 Point `LAYA_CHECKPOINT_PATH` to an absolute host directory containing
 `rl_agent_config.json`, `model.safetensors` and matching tokenizer files:

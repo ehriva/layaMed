@@ -40,6 +40,48 @@ describe("email+presets", () => {
     expect(out.length).toBe(3000);
     expect(out).not.toContain("old text");
   });
+  // Python's `_DISCLAIMER` ties the English branch to a disclaimer noun and a disclaimer tail;
+  // laya-ts matched the bare word, so a one-sentence body that merely used "confidential" was
+  // cleaned to "" and the model was scored on an empty state. Expectations are Python's.
+  it("keeps a request that only mentions the word confidential (Python parity)", () => {
+    for (const body of [
+      "Is this confidential?",
+      "What is your confidentiality policy?",
+      "Please keep this confidential but process my refund.",
+      "Please treat this as confidential.",
+      "This is confidential - can you help?",
+      "Is the attached document confidential?",
+      "Confidential: I need a refund.",
+      "Please unlock my account, the contents are not confidential to anyone.",
+      "This message is intended solely for the named addressee.",
+      "Please forward this to billing. It is intended for the use of the recipient only.",
+    ]) {
+      expect(cleanEmailBody(body), body).toBe(body);
+    }
+  });
+  it("never cleans a body down to nothing (Python parity)", () => {
+    expect(cleanEmailBody("Is this confidential?").trim()).not.toBe("");
+  });
+  it("still drops the real footers those branches exist for (Python parity)", () => {
+    for (const body of [
+      "This email is confidential and intended solely for the named addressee.",
+      "This message is confidential and intended solely for the use of the individual to whom it is addressed.",
+      "The information in this email is confidential and may be privileged.",
+      "This email and any files transmitted with it are\nconfidential and intended solely for the named addressee.",
+    ]) {
+      expect(cleanEmailBody(body).trim(), body).toBe("");
+    }
+  });
+  it("keeps the request around a footer (Python parity)", () => {
+    expect(
+      cleanEmailBody(
+        "My account is locked.\nThis email is confidential and intended solely for the named addressee.\nPlease unlock it.",
+      ),
+    ).toBe("My account is locked. Please unlock it.");
+    expect(
+      cleanEmailBody("Please unlock it. This email is confidential and intended solely for the named addressee."),
+    ).toBe("Please unlock it.");
+  });
   it("guard preset has jailbreak and harm_severity", () => {
     const g = guardQuestions() as Record<string, any>;
     expect(g.jailbreak.type).toBe("noul");
