@@ -6,7 +6,11 @@
     "strict": true,
     "declaration": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // TypeScript 7 no longer pulls every @types package in automatically, so the node globals
+    // and `node:*` module types have to be asked for by name. Declaring it is a no-op on 5.x,
+    // which resolves them either way, and it is what makes the tsc 7 build pass.
+    "types": ["node"]
   },
   "include": ["src"]
 }

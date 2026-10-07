@@ -15,9 +15,11 @@ from laya.router import (  # noqa: E402
     STANDALONE_MODELS,
     _english_from_code,
     _repo_str,
+    _split,
     Router,
     match_typed_decisions_workflow,
     normalise_name,
+    resolve_model_spec,
 )
 
 PASS, FAIL = [], []
@@ -132,7 +134,9 @@ check("latin_lang/long english stays en",
 # `github` + `com`, so every domain in a state scored a Portuguese hit: two of them crossed the
 # margin and sent an English state with links in it to the multilingual checkpoint, reported as
 # Portuguese. A token whose dot or @ joins word characters is an identifier, not prose.
-_r_dotted = Router()
+# `default="english"` because this block is about identifiers not reading as foreign prose, not
+# about what the stock default is: a state of bare identifiers is language-undecided either way.
+_r_dotted = Router(default="english")
 for label, state in [
     ("url and email fields", {"url": "github.com", "email": "user@acme.com"}),
     ("two bare domains", "github.com acme.com"),
@@ -166,6 +170,123 @@ check("state_text/none", state_text(None), "")
 check("state_text/keys ignored",
       analyse({"subject": "नमस्ते", "body": "ग्राहक से दो बार शुल्क लिया गया"})["is_english"], False)
 
+# --------------------------------------------------------------------- dict-state language (#384)
+# The same German sentence must route the same way as a string and as a dict value.
+# A mapping that is not a builtin dict, a bytes value, and English sibling fields used to
+# hide that value: detection then reported language_undecided (or English) and the router
+# fell through to the English checkpoint.
+_DE = "Mein Konto wurde zweimal belastet"
+_r_de = Router()
+_de_str = _r_de.route(_DE, {})
+_de_dict = _r_de.route({"message": _DE}, {})
+check("route/dict german matches string", _de_dict.model, _de_str.model)
+check("route/dict german is multilingual", _de_dict.model, "multilingual")
+check("route/dict german names de", _de_dict["detection"]["language"], "de")
+check("route/dict german is not undecided", _de_dict["detection"]["language_undecided"], False)
+check("analyse/dict german matches string", analyse({"message": _DE})["language"], analyse(_DE)["language"])
+# English notes must not outvote the message, and a long note must not push it out of the window.
+_de_ticket = {
+    "ticket_id": "TCK-88213",
+    "channel": "web chat",
+    "agent_notes": "Please check the shipping status and refund the customer if the charge was duplicated.",
+    "message": _DE,
+}
+check("route/dict german beside english notes", _r_de.route(_de_ticket, {}).model, "multilingual")
+check("route/dict german beside english notes is not undecided",
+      _r_de.route(_de_ticket, {})["detection"]["language_undecided"], False)
+_de_long = {
+    "agent_notes": "Please check the shipping status and tell the customer about the refund. " * 80,
+    "message": _DE,
+}
+check("route/dict german after long english note", _r_de.route(_de_long, {}).model, "multilingual")
+check("route/dict german after long english note names de",
+      _r_de.route(_de_long, {})["detection"]["language"], "de")
+# The leaf scan #384 added runs a full `_analyse_text` pass on every line of every value. A line
+# too short to be selected is now skipped before that happens. The #384 checks above pin the
+# answers; these add the cost side, the constant itself, and the invariant a cheaper scan must
+# not trade away.
+#
+# Ratios to prose of the same size, never wall-clock, so a loaded runner inflates both sides.
+# Warm-up then best of nine: the numerators are ~2 ms windows against a ~24 ms denominator, and
+# at five reps a single descheduled run moved the 10 000-field ratio to 0.385. Nine reps holds it.
+# Previous / ceiling / current, each ceiling the geometric mean of the pair it separates:
+#   one-char lines, 50 000 chars       2.85 / 0.80 / 0.23
+#   six-char lines, 50 000 chars       1.24 / 0.35 / 0.10
+#   10 000 six-character fields        1.85 / 0.68 / 0.25
+# Worst current ratio over six trials was 0.232 / 0.098 / 0.249 idle and 0.231 / 0.097 / 0.246
+# with twelve busy processes on the box, so every ceiling keeps at least 2.7x of room under load;
+# reverting gives 3.19 / 1.25 / 2.27 under that same load, 3.3x or more the other way. The
+# measured ratio goes in the check name, so a red CI log says what it was, not only "got False".
+def _ms(state, reps=9):
+    analyse(state)
+    analyse(state)
+    best = float("inf")
+    for _ in range(reps):
+        t = _time.perf_counter()
+        analyse(state)
+        best = min(best, _time.perf_counter() - t)
+    return best * 1000
+
+
+# Prose LINES, not one long line: `_leaf_non_english` slices each line to 4000 characters, so a
+# 50 000-character one-liner does a fraction of the work and would be a meaningless denominator
+# (2.2 ms against 24.1 ms for the same characters as lines). Every state here is a dict on
+# purpose: `analyse` returns a plain string's verdict before the leaf scan runs.
+_PROSE_50K = {"body": "\n".join(["The customer was billed twice and wants a refund."] * 1020)[:50_000]}
+_prose_ms = _ms(_PROSE_50K)
+for _name, _state, _ceiling in (
+    ("one-char lines", {"body": ("a\n" * 25_000)[:50_000]}, 0.80),
+    ("six-char lines", {"body": ("abcdef\n" * 7_142)[:50_000]}, 0.35),
+    ("10k six-char fields", {"f%d" % i: "abcdef" for i in range(10_000)}, 0.68),
+):
+    _ratio = _ms(_state) / _prose_ms
+    check("leaf scan/%s vs prose = %.2f, ceiling %.2f" % (_name, _ratio, _ceiling),
+          _ratio < _ceiling, True)
+
+# The constant. Seven is the largest sound threshold: each branch of `_leaf_non_english` needs
+# four `_WORD` tokens -- maximal runs of letters and letter-like numerals, so four need three
+# separators between them -- or ten letters. "é à ü ö" is exactly seven characters and four
+# tokens, and must still be read: this is the check that pins the threshold, and raising it to 8
+# turns that check red. "é à üö" is six characters and three tokens; no six-character line can be
+# selected at any threshold, so that check is a behaviour pin rather than a second bound -- it
+# passes on unguarded code too, and is here to catch a future change that makes short lines
+# selectable. Both values sit past 4000 characters of English, which is what makes the leaf scan
+# the code under test: before that the segment scan has already answered.
+_EN_PAST_SEGMENT_CAP = "The customer was billed twice and wants a refund. " * 120
+check("leaf scan/a 7-character foreign line is still read",
+      analyse({"note": _EN_PAST_SEGMENT_CAP, "msg": "é à ü ö"})["is_english"], False)
+check("leaf scan/a 6-character line stays English",
+      analyse({"note": _EN_PAST_SEGMENT_CAP, "msg": "é à üö"})["is_english"], True)
+
+# #384's invariant, which a budget shared across the state would break: a long earlier value must
+# not stop a later one from being read. Cheap to keep, and it is the one way a future attempt to
+# bound this scan by total characters would go wrong silently -- the state below would route to
+# the English checkpoint, which BENCHMARKS.md shows collapsing off English.
+check("leaf scan/a later value is still read after a 50k earlier one",
+      analyse({"pad": "x " * 25_000, "msg": "我们三月份被重复收费了两次。"})["is_english"], False)
+
+from collections import UserDict  # noqa: E402
+from types import MappingProxyType  # noqa: E402
+check("route/userdict german", _r_de.route(UserDict({"message": _DE}), {}).model, "multilingual")
+check("route/userdict german is not undecided",
+      _r_de.route(UserDict({"message": _DE}), {})["detection"]["language_undecided"], False)
+check("route/mappingproxy german",
+      _r_de.route(MappingProxyType({"message": _DE}), {}).model, "multilingual")
+check("route/bytes german value",
+      _r_de.route({"message": _DE.encode("utf-8")}, {}).model, "multilingual")
+# A name beside an English request is not a second message.
+check("route/dict cyrillic name stays english",
+      _r_de.route({"name": "Антон Павлович Чехов",
+                   "body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+check("route/dict jose stays english",
+      _r_de.route({"name": "José",
+                   "body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+check("route/dict english body stays english",
+      _r_de.route({"body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+
 
 # --------------------------------------------------------------------- workflow signatures
 check("profile/armenian", analyse("Հայերեն")["script_profile"], {"armenian": 1.0})
@@ -196,6 +317,25 @@ try:
     FAIL.append("alias/unknown: should have raised")
 except ValueError:
     PASS.append("alias/unknown raises")
+
+
+# --------------------------------------------------------------------- registry spec resolution (#780)
+# `load()` resolves a name or alias through this table instead of forwarding it to the Hub as a
+# repo id, so both entry points read one registry. Anything the registry does not know -- a repo
+# id, a local path, an ONNX export -- resolves to None and is left alone.
+for name, want in [("english", ("convaiinnovations/laya", None)),
+                   ("laya", ("convaiinnovations/laya", None)),
+                   ("typed-decisions", ("convaiinnovations/laya", "typed-decisions")),
+                   ("typed", ("convaiinnovations/laya", "typed-decisions")),
+                   ("ml", ("convaiinnovations/laya", "multilingual")),
+                   ("MULTI", ("convaiinnovations/laya", "multilingual")),
+                   (" typed-decisions ", ("convaiinnovations/laya", "typed-decisions"))]:
+    check("spec/" + name, resolve_model_spec(name), want)
+check("spec/agrees with normalise_name",
+      resolve_model_spec("decisions"), tuple(_split(DEFAULT_MODELS[normalise_name("decisions")])))
+for unknown in ("convaiinnovations/laya", "test/custom-model", "/tmp/checkpoint", "./local",
+                "nope", "", "convaiinnovations/laya-typed-decisions"):
+    check("spec/not a name: " + (unknown or "<empty>"), resolve_model_spec(unknown), None)
 
 
 # --------------------------------------------------------------------- routing decisions
@@ -256,8 +396,9 @@ cases = [
     ("explicit lang en", {"body": "मुझसे दो बार"}, Q_GENERIC, {"lang": "en"}, "english"),
     ("explicit lang de", {"body": "hello there"}, Q_GENERIC, {"lang": "de"}, "multilingual"),
     ("td workflow, auto OFF", {"body": "I was charged twice"}, Q_TD, {}, "english"),
-    ("empty state", {}, Q_GENERIC, {}, "english"),
-    ("none state", None, Q_GENERIC, {}, "english"),
+    # letterless, so these follow `default`, which is multilingual since 0.4.0
+    ("empty state", {}, Q_GENERIC, {}, "multilingual"),
+    ("none state", None, Q_GENERIC, {}, "multilingual"),
 ]
 for label, state, qs, kw, want in cases:
     check("route/" + label, r.route(state, qs, **kw)["model"], want)
@@ -309,17 +450,23 @@ check("route/undecided reason mentions letters",
       "not identified" in _r_lat.route("Müşteriden iki kez ücret alındı ve para iadesi istiyor").reason, True)
 check("route/english still english",
       _r_lat.route("Please refund the duplicate charge on invoice 4411 today.").model, "english")
-check("route/short english still english", _r_lat.route("refund me").model, "english")
+# "refund me" names no language, so it follows `default` like any other undecided text rather
+# than being hard-coded English. With an English default it still reaches the English checkpoint.
+check("route/short english follows default",
+      Router(default="english").route("refund me").model, "english")
 
 # Undecided Latin text follows `default`, as a state with no letters already did. Short messages made
 # only of content words carry nothing that names their language, and hard-coding English for them
 # sent every short Portuguese message to the checkpoint that is 0.97 confident at 0.47 accuracy on
-# `pt`, whatever the router was configured with.
+# `pt`, whatever the router was configured with. Since 0.4.0 the stock default is `multilingual`,
+# so both arms below are exercised: the stock one and an explicit English override.
 _r_ml = Router(default="multilingual")
+_r_en = Router(default="english")
 for text in ["Quero cancelar", "Esqueci minha senha", "Fui cobrado duas vezes",
              "Produto veio quebrado, quero trocar", "refund me"]:
     check("route/undecided follows default " + text[:24], _r_ml.route(text).model, "multilingual")
-    check("route/undecided stock default " + text[:24], _r_lat.route(text).model, "english")
+    check("route/undecided stock default " + text[:24], _r_lat.route(text).model, "multilingual")
+    check("route/undecided english override " + text[:24], _r_en.route(text).model, "english")
 check("route/undecided reason names the default",
       "using default (multilingual)" in _r_ml.route("Esqueci minha senha").reason, True)
 # identified English is not undecided, so a non-English default leaves it alone
@@ -468,7 +615,8 @@ for text in [
     "The son of the director filed a complaint about the duplicate invoice",
 ]:
     check("is_english/romance control " + text[:32], is_english(text), True)
-    check("route/romance control " + text[:32], _r_lat.route(text).model, "english")
+    check("route/romance control " + text[:32],
+          Router(default="english").route(text).model, "english")
 
 # A word several lists claim (`la`, `e`, `o`) says "not English" without saying *which* language, so
 # it may not name one on its own -- the same rule as the 0-0 tie above, which is why the sample
@@ -578,6 +726,98 @@ for text in ["turn off smart lamp in den", "im so sorry, am an hour late, stuck 
 check("latin_lang/spanish es stays evidence", guess_latin_language("que hora es en australia"), "es")
 check("latin_lang/french du stays evidence", guess_latin_language("baisse le volume du haut-parleur"), "fr")
 
+# ------------------------------------------------------------------ accented loanwords in English (#337)
+# The diacritic rate is measured over every character, so one `é` in a short English sentence
+# clears the 0.02 floor and used to veto the English resolution outright: plain English with a
+# loanword or foreign name (`café`, `résumé`, `José`, `Zürich`) went to the checkpoint the
+# README says collapses on English-heavy Latin text. English wins the veto back only through the
+# word rescue: at least two distinct function words no other list holds, and at most one word
+# carrying a non-English letter.
+for text in ["Please send me the café menu today please",
+             "Could you email me your résumé before the meeting",
+             "Send the invoice to José before Friday",
+             "We visited Zürich last summer and loved it"]:
+    check("latin_lang/loanword english stays english " + text, guess_latin_language(text), "en")
+    check("route/loanword english stays english " + text, _r_lat.route(text).model, "english")
+# Genuinely non-English accented text keeps its multilingual routing: a German sentence with
+# umlauts and no English function word is not rescued.
+check("latin_lang/accented german stays non-english",
+      is_english("Grüße aus Köln, wir melden uns wegen der Rechnung"), False)
+check("route/accented german stays multilingual",
+      _r_lat.route("Grüße aus Köln, wir melden uns wegen der Rechnung").model, "multilingual")
+# Danish still has no list here, and its accented sentences pick up just one or two English-shaped
+# words (`i`, `at`, `for`, `have`), which is not the two-distinct-word English the rescue requires.
+for text in ["sluk lyset i soveværelset",                          # da
+             "kan jeg få en refundering for det dobbelte beløb",   # da
+             "stäng av ljuset i sovrummet"]:                        # sv
+    check("latin_lang/nordic accented stays non-english " + text, is_english(text), False)
+    check("route/nordic accented stays multilingual " + text, _r_lat.route(text).model, "multilingual")
+
+# Swedish-specific words now identify both normal text and ASCII-normalised support prose. The
+# second sample is the real false-negative shape: `få` alone was too weak to stop its two English-
+# shaped words (`i`, `kan`) from pulling the request onto the English checkpoint.
+for text in ["Om ni inte kan få tillbaka de raderade filerna i dag avslutar jag mitt abonnemang.",
+             "Om ni inte kan fa tillbaka de raderade filerna i dag avslutar jag mitt abonnemang.",
+             "jag vill att ni hjalper mig med detta"]:
+    check("latin_lang/swedish is named " + text, guess_latin_language(text), "sv")
+    check("route/swedish uses multilingual " + text, _r_lat.route(text).model, "multilingual")
+    check("route/swedish detection reports sv " + text, _r_lat.route(text)["detection"]["language"], "sv")
+# Common Swedish support phrasing should identify the language across billing, account, technical
+# and delivery messages, both with and without Swedish diacritics.
+for text in ["Kan ni hjälpa mig?", "Min faktura är fel", "Jag behöver hjälp med betalningen",
+             "Kan ni skicka kvittot igen?", "Jag vill byta lösenord",
+             "Appen kraschar när jag öppnar inställningarna",
+             "Var hittar jag inställningen för tvåfaktorsinloggning?",
+             "Vi har debiterats två gånger för mars",
+             "Var är mitt paket? Spårningen har inte uppdaterats"]:
+    check("latin_lang/swedish support is named " + text, guess_latin_language(text), "sv")
+    check("route/swedish support uses multilingual " + text,
+          _r_lat.route(text).model, "multilingual")
+for text in ["min faktura ar fel", "jag behover hjalp med betalningen",
+             "kan ni skicka kvittot igen", "jag vill byta losenord",
+             "appen kraschar nar jag oppnar installningarna",
+             "var hittar jag installningen for tva faktorsinloggning",
+             "vi har blivit debiterade tva ganger for mars",
+             "var ar mitt paket sparningen har inte uppdaterats"]:
+    check("latin_lang/ascii swedish support is named " + text, guess_latin_language(text), "sv")
+    check("route/ascii swedish support uses multilingual " + text,
+          _r_lat.route(text).model, "multilingual")
+# Short login failures often contain English technical vocabulary and can arrive without Swedish
+# diacritics. Swedish `kan` + `inte` must outweigh the incidental English token `in`.
+for text in ["Kan inte logga in", "kan inte logga in", "Jag kan inte logga in", "Vi kan inte logga in"]:
+    check("latin_lang/short swedish login is named " + text, guess_latin_language(text), "sv")
+    check("route/short swedish login uses multilingual " + text,
+          _r_lat.route(text).model, "multilingual")
+    check("route/short swedish login detection reports sv " + text,
+          _r_lat.route(text)["detection"]["language"], "sv")
+# Two- and three-word Swedish support fragments do not reach the general four-word evidence
+# threshold. Only distinctly Swedish terms should name them; generic words and Nordic controls
+# remain undecided rather than being guessed as Swedish.
+for text in ["Ingen åtkomst", "Ingen atkomst", "Fakturan är fel", "Betalningen nekades",
+             "Behöver hjälp", "Behover hjalp", "Glömt lösenord", "Glomt losenord",
+             "Felmeddelande igen", "Kvitto saknas", "Inloggningen fungerar"]:
+    check("latin_lang/short Swedish support is named " + text, guess_latin_language(text), "sv")
+    check("route/short Swedish support uses multilingual " + text,
+          _r_lat.route(text).model, "multilingual")
+    check("route/short Swedish support detection reports sv " + text,
+          _r_lat.route(text)["detection"]["language"], "sv")
+for text in ["Ingen adgang", "Fakturaen feil", "Glemt passord", "Pakken forsinket",
+             "No account access", "Password forgotten"]:
+    check("latin_lang/short non-Swedish stays undecided " + text,
+          guess_latin_language(text), None)
+check("latin_lang/english login stays english",
+      guess_latin_language("I cannot login to my account"), "en")
+check("route/english login stays english",
+      _r_lat.route("I cannot login to my account").model, "english")
+check("latin_lang/danish login is not called swedish",
+      guess_latin_language("Jeg kan ikke logge inn"), None)
+check("latin_lang/danish account login is not called swedish",
+      guess_latin_language("Jeg kan ikke logge ind på min konto"), None)
+# Two non-English-letter words is a running non-English vocabulary, not one loanword: the rescue
+# does not fire even with English function words present.
+check("latin_lang/two diacritic words are not one loanword",
+      is_english("The naïve façade needs a fresh coat of paint"), False)
+
 
 # --------------------------------------------------------------------- temperature clamp (#35)
 # A fitted temperature below 1 sharpens logits. The shipped `choice:11+` bucket is 0.1006, which
@@ -593,6 +833,8 @@ check("clamp/none falls back to neutral", clamp_temperature(None), 1.0)
 check("clamp/garbage falls back to neutral", clamp_temperature("x"), 1.0)
 check("clamp/nan falls back to neutral", clamp_temperature(float("nan")), 1.0)
 check("clamp/inf falls back to neutral", clamp_temperature(float("inf")), 1.0)
+check("clamp/bools are not temperatures", clamp_temperature(True), 1.0)
+check("clamp/False is not a sharpening zero", clamp_temperature(False), 1.0)
 check("clamp/bounds are sane", TEMP_MIN <= 1.0 <= TEMP_MAX, True)
 # 13 options is the bucket the reported skill-router landed in
 check("clamp/13 options is the 11+ bucket", temp_bucket(QTYPES["choice"], 13), "choice:11+")
@@ -862,6 +1104,427 @@ check("threads/hot-path loads keep agents consistent", agents_len, 1)
 check("threads/hot-path order intact", order, ["english"])
 
 
+def _cold_build_does_not_hold_lifecycle_lock():
+    """A cold build must not stall `loaded` or a resident checkpoint for its whole duration.
+
+    The build runs a download plus construction, seconds to minutes. Held under `_lock`, it made
+    `GET /health` (which reads `loaded`) and every request for an already-resident checkpoint wait
+    for it, so a liveness probe timed out during a lazy load.
+    """
+    import laya.agent as _agent_mod
+    building, release = threading.Event(), threading.Event()
+    constructions = []
+
+    class _BlockingAgent:
+        def __init__(self, *args, **kwargs):
+            constructions.append(1)
+            building.set()
+            release.wait(5)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _BlockingAgent
+    try:
+        r = Router(max_loaded=3)
+        resident = _Stub("english")
+        r.attach("english", resident)
+        loaders = [threading.Thread(target=r.load, args=("multilingual",)) for _ in range(2)]
+        for t in loaders:
+            t.start()
+        building.wait(5)
+        timings = {}
+        for label, call in (("loaded", lambda: r.loaded),
+                            ("resident load", lambda: r.load("english"))):
+            done = threading.Event()
+            threading.Thread(target=lambda c=call, d=done: (c(), d.set()), daemon=True).start()
+            timings[label] = done.wait(1.0)
+        release.set()
+        for t in loaders:
+            t.join(5)
+        loaded_after, built = sorted(r.loaded), len(constructions)
+        # An unload issued while a build is in flight waits for it, so the build cannot land after it.
+        building.clear()
+        release.clear()
+        threading.Thread(target=r.load, args=("typed-decisions",), daemon=True).start()
+        building.wait(5)
+        unloader = threading.Thread(target=r.unload, args=("typed-decisions",))
+        unloader.start()
+        _time.sleep(0.1)
+        release.set()
+        unloader.join(5)
+        timings["unload waits for the build"] = "typed-decisions" not in r.loaded
+        return timings, built, loaded_after
+    finally:
+        release.set()
+        _agent_mod.Agent = old
+
+timings, built, resident_after = _cold_build_does_not_hold_lifecycle_lock()
+check("threads/loaded answers during a cold build", timings["loaded"], True)
+check("threads/resident checkpoint answers during a cold build", timings["resident load"], True)
+check("threads/concurrent cold loads still build once", built, 1)
+check("threads/cold build lands in the LRU", resident_after, ["english", "multilingual"])
+check("threads/unload during a cold build frees it", timings["unload waits for the build"], True)
+
+
+def _on_load_reenters_router(target, hooks_concurrent):
+    """An `on_load` hook may call `router.load()` again without deadlocking.
+
+    `_build_lock` is not re-entrant, so this holds only while `load()` dispatches `on_load`
+    after releasing it. Returns whether the outer load finished, the agent the hook got back,
+    the outer agent, and what ended up loaded.
+    """
+    import laya.agent as _agent_mod
+
+    class _FastAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    got = []
+
+    class _ReentrantHook:
+        def on_load(self, ctx):
+            if ctx.model == "multilingual" and not got:
+                got.append(ctx.router.load(target))
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _FastAgent
+    try:
+        r = Router(max_loaded=3, hooks=[_ReentrantHook()], hooks_concurrent=hooks_concurrent)
+        outer = []
+        t = threading.Thread(target=lambda: outer.append(r.load("multilingual")), daemon=True)
+        t.start()
+        t.join(5)
+        return not t.is_alive(), got[0] if got else None, outer[0] if outer else None, sorted(r.loaded)
+    finally:
+        _agent_mod.Agent = old
+
+for concurrent in (True, False):
+    tag = "concurrent" if concurrent else "serialised"
+    finished, inner, outer, loaded = _on_load_reenters_router("multilingual", concurrent)
+    check(f"threads/on_load reloading the same checkpoint does not deadlock ({tag})", finished, True)
+    check(f"threads/on_load reload returns the resident agent ({tag})",
+          inner is not None and inner is outer, True)
+    finished, inner, outer, loaded = _on_load_reenters_router("typed-decisions", concurrent)
+    check(f"threads/on_load loading another checkpoint does not deadlock ({tag})", finished, True)
+    check(f"threads/on_load can load another checkpoint ({tag})", loaded, ["multilingual", "typed-decisions"])
+
+
+def _test_per_checkpoint_unload_granularity():
+    """unload("english") must not wait for an in-flight build of multilingual.
+
+    unload("multilingual") must wait for its own in-flight build, and resident access
+    (r.loaded and r.load("english")) must remain non-blocking while multilingual builds.
+    """
+    import laya.agent as _agent_mod
+    multi_building = threading.Event()
+    multi_release = threading.Event()
+
+    class _ControllableAgent:
+        def __init__(self, repo, *args, **kwargs):
+            if "multilingual" in repo or kwargs.get("subfolder") == "multilingual":
+                multi_building.set()
+                multi_release.wait(10)
+
+        def system_one(self, state, questions):
+            return {"model": "fake", "answers": {}, "usage": {}}
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _ControllableAgent
+    try:
+        r = Router(max_loaded=3)
+        resident = _Stub("english")
+        r.attach("english", resident)
+
+        multi_loader = threading.Thread(target=r.load, args=("multilingual",), daemon=True)
+        multi_loader.start()
+        multi_building.wait(5)
+
+        # 1. unload("english") must complete immediately without waiting for multilingual build
+        english_unload_done = threading.Event()
+        threading.Thread(target=lambda: (r.unload("english"), english_unload_done.set()), daemon=True).start()
+        unloaded_english_fast = english_unload_done.wait(1.0)
+        english_resident = "english" in r.loaded
+
+        # 7. loaded and resident access remain non-blocking
+        r.attach("english", resident)
+        loaded_done = threading.Event()
+        threading.Thread(target=lambda: (r.loaded, loaded_done.set()), daemon=True).start()
+        loaded_fast = loaded_done.wait(1.0)
+
+        resident_load_done = threading.Event()
+        threading.Thread(target=lambda: (r.load("english"), resident_load_done.set()), daemon=True).start()
+        resident_load_fast = resident_load_done.wait(1.0)
+
+        # 2. unload("multilingual") waits for multilingual build
+        multi_unload_done = threading.Event()
+        multi_unloader = threading.Thread(
+            target=lambda: (r.unload("multilingual"), multi_unload_done.set()), daemon=True
+        )
+        multi_unloader.start()
+        unloaded_multi_early = multi_unload_done.wait(0.1)
+
+        multi_release.set()
+        multi_loader.join(5)
+        multi_unloader.join(5)
+
+        unloaded_multi_finished = multi_unload_done.wait(1.0)
+        multi_resident_after = "multilingual" in r.loaded
+
+        return (
+            unloaded_english_fast,
+            english_resident,
+            loaded_fast,
+            resident_load_fast,
+            unloaded_multi_early,
+            unloaded_multi_finished,
+            multi_resident_after,
+        )
+    finally:
+        multi_release.set()
+        _agent_mod.Agent = old
+
+(
+    unloaded_en_fast,
+    en_resident,
+    loaded_fast,
+    resident_load_fast,
+    unloaded_multi_early,
+    unloaded_multi_finished,
+    multi_resident_after,
+) = _test_per_checkpoint_unload_granularity()
+check("threads/unload english does not wait for multilingual build", unloaded_en_fast, True)
+check("threads/english is evicted after unload", en_resident, False)
+check("threads/loaded property is non-blocking during build", loaded_fast, True)
+check("threads/resident load is non-blocking during build", resident_load_fast, True)
+check("threads/unload multilingual waits for in-flight build", unloaded_multi_early, False)
+check("threads/unload multilingual completes after build", unloaded_multi_finished, True)
+check("threads/multilingual not resident after unload", multi_resident_after, False)
+
+
+def _test_concurrent_load_same_checkpoint_dedup():
+    """Concurrent loads for the same checkpoint must construct exactly one Agent."""
+    import laya.agent as _agent_mod
+    build_started = threading.Event()
+    build_release = threading.Event()
+    constructions = []
+
+    class _SlowAgent:
+        def __init__(self, *args, **kwargs):
+            constructions.append(1)
+            build_started.set()
+            build_release.wait(5)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _SlowAgent
+    try:
+        r = Router(max_loaded=3)
+        got = []
+        threads = [
+            threading.Thread(target=lambda: got.append(r.load("multilingual")), daemon=True)
+            for _ in range(5)
+        ]
+        for t in threads:
+            t.start()
+
+        build_started.wait(5)
+        build_release.set()
+        for t in threads:
+            t.join(5)
+
+        return len(constructions), len({id(a) for a in got}), len(got)
+    finally:
+        build_release.set()
+        _agent_mod.Agent = old
+
+built_count, unique_agents, total_callers = _test_concurrent_load_same_checkpoint_dedup()
+check("threads/concurrent loads construct exactly one Agent", built_count, 1)
+check("threads/concurrent callers receive identical Agent instance", unique_agents, 1)
+check("threads/all concurrent callers complete", total_callers, 5)
+
+
+def _test_attach_during_build_wins():
+    """attach() called while a build is in flight must win without being overwritten."""
+    import laya.agent as _agent_mod
+    build_started = threading.Event()
+    build_release = threading.Event()
+
+    class _ControllableAgent:
+        def __init__(self, *args, **kwargs):
+            build_started.set()
+            build_release.wait(5)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _ControllableAgent
+    try:
+        r = Router(max_loaded=3)
+        attached_agent = _Stub("english")
+        loader_result = []
+
+        loader = threading.Thread(target=lambda: loader_result.append(r.load("english")), daemon=True)
+        loader.start()
+
+        build_started.wait(5)
+        r.attach("english", attached_agent)
+
+        build_release.set()
+        loader.join(5)
+
+        subsequent = r.load("english")
+        return (
+            loader_result[0] is attached_agent,
+            subsequent is attached_agent,
+            r._agents.get("english") is attached_agent,
+        )
+    finally:
+        build_release.set()
+        _agent_mod.Agent = old
+
+loader_won, subsequent_won, resident_won = _test_attach_during_build_wins()
+check("threads/attach during build wins for in-flight loader", loader_won, True)
+check("threads/attach during build wins for subsequent load", subsequent_won, True)
+check("threads/attach during build remains resident", resident_won, True)
+
+
+def _test_failed_build_cleans_inflight_and_allows_retry():
+    """Failed builds clean up in-flight state, propagate exceptions, and allow retry."""
+    import laya.agent as _agent_mod
+    fail_first = [True]
+
+    class _FailingAgent:
+        def __init__(self, *args, **kwargs):
+            if fail_first[0]:
+                raise ValueError("corrupted weights download")
+            self.model = "ok"
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _FailingAgent
+    try:
+        r = Router(max_loaded=3)
+        errors = []
+
+        def _loader(err_list):
+            try:
+                r.load("english")
+            except ValueError as e:
+                err_list.append(str(e))
+
+        t1 = threading.Thread(target=_loader, args=(errors,), daemon=True)
+        t2 = threading.Thread(target=_loader, args=(errors,), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join(5)
+        t2.join(5)
+
+        inflight_cleared = "english" not in r._loading
+        not_resident = "english" not in r._agents
+
+        fail_first[0] = False
+        retried_agent = r.load("english")
+        retried_resident = "english" in r.loaded
+
+        return (
+            len(errors),
+            errors[0] if errors else None,
+            inflight_cleared,
+            not_resident,
+            retried_agent.model,
+            retried_resident,
+        )
+    finally:
+        _agent_mod.Agent = old
+
+err_count, first_err, inflight_cleared, not_res, retried_model, retried_res = (
+    _test_failed_build_cleans_inflight_and_allows_retry()
+)
+check("threads/failed build raises to concurrent loaders", err_count, 2)
+check("threads/failed build error message preserved", first_err, "corrupted weights download")
+check("threads/failed build cleans _loading registry", inflight_cleared, True)
+check("threads/failed build does not leave model resident", not_res, True)
+check("threads/subsequent load retries and succeeds", retried_model, "ok")
+check("threads/retried load lands in resident set", retried_res, True)
+
+
+def _test_waiting_callers_no_deadlock():
+    """Concurrent mix of loads and unloads on same and different models must not deadlock."""
+    import laya.agent as _agent_mod
+
+    class _FastAgent:
+        def __init__(self, *args, **kwargs):
+            _time.sleep(0.005)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _FastAgent
+    try:
+        r = Router(max_loaded=3)
+        models = ["english", "multilingual", "typed-decisions"]
+        threads = []
+        for _ in range(6):
+            for m in models:
+                threads.append(threading.Thread(target=r.load, args=(m,)))
+                threads.append(threading.Thread(target=r.unload, args=(m,)))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(5)
+        all_finished = not any(t.is_alive() for t in threads)
+        loading_clean = len(r._loading) == 0
+        return all_finished, loading_clean
+    finally:
+        _agent_mod.Agent = old
+
+no_hang, loading_empty = _test_waiting_callers_no_deadlock()
+check("threads/concurrent load and unload callers do not deadlock", no_hang, True)
+check("threads/all in-flight markers cleared after completion", loading_empty, True)
+
+
+def _test_unload_reload_sequence_no_resurrection():
+    """An older in-flight build cannot resurrect the model after an unload/reload sequence."""
+    import laya.agent as _agent_mod
+    first_build_started = threading.Event()
+    first_build_release = threading.Event()
+    agent_instances = []
+
+    class _SequencedAgent:
+        def __init__(self, *args, **kwargs):
+            agent_instances.append(self)
+            if len(agent_instances) == 1:
+                first_build_started.set()
+                first_build_release.wait(5)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _SequencedAgent
+    try:
+        r = Router(max_loaded=3)
+        t_load = threading.Thread(target=r.load, args=("english",), daemon=True)
+        t_load.start()
+        first_build_started.wait(5)
+
+        unload_done = threading.Event()
+        t_unload = threading.Thread(target=lambda: (r.unload("english"), unload_done.set()), daemon=True)
+        t_unload.start()
+
+        first_build_release.set()
+        t_load.join(5)
+        t_unload.join(5)
+
+        unloaded_ok = unload_done.is_set()
+        not_resident_after_unload = "english" not in r.loaded
+
+        c_agent = r.load("english")
+        is_new_agent = c_agent is agent_instances[1] and c_agent is not agent_instances[0]
+        resident_final = "english" in r.loaded
+
+        return unloaded_ok, not_resident_after_unload, is_new_agent, resident_final
+    finally:
+        first_build_release.set()
+        _agent_mod.Agent = old
+
+unloaded_ok, not_res_after, is_new_agent, res_final = _test_unload_reload_sequence_no_resurrection()
+check("threads/unload in-flight build finishes successfully", unloaded_ok, True)
+check("threads/model not resident after unload completes", not_res_after, True)
+check("threads/reload builds new instance without resurrection", is_new_agent, True)
+check("threads/reload lands in resident set", res_final, True)
+
+
 
 # --------------------------------------------------------------------- unlisted scripts
 # `detect_script` counts an alphabetic character only when one of `_SCRIPT_RANGES` claims
@@ -894,12 +1557,15 @@ for label, text in (
 # Fullwidth Latin is Latin, not an unlisted script.
 check("unlisted/fullwidth latin is latin", detect_script("ＨＥＬＬＯ"), "latin")
 
-# A state with no letters at all must keep behaving exactly as before.
+# A state with no letters at all takes `default`, whatever that is, which is the behaviour that
+# must not change. Both arms are checked so this cannot pass by agreeing with one constant.
 for label, text in (("empty", ""), ("digits only", "12345 67890"), ("emoji only", "😀😀😀")):
     check("unlisted/letterless " + label + " is still unknown",
           analyse(text)["script"], "unknown")
-    check("unlisted/letterless " + label + " keeps the default",
-          Router().route(text)["model"], "english")
+    check("unlisted/letterless " + label + " keeps the stock default",
+          Router().route(text)["model"], "multilingual")
+    check("unlisted/letterless " + label + " keeps an english default",
+          Router(default="english").route(text)["model"], "english")
 
 # The scripts the table does name must be untouched.
 for label, text, script in (
@@ -953,6 +1619,334 @@ for code in ("de", "fr", "zh", "ja", "pt-BR", "de_DE.UTF-8"):
 # as a language by accident.
 check("lang-code/agnostic primary wins over its subtag", _english_from_code("C.UTF-8"), None)
 check("lang-code/posix with a modifier abstains", _english_from_code("POSIX-1"), None)
+
+
+# --------------------------------------------------------------------- registered checkpoints
+# A Router serves the checkpoints a caller registers beside the built-in three: named in `model=`
+# or `task=` like them, and loaded, evicted and unloaded like them.
+from laya.router import canonical_name  # noqa: E402
+
+check("registry/canonical lowercases and aliases", canonical_name(" ML "), "multilingual")
+check("registry/canonical leaves an unknown name as typed", canonical_name("Papers"), "papers")
+
+_SECTION_Q = {"section": {"type": "choice", "instructions": "Which section?", "criteria": {"a": "A", "b": "B"}}}
+_CLAIM = "Transparency improved operator performance in 11 of 17 studies."
+r = Router(models={"papers": "/tmp/laya-papers", "tone": ("acme/laya-tone", None)})
+check("registry/registered names resolve", r.resolve("papers"), "papers")
+check("registry/registered names resolve case-insensitively", r.resolve(" PAPERS "), "papers")
+check("registry/built-ins still resolve", r.resolve("ml"), "multilingual")
+check("registry/models holds built-ins plus registered", sorted(r.models),
+      ["english", "multilingual", "papers", "tone", "typed-decisions"])
+try:
+    r.resolve("nope")
+    check("registry/unknown name raises", False, True)
+except ValueError as e:
+    check("registry/unknown name lists the registered ones too", "'papers'" in str(e), True)
+check("registry/normalise_name still knows only the built-ins", resolve_model_spec("papers"), None)
+
+d = r.route(_CLAIM, _SECTION_Q, model="papers")
+check("route/model= names a registered checkpoint", d.model, "papers")
+check("route/repo is the registered source", d["repo"], "/tmp/laya-papers")
+check("route/model= accepts a registered (repo, subfolder) pair", r.route(_CLAIM, _SECTION_Q, model="tone")["repo"],
+      "acme/laya-tone")
+check("route/task= names a registered checkpoint", r.route(_CLAIM, _SECTION_Q, task="tone").model, "tone")
+check("route/a registered checkpoint is never chosen automatically", r.route(_CLAIM, _SECTION_Q).model, "english")
+check("route/route_batch keeps the mix in order",
+      [x.model for x in r.route_batch([{"state": _CLAIM, "questions": _SECTION_Q, "model": "papers"},
+                                       {"state": _CLAIM, "questions": _SECTION_Q},
+                                       {"state": _CLAIM, "questions": _SECTION_Q, "model": "tone"}])],
+      ["papers", "english", "tone"])
+check("registered/reports source and description", Router(models={"papers": "/tmp/laya-papers"}).registered,
+      {"papers": {"source": "/tmp/laya-papers", "description": None}})
+check("registered/built-ins are not listed", Router().registered, {})
+
+# The built-in typed-decisions workflows are unchanged: opt-in, and still routed to the built-in.
+_CS = {q: _SECTION_Q["section"] for q in ("action", "category", "churn_risk", "needs_human", "urgency")}
+check("workflow/still needs auto_task_detection", r.route(_CLAIM, _CS).model, "english")
+check("workflow/with auto_task_detection",
+      Router(auto_task_detection=True).route(_CLAIM, _CS)["workflow"], "customer_service")
+
+# a checkpoint registered after construction is not read as an artifact map of a nested env.
+_old_env = os.environ.get("LAYA_SHA256_DIGESTS")
+os.environ["LAYA_SHA256_DIGESTS"] = '{"english": {"model.safetensors": "%s"}}' % ("c" * 64)
+try:
+    _r_late = Router()
+    _r_late.register("mine", "/tmp/laya-mine")
+    check("register/nested LAYA_SHA256_DIGESTS gives a later checkpoint the empty placeholder",
+          _r_late.sha256_digests["mine"], {})
+finally:
+    if _old_env is None:
+        os.environ.pop("LAYA_SHA256_DIGESTS", None)
+    else:
+        os.environ["LAYA_SHA256_DIGESTS"] = _old_env
+
+# a source starting with ~ is a local path.
+check("register/~ in a source is expanded", Router(models={"mine": "~/laya-mine"}).models["mine"],
+      os.path.expanduser("~/laya-mine"))
+
+# `auto` is the routing word everywhere, so it cannot name a checkpoint.
+try:
+    Router().register("auto", "/tmp/laya-auto")
+    check("register/auto is refused", True, False)
+except ValueError as _e:
+    check("register/auto is refused", "auto" in str(_e), True)
+
+# an attach()ed agent with no source is not part of a whole-router preload.
+with patch("laya.agent.Agent", side_effect=lambda repo, **kw: _Stub(repo)) as _build_att:
+    _r_att = Router()
+    _r_att.attach("mine", _Stub("mine"))
+    _r_att.unload("mine")
+    _r_att.preload()
+    check("preload/skips a name with no source", sorted(_r_att.loaded),
+          ["english", "multilingual", "typed-decisions"])
+
+# register(): the same thing after construction.
+r2 = Router()
+check("register/returns the canonical name", r2.register("Tone", "acme/laya-tone", description="tone"), "tone")
+check("register/description is reported", r2.registered["tone"], {"source": "acme/laya-tone", "description": "tone"})
+check("register/a second call replaces the source", (r2.register("tone", "/tmp/tone-v2"), r2.models["tone"])[1], "/tmp/tone-v2")
+check("register/replacing the source keeps the description", r2.registered["tone"]["description"], "tone")
+check("register/a built-in name re-points that checkpoint",
+      Router(models={"english": "/tmp/my-english"}).models["english"], "/tmp/my-english")
+check("register/an alias re-points its built-in", Router(models={"en": "/tmp/mine"}).models["english"], "/tmp/mine")
+for bad, why in (("Bad/Name", "slash"), ("", "empty"), ("-dash", "leading dash"), ("a b", "space")):
+    try:
+        Router().register(bad, "/tmp/x")
+        check("register/refuses %s" % why, False, True)
+    except ValueError:
+        check("register/refuses %s" % why, True, True)
+try:
+    Router(models={"papers": 42})
+    check("register/a source must be a path, repo or pair", False, True)
+except TypeError:
+    check("register/a source must be a path, repo or pair", True, True)
+
+# Every name-taking option accepts a registered name, the way it accepts a built-in one.
+r3 = Router(models={"papers": "/tmp/laya-papers"}, revisions={"papers": "abc123"}, default="papers",
+            sha256_digests={"papers": {"model.safetensors": "a" * 64}})
+check("register/default may be a registered name", r3.default, "papers")
+check("register/revisions keyed by a registered name", r3.revisions, {"papers": "abc123"})
+check("register/sha256_digests keyed by a registered name", r3.sha256_digests["papers"], {"model.safetensors": "a" * 64})
+check("register/undecided text falls back to the registered default",
+      r3.route("Quero cancelar", {"q": _SECTION_Q["section"]}).model, "papers")
+_old_env = os.environ.get("LAYA_SHA256_DIGESTS")
+os.environ["LAYA_SHA256_DIGESTS"] = '{"papers": {"model.safetensors": "%s"}}' % ("b" * 64)
+try:
+    check("register/LAYA_SHA256_DIGESTS may name a registered checkpoint",
+          Router(models={"papers": "/tmp/laya-papers"}).sha256_digests["papers"], {"model.safetensors": "b" * 64})
+finally:
+    if _old_env is None:
+        os.environ.pop("LAYA_SHA256_DIGESTS", None)
+    else:
+        os.environ["LAYA_SHA256_DIGESTS"] = _old_env
+
+# attach() under a new name registers it with no source: resident now, not reloadable later.
+r4 = Router()
+r4.attach("adhoc", _Stub("adhoc"))
+check("attach/new name becomes resident", "adhoc" in r4.loaded, True)
+check("attach/new name is routable", r4.route(_CLAIM, _SECTION_Q, model="adhoc").model, "adhoc")
+check("attach/new name has no source", r4.models["adhoc"], None)
+r4.unload("adhoc")
+try:
+    r4.load("adhoc")
+    check("attach/reload without a source is refused", False, True)
+except ValueError as e:
+    check("attach/reload without a source is refused", "no source" in str(e), True)
+
+# load() hands a registered local path or repo to Agent as a source, not as a registry name.
+import laya.agent as _agent_for_registry
+_built = []
+
+
+class _RecordingAgent:
+    def __init__(self, repo, **kwargs):
+        _built.append((repo, kwargs.get("subfolder")))
+
+
+_prev_agent = _agent_for_registry.Agent
+_agent_for_registry.Agent = _RecordingAgent
+try:
+    r5 = Router(models={"papers": "/tmp/laya-papers", "tone": ("acme/laya-tone", "v2")}, max_loaded=3)
+    r5.load("papers")
+    r5.load("tone")
+    check("load/a registered path reaches Agent unchanged", _built[0], ("/tmp/laya-papers", None))
+    check("load/a registered (repo, subfolder) pair reaches Agent", _built[1], ("acme/laya-tone", "v2"))
+    check("load/registered checkpoints are resident like built-ins", r5.loaded, ["papers", "tone"])
+    r5.preload(["papers", "english"])
+    check("load/preload accepts registered names", "english" in r5.loaded and "papers" in r5.loaded, True)
+    r5.unload("papers")
+    check("load/unload accepts registered names", "papers" in r5.loaded, False)
+finally:
+    _agent_for_registry.Agent = _prev_agent
+
+
+# A refused register() leaves the router as it was.
+_at = Router(models={"a": "/a", "b": "/b"})
+try:
+    _at.register("Bad/Name", "/x", description="x")
+    _at_raised = False
+except ValueError:
+    _at_raised = True
+check("register/refused call raises", _at_raised, True)
+check("register/refused call leaves no checkpoint", ("bad/name" in _at.models, "bad/name" in _at.descriptions), (False, False))
+_at2 = Router(models={"a": "/a"})
+try:
+    _at2.register("a", 42)
+except TypeError:
+    pass
+check("register/refused call keeps the old source", _at2.registered["a"]["source"], "/a")
+
+# An explicit `sha256_digests[name] = None` is a present entry that opts that checkpoint out of
+# digest checks; a refused register() must restore it, not drop it (dropping it would hand the
+# checkpoint back to the environment's digest map).
+_at3 = Router(models={"a": "/a"}, sha256_digests={"a": None})
+try:
+    _at3.register("a", 42)
+    check("register/refused call raises on a bad source", False, True)
+except TypeError:
+    check("register/refused call raises on a bad source", True, True)
+check("register/refused call keeps an opted-out digest entry", ("a" in _at3.sha256_digests, _at3.sha256_digests.get("a", "gone")),
+      (True, None))
+check("register/refused call keeps the old source after a digest opt-out", _at3.models["a"], "/a")
+
+# unregister() removes a registered name everywhere.
+_rp = Router(models={"a": "/a", "b": "/b"})
+_rp.descriptions["a"] = "A"
+_rp.sha256_digests["a"] = None
+_rp.revisions["a"] = "main"
+_rp.attach("a", object())
+_rp.unregister("a")
+check("unregister/removes the name everywhere",
+      ("a" in _rp.models, "a" in _rp.descriptions, "a" in _rp.sha256_digests,
+       "a" in _rp.revisions, "a" in _rp.loaded, "a" in _rp.registered), (False,) * 6)
+check("unregister/others are untouched", sorted(_rp.registered), ["b"])
+for _bad in ("english", "ml", "never-registered"):
+    try:
+        _rp.unregister(_bad)
+        check("unregister/%s refused" % _bad, False, True)
+    except ValueError:
+        check("unregister/%s refused" % _bad, True, True)
+_rp.register("a", "/a")
+check("unregister/the name can be registered again", "a" in _rp.registered, True)
+
+# Routing while another thread re-registers and unregisters never fails or answers from a torn state.
+_rc = Router(models={"a": "/a"})
+_bad = []
+
+
+def _churn():
+    for _ in range(40):
+        _rc.register("a", "/a")
+        _rc.register("c", "/c")
+        _rc.unregister("c")
+
+
+def _route():
+    for _ in range(200):
+        try:
+            _got = _rc.route(_CLAIM, model="a").model
+            if _got != "a":
+                _bad.append(_got)
+            _rc.registered
+            try:
+                _rc.route(_CLAIM, model="c")
+            except ValueError:      # unregistered at that instant
+                pass
+        except Exception as exc:  # noqa: BLE001
+            _bad.append(exc)
+
+
+_th = [threading.Thread(target=_churn)] + [threading.Thread(target=_route) for _ in range(3)]
+for _t in _th:
+    _t.start()
+for _t in _th[1:]:
+    _t.join()
+_th[0].join()
+check("register+unregister while routing stay consistent", _bad[:3], [])
+
+
+def _swallow(fn, *args):
+    try:
+        fn(*args)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _test_unregister_during_build_leaves_no_zombie():
+    """unregister waits for a build already in flight and leaves nothing under the dropped name."""
+    import laya.agent as _agent_mod
+    started, release = threading.Event(), threading.Event()
+
+    class _Slow:
+        def __init__(self, *args, **kwargs):
+            started.set()
+            release.wait(5)
+
+    old = _agent_mod.Agent
+    _agent_mod.Agent = _Slow
+    try:
+        r = Router(models={"tone": "/tone"})
+        outcome = []
+
+        def _load():
+            try:
+                outcome.append(r.load("tone"))
+            except ValueError as e:
+                outcome.append(e)
+
+        loader = threading.Thread(target=_load, daemon=True)
+        loader.start()
+        started.wait(2)
+        _timer = threading.Timer(0.3, release.set)
+        _timer.start()
+        t0 = _time.perf_counter()
+        r.unregister("tone")
+        waited = _time.perf_counter() - t0
+        loader.join(2)
+        _timer.cancel()
+        return (waited >= 0.2, loader.is_alive(), len(outcome) == 1,
+                "tone" in r.loaded, "tone" in r.models, "tone" in r._agents, "tone" in r._order,
+                "tone" in r._loading)
+    finally:
+        release.set()
+        _agent_mod.Agent = old
+
+
+check("unregister/a build in flight is waited for and leaves nothing behind",
+      _test_unregister_during_build_leaves_no_zombie(),
+      (True, False, True, False, False, False, False, False))
+
+# The default checkpoint cannot be unregistered, and the router keeps routing.
+_rd = Router(models={"papers": "/x"}, default="papers")
+try:
+    _rd.unregister("papers")
+    check("unregister/the default is refused", False, True)
+except ValueError as _e:
+    check("unregister/the default is refused", "default" in str(_e), True)
+check("unregister/a refused default still routes", _rd.route("12345").model, "papers")
+
+
+# Re-registering a name with a new source unloads the resident Agent; the same source does not.
+class _EvictLog:
+    def __init__(self):
+        self.evicts = []
+
+    def on_evict(self, ctx):
+        self.evicts.append(ctx.model)
+
+
+_log = _EvictLog()
+_rr = Router(hooks=[_log])
+_rr.attach("papers", _Stub("papers"))
+_rr.register("papers", "/y")
+check("register/a new source unloads the resident agent", "papers" in _rr.loaded, False)
+check("register/a new source fires on_evict", _log.evicts, ["papers"])
+_rr.attach("papers", _Stub("papers"))
+_rr.register("papers", "/y")
+check("register/the same source keeps the resident agent", "papers" in _rr.loaded, True)
+check("register/the same source fires no on_evict", _log.evicts, ["papers"])
+_rr.register("fresh", "/z")
+check("register/a new name unloads nothing", _log.evicts, ["papers"])
 
 
 # --------------------------------------------------------------------- report

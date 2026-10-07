@@ -7,6 +7,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import textwrap
@@ -25,7 +26,8 @@ from tokenizers.models import WordLevel  # noqa: E402
 from transformers import BertConfig, BertModel, PreTrainedTokenizerFast  # noqa: E402
 
 from laya import load  # noqa: E402
-from laya.common import DecisionModel, QTYPES  # noqa: E402
+from laya.calibrate import records_from_labeled  # noqa: E402
+from laya.common import DecisionModel, QTYPES, TEMP_MIN, TEMP_MAX  # noqa: E402
 
 
 def export_notebook_config(cfg, fitted_temps, output_dir):
@@ -46,6 +48,46 @@ def export_notebook_config(cfg, fitted_temps, output_dir):
         "os": os, "json": json,
     })
     return json.loads((output_dir / "rl_agent_config.json").read_text())
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _runnable_source(rel):
+    """What a fine-tuning entry point actually executes: its %%writefile cells for a
+    notebook, the file itself for a script."""
+    if rel.endswith(".ipynb"):
+        cells = json.loads((ROOT / rel).read_text(encoding="utf-8"))["cells"]
+        return "".join("".join(c["source"]) for c in cells
+                       if "".join(c["source"]).startswith("%%writefile "))
+    return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def _temperature_fitters():
+    """Every notebook or training script that still owns a fit clamping `exp()` of a
+    log-temperature.
+
+    Walks the tree rather than listing the known entry points, so a new script that copies
+    the pattern is held by the same check. Matches on the clamp of an `.exp()` because that
+    is the one shape these share; a fit that stops clamping is reported by the non-empty
+    assertion in the test rather than passing unnoticed.
+
+    Entry points that call `laya.train.finetune` are absent by design: their fit is
+    `laya.calibrate.fit_one_temperature`, which ends in `clamp_temperature(fitted, TEMP_MIN,
+    TEMP_MAX)` -- the same bounds, held by tests/test_calibrate.py. Their delegation is held
+    by tests/test_finetune_entrypoints.py.
+    """
+    found = []
+    for base in ("notebooks", "research/scripts"):
+        for path in sorted((ROOT / base).rglob("*")):
+            if path.suffix not in (".py", ".ipynb") or not path.is_file():
+                continue
+            rel = path.relative_to(ROOT).as_posix()
+            text = _runnable_source(rel)
+            for match in re.finditer(r"^def (\w+)\(.*?(?=^\S|\Z)", text, re.M | re.S):
+                if re.search(r"torch\.clamp\(\s*\w+\.exp\(\)", match.group(0)):
+                    found.append((rel, match.group(1), match.group(0)))
+    return found
 
 
 class CalibrationPersistenceTests(unittest.TestCase):
@@ -163,6 +205,58 @@ class CalibrationPersistenceTests(unittest.TestCase):
         self.cfg.pop("temperature")
         self.write_config()
         self.assert_inference_temperatures({(t, 2): 1.0 for t in QTYPES})
+
+    def test_records_from_labeled_runs_on_a_loaded_agent(self):
+        # `Agent._forward` turns the logits straight into numpy, which fails on a tensor that
+        # tracks gradients. The stand-in agents in test_calibrate.py return numpy and cannot see it.
+        self.write_config()
+        with patch("huggingface_hub.snapshot_download", side_effect=AssertionError("unexpected download")):
+            agent = load(str(self.checkpoint), device="cpu")
+        questions = {"flag": {"type": "noul", "instructions": "hello"}}
+        records = records_from_labeled(agent, [("hello", questions, {"flag": [0.0, 1.0]})])
+        self.assertEqual(len(records), 1)
+        qtype, logits, target, k = records[0]
+        self.assertEqual((qtype, k), (QTYPES["noul"], 2))
+        self.assertEqual(logits.shape, (2,))
+        self.assertEqual(target.tolist(), [0.0, 1.0])
+
+    def test_every_fine_tuning_fit_clamps_to_common_bounds(self):
+        # #642 fixed this for the Kaggle notebook, which still owns a fit of its own. The
+        # Apple Silicon script and research/scripts/finetune_single_device.py used to keep
+        # `torch.clamp(..., 0.1, 10.0)` beside it, so a fit either of them persisted could
+        # land outside `[TEMP_MIN, TEMP_MAX]` and be re-clamped when the checkpoint is loaded
+        # -- the calibration measured during training is then not the one that gets served.
+        # Both now call `laya.train.finetune` and take those bounds from
+        # `laya.calibrate.fit_one_temperature`, so what is left to sweep is the fitter that
+        # is still hand-rolled. Derived from the tree rather than listed, so a script that
+        # copies the pattern is held too.
+        fitters = _temperature_fitters()
+        # Non-vacuity: the loop below asserts nothing when the sweep matches nothing, and the
+        # sweep matching nothing is exactly the state a converging tree walks into. Name the
+        # one entry point that still owns a fit, so losing its clamp -- or superseding this
+        # guard outright -- is a failure to read, not a silent pass.
+        self.assertIn(
+            "notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb",
+            [rel for rel, _, _ in fitters],
+            "no hand-rolled clamped fit left to sweep; if every entry point now goes through "
+            "laya.calibrate, retire or redirect this sweep rather than leaving it matching nothing")
+
+        # These two drive the LBFGS solution past TEMP_MAX and below TEMP_MIN respectively,
+        # so a range wider than the runtime's is caught in both directions.
+        peaked = [([10.0, 0.0], [0.5, 0.5]) for _ in range(20)]
+        dipped = [([0.0, 4.0], [0.0, 1.0]) for _ in range(20)]
+
+        for rel, name, body in fitters:
+            with self.subTest(source=rel, function=name):
+                scope = {"torch": torch, "TEMP_MIN": TEMP_MIN, "TEMP_MAX": TEMP_MAX}
+                exec(compile(ast.parse(textwrap.dedent(body)), rel, "exec"), scope)
+                fit = scope[name]
+                for label, sel in (("peaked", peaked), ("dipped", dipped)):
+                    fitted = fit(sel)
+                    self.assertGreaterEqual(
+                        fitted, TEMP_MIN, "%s: %s(%s) fitted %.4g" % (rel, name, label, fitted))
+                    self.assertLessEqual(
+                        fitted, TEMP_MAX, "%s: %s(%s) fitted %.4g" % (rel, name, label, fitted))
 
 
 if __name__ == "__main__":

@@ -205,7 +205,7 @@ _src = inspect.getsource(_agent.Agent.__init__)
 check_true("fallback/flag is initialised", "fell_back_from = fell_back_why = None" in _src)
 check_true("fallback/warns only on a real fallback", "if fell_back_from is not None:" in _src)
 check_true("fallback/reports the underlying reason", "Reason: %s" in _src)
-check_true("fallback/keeps the actionable advice", "download.pytorch.org/whl/nightly" in _src)
+check_true("fallback/keeps the actionable advice", "download.pytorch.org/whl/cu130" in _src)
 check_true("fallback/no bare cuda probe for the warning",
            "torch.cuda.is_available() or getattr(torch.version" not in _src)
 
@@ -294,6 +294,16 @@ for label, qdef in [
     # value, which a Jev client refuses to parse (#302)
     ("score with a null level", {"type": "score", "instructions": "How urgent?",
                                  "criteria": ["low", None, "high"]}),
+    # the same defect one question type over (#302): a null *label* is option text AND the answer
+    # key, and `_to_internal` normalises the list to `{label: None}`, so the option read "None"
+    # while its answer key and probabilities key were the JSON string "null" -- a client cannot
+    # tell that apart from the string `"null"`, and the key is unreachable from the response
+    ("choice with a null label", {"type": "choice", "instructions": "Which team?",
+                                  "criteria": ["billing", None]}),
+    ("choice with a null label first", {"type": "choice", "instructions": "Which team?",
+                                        "criteria": [None, "billing"]}),
+    ("choice with only a null label", {"type": "choice", "instructions": "Which team?",
+                                       "criteria": [None]}),
     ("choice with labels", {"type": "choice", "instructions": "Which team?",
                             "criteria": ["billing", "tech"],
                             "labels": {"false": "B", "true": "A"}}),
@@ -321,7 +331,40 @@ for label, qdef in [
                                 "criteria": {"true": "y", "false": "n", "maybe": "?"}}),
     ("unknown type", {"type": "bool", "instructions": "Is it spam?"}),
     ("missing type", {"instructions": "Is it spam?"}),
+    ("list type", {"type": [], "instructions": "Is it spam?"}),
+    ("dict type", {"type": {}, "instructions": "Is it spam?"}),
     ("no instructions", {"type": "noul"}),
+    ("instructions is None", {"type": "noul", "instructions": None}),
+    ("instructions is empty string", {"type": "noul", "instructions": ""}),
+    ("instructions is whitespace", {"type": "noul", "instructions": "   "}),
+    ("instructions is empty list", {"type": "noul", "instructions": []}),
+    ("instructions is empty dict", {"type": "noul", "instructions": {}}),
+    ("instructions is non-container object", {"type": "noul", "instructions": set()}),
+    # A criteria list is normalised to `{label: None}`, so its labels are the answer keys. Two
+    # entries that land on one key scored fewer options than the caller wrote and returned fewer
+    # probabilities than their list, without a word. Python collapses keys that compare equal, so
+    # `[1, 1.0]` and `[True, 1]` collapse like an exact repeat, and an unhashable label raised
+    # `TypeError: cannot use 'tuple' as a dict key` from `_to_internal`, three frames down.
+    ("choice with a duplicate label", {"type": "choice", "instructions": "Which team?",
+                                       "criteria": ["billing", "billing", "tech"]}),
+    ("choice with 1 and 1.0 labels", {"type": "choice", "instructions": "Which team?",
+                                      "criteria": [1, 1.0]}),
+    ("choice with True and 1 labels", {"type": "choice", "instructions": "Which team?",
+                                       "criteria": [True, 1]}),
+    ("choice with an unhashable label", {"type": "choice", "instructions": "Which team?",
+                                         "criteria": [("billing", ["tech"]), "sales"]}),
+    # Hashable but not a scalar: the old deny-list (`list`, `dict`, `set`, `bytearray`) let these
+    # through to `_to_internal`, whose `{label: None}` key survived to `json.dumps` and raised
+    # `TypeError: keys must be str, int, float, bool or None, not tuple` -- a 500 "inference failed"
+    # over HTTP for what is a caller error, and an unusable answer key in-process.
+    ("choice with a tuple label", {"type": "choice", "instructions": "Which team?",
+                                   "criteria": [("billing", "tech"), "sales"]}),
+    ("choice with a frozenset label", {"type": "choice", "instructions": "Which team?",
+                                       "criteria": [frozenset({"billing", "tech"}), "sales"]}),
+    ("choice with a bytes label", {"type": "choice", "instructions": "Which team?",
+                                   "criteria": [b"billing", "sales"]}),
+    ("choice with a complex label", {"type": "choice", "instructions": "Which team?",
+                                     "criteria": [1 + 2j, "sales"]}),
 ]:
     try:
         agent.system_one(STATE, {"q": qdef})
@@ -339,10 +382,58 @@ try:
 except ValueError as e:
     check_true("rejected/score null level names the level", "level 1" in str(e), str(e))
 
+# a colliding label names the repeat and the label it repeats, so a twenty-option question can be
+# fixed without guessing which pair collided
+try:
+    agent.system_one(STATE, {"q": {"type": "choice", "instructions": "Which team?",
+                                   "criteria": ["billing", "tech", "billing"]}})
+    FAIL.append("rejected/duplicate choice label names both: no error raised")
+except ValueError as e:
+    check_true("rejected/duplicate choice label names both",
+               "label 2" in str(e) and "label 0" in str(e) and "billing" in str(e), str(e))
+
+# the option count the caller wrote is preserved, so the guard must not reject distinct labels
+try:
+    out = agent.system_one(STATE, {"q": {"type": "choice", "instructions": "Which team?",
+                                         "criteria": ["billing", "tech", "sales"]}})
+    check("rejected/distinct labels still answer", len(out["answers"]["q"]["probabilities"]), 3)
+except Exception as e:  # noqa: BLE001
+    FAIL.append("rejected/distinct labels still answer: %s" % e)
+# ...and a null choice label names the label, with the reason it is refused
+try:
+    agent.system_one(STATE, {"q": {"type": "choice", "instructions": "Which team?",
+                                   "criteria": ["billing", None]}})
+    FAIL.append("rejected/choice null label names the label: no error raised")
+except ValueError as e:
+    check_true("rejected/choice null label names the label", "label 1" in str(e), str(e))
+    check_true("rejected/choice null label says why it is refused",
+               "answer key" in str(e), str(e))
+
+# an empty-string label is NOT the same case: unlike a null it round-trips, so it stays accepted
+# (`render_options` renders it as "", the answer key is "", and `criteria[""]` finds it)
+_empty_label = None
+try:
+    _empty_label = agent.system_one(STATE, {"q": {"type": "choice", "instructions": "Which team?",
+                                                  "criteria": ["billing", ""]}})["answers"]["q"]
+except Exception as e:  # noqa: BLE001
+    FAIL.append("accepted/an empty-string label raised %r" % e)
+if _empty_label is not None:
+    check_true("accepted/an empty-string label answers", _empty_label["choice"] in ("billing", ""),
+               str(_empty_label.get("choice")))
+    check_true("accepted/its probabilities keys match the labels it sent",
+               sorted(_empty_label["probabilities"]) == ["", "billing"],
+               str(sorted(_empty_label["probabilities"])))
+
 # the same questions through the public entry point, not only the method under it
 router = Router()
 router.attach("english", agent)
-for label, qdef in (("choice without criteria", {"type": "choice", "instructions": "x"}),):
+for label, qdef in (
+    ("choice without criteria", {"type": "choice", "instructions": "x"}),
+    ("list type", {"type": [], "instructions": "Is it spam?"}),
+    ("dict type", {"type": {}, "instructions": "Is it spam?"}),
+    ("instructions is None", {"type": "noul", "instructions": None}),
+    ("instructions is empty string", {"type": "noul", "instructions": ""}),
+):
     try:
         router.predict(STATE, {"q": qdef}, model="english")
         FAIL.append("rejected/router %s: no error raised" % label)
@@ -360,6 +451,33 @@ except ValueError as e:
     check_true("rejected/second question names it", "'broken'" in str(e), str(e))
 except Exception as e:
     FAIL.append("rejected/second question: %s instead of ValueError: %s" % (type(e).__name__, e))
+
+# A malformed type must name the question and the allowed values, including when it is second.
+# Lists and dicts used to fail in the type lookup with a bare "unhashable type" TypeError (#707).
+for bad_type in ([], ["noul"], {}, {"name": "noul"}, None, 7, True, "bogus"):
+    name = "rejected/question type %r" % (bad_type,)
+    try:
+        agent.system_one(STATE, {
+            "ok": {"type": "noul", "instructions": "Is it urgent?"},
+            "refund": {"type": bad_type, "instructions": "Is a refund requested?"},
+        })
+        FAIL.append("%s: no error raised" % name)
+    except ValueError as e:
+        check(name, str(e), "question 'refund': unknown type %r; use one of ['choice', 'noul', 'score']"
+              % (bad_type,))
+    except Exception as e:
+        FAIL.append("%s: %s instead of ValueError: %s" % (name, type(e).__name__, e))
+
+# every question id is validated (must be non-empty string)
+for bad_qid in (None, "", "   "):
+    name = "rejected/question id %r" % (bad_qid,)
+    try:
+        agent.system_one(STATE, {bad_qid: {"type": "noul", "instructions": "Is it urgent?"}})
+        FAIL.append("%s: no error raised" % name)
+    except ValueError as e:
+        check_true("%s names question id" % name, "question id" in str(e), str(e))
+    except Exception as e:
+        FAIL.append("%s: %s instead of ValueError: %s" % (name, type(e).__name__, e))
 
 # ...and the shapes that are valid still answer, so this is not validation-only coverage
 GOOD = {
@@ -486,6 +604,57 @@ for room, kept in [(0, []), (2, ["two", "three"]), (10, ["one", "two", "three"])
     ids = build_sequence(_tok, "one two three", _q, _full + room, truncate_left=True)[0]
     check("truncate_left/room=%d keeps the tail" % room, ids[_full - 1:],
           [_tok.vocab[w] for w in kept] + [_tok.sep_token_id])
+
+
+# --------------------------------------------------------------- render_criterion's separators
+# The docstring claimed structured values become "compact JSON". Compact JSON is
+# separators=(",", ":"); the implementation passes separators=(", ", ": "), the default spelling.
+# The docstring now names the separators, and this gate holds it to the bytes the code emits.
+import ast  # noqa: E402
+
+_common_src_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "laya", "common.py")
+with open(_common_src_path) as _common_f:
+    _common_src = _common_f.read()
+_criterion_doc = ""
+for _node in ast.parse(_common_src).body:
+    if isinstance(_node, ast.FunctionDef) and _node.name == "render_criterion":
+        _criterion_doc = ast.get_docstring(_node) or ""
+check_true("criterion/docstring found", len(_criterion_doc) > 0, "no docstring on render_criterion")
+check_true("criterion/docstring drops the compact-JSON claim",
+           "compact" not in _criterion_doc.lower(),
+           "the pre-fix wording is still on the function: %r" % _criterion_doc)
+check_true("criterion/docstring names the member separator",
+           '", "' in _criterion_doc,
+           "the docstring must spell the separator the code passes: %r" % _criterion_doc)
+check_true("criterion/docstring names the key separator",
+           '": "' in _criterion_doc,
+           "the docstring must spell the separator the code passes: %r" % _criterion_doc)
+check_true("criterion/docstring still promises single-line JSON",
+           "single-line JSON" in _criterion_doc,
+           "the one property 'compact' was reaching for must stay stated: %r" % _criterion_doc)
+
+# The implementation's own spelling, read out of the AST rather than retyped here.
+_criterion_sep = None
+for _fn in [n for n in ast.parse(_common_src).body
+            if isinstance(n, ast.FunctionDef) and n.name == "render_criterion"]:
+    for _call in ast.walk(_fn):
+        if isinstance(_call, ast.Call) and getattr(_call.func, "attr", None) == "dumps":
+            for _kw in _call.keywords:
+                if _kw.arg == "separators":
+                    _criterion_sep = tuple(ast.literal_eval(_e) for _e in _kw.value.elts)
+check("criterion/code passes the default separators", _criterion_sep, (", ", ": "))
+
+# Live witness: multi-member values carry the space-padded separators, so the docstring's spelling
+# is what the bytes look like -- and a genuinely compact dump would differ.
+_two = render_criterion({"a": 1, "b": 2})
+check("criterion/dict renders default separators", _two, '{"a": 1, "b": 2}')
+check_true("criterion/dict is not compact",
+           _two != json.dumps({"a": 1, "b": 2}, separators=(",", ":")),
+           "the bytes match a compact dump, so the docstring should say compact: %r" % _two)
+check_true("criterion/dict stays on one line", "\n" not in _two, repr(_two))
+check("criterion/list renders default separators", render_criterion(["a", "b", "c"]),
+      '["a", "b", "c"]')
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))

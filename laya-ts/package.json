@@ -1,6 +1,7 @@
 {
   "name": "laya-ts",
   "version": "0.1.0",
+  "description": "Fast, local, on-device decision engine (TypeScript runtime)",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -8,12 +9,32 @@
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.json && node -e \"require('node:fs').copyFileSync('../LICENSE', 'LICENSE')\"",
     "test": "vitest",
     "test:package": "node --test tests/package-e2e.mjs",
     "prepack": "npm run build"
   },
-  "files": ["dist", "scripts"],
-  "devDependencies": { "typescript": "^5.6.0", "vitest": "^2.1.0" },
+  "files": ["dist", "scripts/export_onnx.py"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NandhaKishorM/laya.git",
+    "directory": "laya-ts"
+  },
+  "keywords": [
+    "decision-model",
+    "system-one",
+    "routing",
+    "guardrails",
+    "moderation",
+    "triage",
+    "onnx"
+  ],
+  "author": "Convai Innovations",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/NandhaKishorM/laya/issues"
+  },
+  "homepage": "https://nandhakishorm.github.io/laya/",
+  "devDependencies": { "@types/node": "^26.6.3", "typescript": "^7.0.2", "vitest": "^5.0.1" },
   "optionalDependencies": { "onnxruntime-node": "^1.20.0", "onnxruntime-web": "^1.20.0" }
 }

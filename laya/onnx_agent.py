@@ -1,26 +1,39 @@
+import copy
 import json
 import os
 import threading
 import time
 import warnings
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
-from laya.hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from laya.hooks import (
+    HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
+    validate_timeout,
+)
+from laya.revisions import resolve_revision, snapshot_revision, verify_digests
 from laya.common import (
     QTYPES,
     answer_confidence,
     build_sequence,
+    collapsed_options,
     collate_items,
     confidence_from_probs,
+    encode_text,
+    render_criterion,
     render_options,
+    resolve_lang_temperatures,
     serialize_state,
+    window_batch_cap,
+    window_budget,
     temp_bucket,
+    unpermute_probs,
     TEMP_MIN,
     TEMP_MAX,
     clamp_temperature,
 )
+from laya.confidence import apply_confidence_gate, check_min_confidence
 
 
 class ONNXAgent(HookRegistry):
@@ -30,6 +43,7 @@ class ONNXAgent(HookRegistry):
     # `hooks`/`_hooks_mutex` come from HookRegistry.
     hooks_raise = True
     hooks_concurrent = True
+    hooks_timeout = None
     _hooks_lock = None
     model_id = None
 
@@ -37,12 +51,18 @@ class ONNXAgent(HookRegistry):
         self,
         model_id_or_path: str,
         onnx_path: str = "laya.onnx",
+        token: Optional[str] = None,
         subfolder: Optional[str] = None,
+        revision: Optional[str] = None,
+        expected_sha256: Optional[Dict[str, str]] = None,
         hooks=None,
         on_predict_start=None,
         on_predict_end=None,
         hooks_raise: bool = True,
         hooks_concurrent: bool = True,
+        hooks_timeout: Optional[float] = None,
+        lang_temperatures: Optional[Dict[str, Dict[str, Any]]] = None,
+        calibration: Optional[str] = None,
     ):
         """Load a Laya agent backed by ONNX Runtime.
 
@@ -50,16 +70,32 @@ class ONNXAgent(HookRegistry):
             model_id_or_path: HuggingFace Hub ID or local path to the original PyTorch checkpoint
                               (used to load the tokenizer and config).
             onnx_path: Path to the exported .onnx file.
+            token: Optional HuggingFace token for a private or gated checkpoint; falls back
+                   to `$HF_TOKEN`, exactly as `Agent` does. Only the tokenizer and config are
+                   fetched -- the graph itself is the local `onnx_path`.
             subfolder: Optional subfolder if downloading from a repo bundle.
+            revision: Optional Hub revision (commit SHA/branch/tag). When omitted,
+                      huggingface_hub's normal default and existing offline cache are used.
+            expected_sha256: Optional {path relative to the checkpoint dir: hexdigest}
+                      verified before any checkpoint file is parsed; opt-in, and applies
+                      to local directories too. A missing artifact raises
+                      `FileNotFoundError` and a digest mismatch raises `ValueError`; either
+                      error refuses the load.
             hooks (HookArg): Opt-in prediction hooks; see `laya.hooks`.
             on_predict_start (PredictHookArg): An opt-in start hook, run before inference.
             on_predict_end (PredictHookArg): An opt-in end hook, run after inference.
             hooks_raise: When False, a failing hook warns and inference continues.
             hooks_concurrent: When False, hooks are serialised with a lock.
+            hooks_timeout: Bounds each hook call in seconds; None means no limit.
+            lang_temperatures: Optional per-language temperature overrides, keyed by language
+                               code, each `{"temperature": [3 floats], "temperature_by_options": {}}`.
+                               Applied when a `lang=` is passed to `system_one`/`predict`, mirroring
+                               the PyTorch `Agent`; a cross-backend swap otherwise loses calibration.
         """
         self.hooks = normalise_hooks(hooks, on_predict_start, on_predict_end)
         self.hooks_raise = bool(hooks_raise)
         self.hooks_concurrent = bool(hooks_concurrent)
+        self.hooks_timeout = None if hooks_timeout is None else validate_timeout(hooks_timeout)
         self._hooks_lock = threading.RLock() if not hooks_concurrent else None
         self._hooks_mutex = threading.Lock()
         self.model_id = model_id_or_path
@@ -68,6 +104,7 @@ class ONNXAgent(HookRegistry):
         from transformers import AutoTokenizer
 
         model_dir = model_id_or_path
+        self.revision: Optional[str] = None
         if not os.path.exists(model_dir):
             if model_id_or_path.startswith(("/", "./", "../")) or os.path.isabs(model_id_or_path):
                 raise FileNotFoundError(
@@ -75,13 +112,18 @@ class ONNXAgent(HookRegistry):
                 )
             from huggingface_hub import snapshot_download
 
+            revision = resolve_revision(model_id_or_path, revision)
             prefix = f"{subfolder}/" if subfolder else ""
             kw = {
+                "token": token or os.environ.get("HF_TOKEN") or None,
                 "allow_patterns": [prefix + name for name in (
                     "rl_agent_config.json", "tokenizer/*", "encoder/*",
                 )],
             }
+            if revision:
+                kw["revision"] = revision
             model_dir = snapshot_download(model_id_or_path, **kw)
+            self.revision = snapshot_revision(model_dir) or revision
 
         if subfolder:
             model_dir = os.path.join(model_dir, subfolder)
@@ -89,6 +131,9 @@ class ONNXAgent(HookRegistry):
                 raise FileNotFoundError(
                     f"Subfolder {subfolder!r} not found in {model_id_or_path!r}."
                 )
+
+        # Verify integrity before any file in the checkpoint is parsed or executed.
+        verify_digests(model_dir, expected_sha256, onnx_path=onnx_path)
 
         cfg_path = os.path.join(model_dir, "rl_agent_config.json")
         if not os.path.exists(cfg_path):
@@ -98,6 +143,11 @@ class ONNXAgent(HookRegistry):
 
         with open(cfg_path) as f:
             self.cfg = json.load(f)
+        if self.cfg.get("option_layout", "sequential") != "sequential":
+            # The exported graph takes the five sequential-layout inputs only, so it would run this
+            # checkpoint without the masks it was trained with.
+            raise ValueError("option_layout=%r is not supported by the ONNX runtime; load this "
+                             "checkpoint with laya.Agent" % (self.cfg.get("option_layout"),))
 
         if not os.path.exists(onnx_path):
             raise FileNotFoundError(
@@ -143,6 +193,13 @@ class ONNXAgent(HookRegistry):
         self.temperature = [clamp_temperature(t) for t in self.temperature_raw]
         self.temperature_by_options = {k: clamp_temperature(v)
                                        for k, v in self.temperature_by_options_raw.items()}
+        # Optional histogram-binning map installed by `load_calibration`; absent/None means
+        # answer_confidence is the temperature-scaled one, same as the PyTorch Agent.
+        self.binning_map = None
+        # Per-language temperature overrides, through the same helper the PyTorch Agent uses, so a
+        # caller can hand the same `lang_temperatures` to either backend and read the same
+        # confidence -- including the same error for the same malformed input.
+        self.lang_temperatures = resolve_lang_temperatures(lang_temperatures, self.temperature_raw)
         entries = [(k, v, self.temperature_by_options[k]) for k, v in self.temperature_by_options_raw.items()]
         entries += [("temperature[%d]" % i, t, self.temperature[i]) for i, t in enumerate(self.temperature_raw)]
         rejected = []
@@ -161,6 +218,15 @@ class ONNXAgent(HookRegistry):
                 "confidence; clamping %s. Treat confidence from the affected buckets as uncalibrated."
                 % (TEMP_MIN, TEMP_MAX, ", ".join(rejected)),
                 RuntimeWarning, stacklevel=2)
+        if calibration:
+            self.load_calibration(calibration)
+
+    def load_calibration(self, path: str) -> None:
+        """Read a JSON map written by `save_calibration` onto this agent."""
+        from .calibrate import apply_calibration_payload
+        with open(path) as f:
+            payload = json.load(f)
+        apply_calibration_payload(self, payload)
 
     @staticmethod
     def _to_internal(qdef: Dict) -> Dict:
@@ -177,31 +243,141 @@ class ONNXAgent(HookRegistry):
         q = {"t": t, "ins": ins, "crit": crit}
         if "labels" in qdef:
             q["labels"] = qdef["labels"]
+        if "option_order" in qdef:
+            q["option_order"] = [int(i) for i in qdef["option_order"]]
         return q
 
     def system_one(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
+                   lang: Optional[str] = None,
                    hooks=None, on_predict_start=None, on_predict_end=None,
                    hooks_raise: Optional[bool] = None,
+                   hooks_timeout: Optional[float] = None,
                    max_len: Optional[int] = None,
-                   head_max_len: Optional[int] = None) -> Dict[str, Any]:
-        """Evaluate typed questions, running any opt-in hooks around the inference."""
+                   head_max_len: Optional[int] = None,
+                   min_confidence: Optional[float] = None) -> Dict[str, Any]:
+        """Evaluate typed questions across state in one ONNX Runtime session run.
+
+        `lang` selects a per-language temperature override (see `lang_temperatures`), matching the
+        PyTorch `Agent.system_one` signature so either backend is a drop-in for the other.
+
+        Defined in terms of `predict_batch`, exactly as the PyTorch `Agent.system_one` is, so the
+        single-state and batched paths cannot drift apart.
+
+        Args:
+            state: Text string, JSON dict, or conversation turn list.
+            questions: Question definitions, with the shapes `Agent.system_one` accepts.
+            lang: Per-language temperature override (see `lang_temperatures`).
+            hooks (HookArg): Per-call hooks, appended after any installed on the agent.
+            on_predict_start (PredictHookArg): A per-call start hook. It may rewrite the
+                    state/questions or call `ctx.skip(...)` to short-circuit inference.
+            on_predict_end (PredictHookArg): A per-call end hook. It may rewrite the results.
+            hooks_raise: Override the agent's `hooks_raise` for this call.
+            hooks_timeout: Override the agent's `hooks_timeout` for this call.
+            max_len: Override the config's `max_len` for this call.
+            head_max_len: Override the config's `head_max_len` for this call.
+            min_confidence: Opt-in abstention threshold on `answer_confidence` (#361); an answer
+                    below it is returned flagged with `low_confidence: True`.
+
+        Returns:
+            Dictionary with answers, probabilities, calibrated confidence, and token usage.
+
+        To score many states at once, see `predict_batch`, which shares session runs across them.
+        """
+        return self.predict_batch([state], questions, lang=lang, hooks=hooks,
+                                  on_predict_start=on_predict_start,
+                                  on_predict_end=on_predict_end, hooks_raise=hooks_raise,
+                                  hooks_timeout=hooks_timeout,
+                                  max_len=max_len, head_max_len=head_max_len,
+                                  min_confidence=min_confidence)[0]
+
+    def predict_batch(self, states: List[Union[str, dict, list]], questions: Dict[str, Dict[str, Any]],
+                      batch_size: Optional[int] = None, lang: Optional[str] = None,
+                      hooks=None, on_predict_start=None, on_predict_end=None,
+                      hooks_raise: Optional[bool] = None,
+                      hooks_timeout: Optional[float] = None,
+                      max_len: Optional[int] = None,
+                      head_max_len: Optional[int] = None,
+                      sort_by_length: bool = False,
+                      min_confidence: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Evaluate the same questions over many states, sharing ONNX Runtime session runs.
+
+        The throughput path, mirroring `laya.agent.Agent.predict_batch`: `system_one` collates one
+        state's question rows per session run, so N states cost N runs. `predict_batch` collates
+        several states' rows into one run -- or `ceil(len(states) / batch_size)` of them -- which is
+        where ONNX Runtime's own parallelism pays off on CPU.
+
+        Args:
+            states: A list of states (each a text string, JSON dict, or conversation turn list).
+                    The same `questions` are evaluated against every state.
+            questions: Question definitions, exactly as accepted by `system_one`.
+            batch_size: Optional cap on states per session run. `None` sends them all in one run;
+                        set it to bound peak memory when batching many or long states.
+            lang: Per-language temperature override applied to every state; see
+                    `lang_temperatures`.
+            hooks (HookArg): Per-call hooks, appended after any installed on the agent.
+            on_predict_start (PredictHookArg): A per-call start hook. It may rewrite the
+                    states/questions or call `ctx.skip(...)` to short-circuit inference.
+            on_predict_end (PredictHookArg): A per-call end hook. It may rewrite the results.
+            hooks_raise: Override the agent's `hooks_raise` for this call.
+            hooks_timeout: Override the agent's `hooks_timeout` for this call.
+            max_len: Override the config's `max_len` for this call.
+            head_max_len: Override the config's `head_max_len` for this call.
+            sort_by_length: Group similarly sized encoded states within windows of eight batches
+                    to reduce padding, exactly as `Agent.predict_batch` does. Requires an explicit
+                    `batch_size` greater than one and smaller than the number of states; otherwise
+                    it has no effect. Results retain input order. Changing batch shapes can
+                    slightly change floating-point predictions near decision thresholds.
+            min_confidence: Opt-in abstention threshold on `answer_confidence` (#361); answers
+                    below it are returned flagged with `low_confidence: True`.
+
+        Returns:
+            A list of per-state result dicts, each identical in shape to `system_one`'s output and
+            aligned with `states` by index.
+        """
+        mc = check_min_confidence(min_confidence) if min_confidence is not None else None
         active = compose_hooks(self.hooks, hooks, on_predict_start, on_predict_end)
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
-        ctx = PredictContext(states=[state], questions=questions, model=self.model_id, agent=self,
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
+        ctx = PredictContext(states=states, questions=questions, model=self.model_id, agent=self,
                              max_len=max_len, head_max_len=head_max_len)
         try:
-            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
+            states, questions = ctx.states, ctx.questions
             if ctx.results is None:
-                overrides = {}
-                if ctx.max_len is not None:
-                    overrides["max_len"] = ctx.max_len
-                if ctx.head_max_len is not None:
-                    overrides["head_max_len"] = ctx.head_max_len
-                ctx.results = [self._infer(ctx.states[0], ctx.questions, **overrides)]
+                # A start hook may have normalised a bare string/dict into a list; only the value
+                # that survives the hook is validated, as Agent.predict_batch does.
+                if isinstance(states, (str, bytes, dict)):
+                    raise TypeError(
+                        "predict_batch expects a list of states; pass a single state to predict()/system_one()."
+                    )
+                if not isinstance(questions, dict):
+                    raise TypeError(
+                        "questions must be a dict of question id -> definition, got %s"
+                        % type(questions).__name__
+                    )
+                states = list(states)
+                if any(state is None for state in states):
+                    # `serialize_state(None)` is `json.dumps(None)`, so a missing state would
+                    # otherwise be answered as a decision about the literal text "null",
+                    # byte-identical to passing `"null"` and at full confidence.
+                    raise TypeError(
+                        "state must not be None; pass a string, dict, or list"
+                    )
+                if not states:
+                    ctx.results = []
+                else:
+                    overrides: Dict[str, int] = {}
+                    if ctx.max_len is not None:
+                        overrides["max_len"] = ctx.max_len
+                    if ctx.head_max_len is not None:
+                        overrides["head_max_len"] = ctx.head_max_len
+                    ctx.results = self._infer_batch(states, questions, lang=lang,
+                                                    batch_size=batch_size,
+                                                    sort_by_length=sort_by_length, **overrides)
         except BaseException as exc:
             ctx.error = exc
             try:
-                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 exc.__context__ = hook_exc
             raise
@@ -209,89 +385,318 @@ class ONNXAgent(HookRegistry):
             ctx.elapsed_ms = (time.perf_counter() - ctx.started_at) * 1000.0
             if ctx.results is not None:
                 ctx.usage = aggregate_usage(ctx.results)
+                apply_confidence_gate(ctx.results, mc)
             try:
-                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 if ctx.error is not None:
                     ctx.error.__context__ = hook_exc
                 else:
                     raise
-        return ctx.results[0]
+        return ctx.results
 
-    def _infer(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
-               max_len: Optional[int] = None, head_max_len: Optional[int] = None) -> Dict[str, Any]:
-        from .agent import Agent as _Agent
+    def predict_long(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
+                     window: Optional[int] = None, stride: Optional[int] = None,
+                     aggregate: str = "auto", batch_size: Optional[int] = None,
+                     lang: Optional[str] = None,
+                     hooks=None, on_predict_start=None, on_predict_end=None,
+                     hooks_raise: Optional[bool] = None,
+                     hooks_timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Evaluate questions over a state longer than the context window, scanning it in
+        overlapping windows and aggregating per question.
 
+        The ONNX port of `laya.agent.Agent.predict_long`, with the same aggregation rules:
+        `system_one` truncates a state that exceeds `max_len` to a single window, silently
+        dropping the rest. `predict_long` tokenizes the state once, splits it into overlapping
+        token windows, scores every window through `predict_batch` -- so the windows share ONNX
+        Runtime session runs rather than costing one each -- and combines the per-window answers:
+
+          * noul  -> P(true) is the max over windows (the statement holds if any window supports it)
+          * choice-> the answer from the single most-confident window, so a localized signal isn't
+                     out-voted by the many neutral windows a long document is mostly made of
+          * score -> the level from the most-confident window, likewise
+
+        The returned probability/confidence is the deciding window's, **not a calibrated number for
+        the whole document**, for the same reasons the PyTorch docstring gives. Each answer carries
+        `answer["window"]` -- the deciding window's `index`, `token_start`/`token_end` into the
+        tokenized state, and the window `count`.
+
+        A state the questions leave room for is passed straight to `system_one` (identical output),
+        since `system_one` reads it whole; with an explicit `window`, a state that fits that window.
+
+        Args:
+            state: Text string, JSON dict, or conversation turn list.
+            questions: Question definitions, exactly as accepted by `system_one`.
+            window: State tokens per window. Defaults to the per-question state budget
+                    (`max(64, max_len - head_max_len - 8)`; the 64 is a floor). Smaller windows
+                    isolate a localized signal better at the cost of more windows, as in
+                    `Agent.predict_long`.
+            stride: Token step between windows. Defaults to `window // 2` (50% overlap).
+            aggregate: "auto" (the per-type rules above) is the only mode for now.
+            batch_size: Cap on windows per session run, to bound peak memory on very long states.
+            lang: Per-language temperature selection, as in `system_one`.
+            hooks (HookArg): Per-call hooks, appended after any installed on the agent. They
+                    follow `Agent.predict_long`'s contract: they wrap the inference that answers
+                    the state, a start hook that answers with `ctx.skip(...)` gets
+                    `usage["windows"] == 0` and no window attribution, and a rewritten scan is
+                    aggregated without `answer["window"]`.
+            on_predict_start (PredictHookArg): A per-call start hook, as in `system_one`.
+            on_predict_end (PredictHookArg): A per-call end hook, as in `system_one`.
+            hooks_raise: Override the agent's `hooks_raise` for this call.
+            hooks_timeout: Override the agent's `hooks_timeout` for this call.
+
+        Returns a single result dict, the same shape as `system_one`, with `usage["windows"]`
+        added. Across several windows the truncation keys are summed or carried the same way as
+        in `Agent.predict_long`: `truncated` is a window count and `truncated_questions` is the
+        last window's list, so `truncated` can be above 0 while the list is empty.
+        """
+        from .agent import _check_scan_budget, _start_evidence, _with_start_probe
+        from .hooks import aggregate_usage
+
+        hook_kwargs = {"hooks": hooks, "on_predict_start": on_predict_start,
+                       "on_predict_end": on_predict_end, "hooks_raise": hooks_raise,
+                       "hooks_timeout": hooks_timeout}
+        if state is None:
+            raise TypeError("state must not be None; pass a string, dict, or list")
+        if not isinstance(questions, dict):
+            raise TypeError("questions must be a dict of question id -> definition, got %s"
+                            % type(questions).__name__)
+        if aggregate != "auto":
+            raise ValueError("predict_long: only aggregate='auto' is supported")
+        max_len = self.cfg.get("max_len", 512)
+        head_max_len = self.cfg.get("head_max_len", 192)
+        # The same cap the torch `Agent.predict_long` applies, for the same reason: a window wider
+        # than the room these questions leave is re-truncated by `build_sequence` on the way into
+        # `predict_batch`, so its tail reaches no model while `answer["window"]` reports the whole
+        # span -- and once the room falls below the default stride the windows stop overlapping and
+        # leave tokens no window reads at all. `README.md` and `Router.predict_long` document this
+        # contract for both agents, so both have to honour it.
         ids = list(questions.keys())
-        if not ids:
-            return {
-                "model": "laya-rl-agent-onnx",
-                "answers": {},
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            }
+        # Validate before `_to_internal`, which does none: hoisting only `_to_internal` ahead of the
+        # hooks turned the ValueError `_check_question` exists to raise into
+        # `AttributeError: 'NoneType' object has no attribute 'items'` -- verbatim the message its
+        # own docstring says it prevents, and a regression from `main` on this path. The torch
+        # `predict_long` hoists both. `laya.serve` maps ValueError to 422 and anything else to 500.
+        from .agent import Agent as _Agent           # deferred, as `predict_batch` does
+
         for qid in ids:
             _Agent._check_question(qid, questions[qid])
-        items = []
-        max_len = self.cfg.get("max_len", 512) if max_len is None else max_len
-        head_max_len = self.cfg.get("head_max_len", 192) if head_max_len is None else head_max_len
+        internal = {qid: self._to_internal(questions[qid]) for qid in ids}
+        budget, step_default, room = window_budget(self.tok, [internal[qid] for qid in ids], max_len,
+                                                   head_max_len, window=window, stride=stride)
+        # Snapshot the questions the scan was just sized against, BEFORE any start hook can
+        # rewrite them, as the torch `predict_long` does (5f29170). `==` over the caller's mapping
+        # cannot see an in-place rewrite: a hook that adds options to `ctx.questions[q]["criteria"]`
+        # -- the `widen_for_high_cardinality` pattern in `docs/hooks/patterns.md` -- mutates the
+        # same nested dict, so both sides change together, `_check_scan_budget` returns early, and
+        # the windows are re-truncated while `usage["windows"]` reports them all read. A shallow
+        # copy shares the nested dicts and misses it exactly the same way.
+        asked = copy.deepcopy(questions)
 
+        state_ids = encode_text(
+            self.tok,
+            serialize_state(state).replace(self.tok.mask_token, " "),
+            add_special_tokens=False,
+        )["input_ids"]
+        # Fits in one window: identical to a plain call, no windowing overhead. `windows` is still
+        # written, as on the torch Agent: 1 for a window the model read, 0 for a hook's answer.
+        # "Fits" is the room the questions leave, not the default window, as on the torch Agent.
+        if len(state_ids) <= (budget if window and window > 0 else room):
+            probe, evidence = _start_evidence()
+            single = dict(self.system_one(state, questions, lang=lang,
+                                          **_with_start_probe(hook_kwargs, probe)))
+            # The same budget check as the multi-window path. Without it a document short enough to
+            # fit one window was silently truncated by a re-budgeting hook and still reported
+            # `windows: 1`, i.e. "the model read all of it" -- measured, 138 of 240 state tokens
+            # never reached the model, while a longer document on the identical input hard-failed.
+            _check_scan_budget(self, evidence, max(budget, len(state_ids)), max_len, head_max_len,
+                               asked)
+            single["usage"] = {**(single.get("usage") or {}), "windows": 0 if evidence["answered"] else 1}
+            return single
+
+        step = step_default
+        windows, starts = [], []
+        i, n = 0, len(state_ids)
+        while i < n:
+            # Decode each token window back to text so predict_batch re-tokenizes it as a normal
+            # state; the 50% default overlap absorbs any boundary drift on re-tokenization.
+            windows.append(self.tok.decode(state_ids[i:i + budget]))
+            starts.append(i)
+            if i + budget >= n:
+                break
+            i += step
+
+        probe, evidence = _start_evidence()
+        # A copy, so a start hook that mutates `ctx.states` in place cannot shift `starts`.
+        # Bound one forward pass to what the un-capped scan would have used; see
+        # `window_batch_cap`. An explicit batch_size is honoured untouched.
+        cap = window_batch_cap(len(windows), budget, max(64, max_len - head_max_len - 8),
+                               batch_size)
+        results = self.predict_batch(list(windows), questions, batch_size=cap, lang=lang,
+                                     **_with_start_probe(hook_kwargs, probe))
+        # Same check as the torch agent, for the same reason and on the same contract: a start hook
+        # re-budgets an ONNX scan exactly as it re-budgets a torch one (`predict_batch` applies
+        # `ctx.max_len`/`ctx.head_max_len` identically), so leaving it off here meant the bug was
+        # fully live on this path while the other agent refused the identical input -- measured,
+        # 34.6% of a document reaching no model.
+        _check_scan_budget(self, evidence, budget, max_len, head_max_len, asked)
+
+        if evidence["answered"]:
+            # A hook answered the document before any window was scored: pass that answer
+            # through unattributed, with no window counted (the torch Agent's rule).
+            if len(results) != 1:
+                raise ValueError(
+                    "predict_long: a start hook answered this state with %d results; ctx.skip()"
+                    " takes one result for the document, not one per window" % len(results))
+            warnings.warn("laya: predict_long: a hook answered the state before it was scanned, so "
+                          "no window decided the result and none is reported", RuntimeWarning,
+                          stacklevel=2)
+            document = dict(results[0])
+            document["usage"] = dict(document.get("usage") or {})
+            document["usage"]["windows"] = 0
+            return document
+
+        rewritten = evidence["states"] is not None and evidence["states"] != windows
+        if len(results) != len(windows) and not rewritten:
+            raise ValueError(
+                "predict_long: the state was split into %d windows and the call returned %d results"
+                % (len(windows), len(results)))
+        if not results:
+            warnings.warn("laya: predict_long: a start hook left no states to score, so the call"
+                          " aggregated nothing and returns no answers", RuntimeWarning, stacklevel=2)
+            return {"model": "laya-rl-agent-onnx", "answers": {},
+                    "usage": {**aggregate_usage(results), "windows": 0}}
+
+        question_types = evidence["question_types"]
+        if question_types is None:       # a replacement predict_batch may not dispatch hooks
+            question_types = {qid: self._to_internal(qdef)["t"] for qid, qdef in questions.items()}
+        answers = {}
+        for qid, qtype in question_types.items():
+            per = [r["answers"][qid] for r in results]
+            if qtype == "noul":
+                # Evidence anywhere: the strongest window decides, carrying its own P(true),
+                # confidence and act so the fields stay mutually consistent.
+                best = max(range(len(per)), key=lambda j: float(per[j]["noul"]))
+            else:
+                # choice / score: the most-confident window wins, preserving a localized signal
+                # that averaging over a mostly-neutral document would drown.
+                best = max(range(len(per)), key=lambda j: float(per[j]["answer_confidence"]))
+            ans = per[best]
+            # Name the window that decided; the probability is that window's, not the document's.
+            if not rewritten:
+                ans["window"] = {"index": best, "token_start": starts[best],
+                                 "token_end": min(starts[best] + budget, len(state_ids)),
+                                 "count": len(results)}
+            answers[qid] = ans
+        # Aggregate usage generically so fields predict_batch may grow later are propagated
+        # rather than silently dropped: sum numeric fields across windows, merge the
+        # per-question records, then record the window count.
+        # A per-question field has to be merged rather than replaced. `usage["options"]` is a
+        # dict keyed by question id, set only on the windows where option spans actually
+        # collapsed, so replacing it left the caller holding whichever collapsing window came
+        # last. The deciding window is the most confident one, not the last one, so that could
+        # report a collapse for a window that did not decide while the deciding window's own
+        # record was gone.
+        usage: Dict[str, Any] = {}
+        for r in results:
+            for key, val in r["usage"].items():
+                prev = usage.get(key)
+                if isinstance(val, (int, float)):
+                    usage[key] = (prev if isinstance(prev, (int, float)) else 0) + val
+                elif isinstance(val, dict) and isinstance(prev, dict):
+                    usage[key] = {**prev, **val}
+                else:
+                    usage[key] = val
+        usage["output_tokens"] = 0
+        usage["windows"] = len(results)
+        result = {"model": "laya-rl-agent-onnx", "answers": answers, "usage": usage}
+        # As in `Agent.predict_long`: no `min_confidence` here, and the gate called with None
+        # writes nothing -- the payload comes back with no `abstention` field at all.
+        apply_confidence_gate([result], None)
+        return result
+
+    def _infer(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
+               max_len: Optional[int] = None, head_max_len: Optional[int] = None,
+               lang: Optional[str] = None) -> Dict[str, Any]:
+        """Answer one state without hooks: one session run, the `predict_batch([state])` case."""
+        return self._infer_batch([state], questions, max_len=max_len, head_max_len=head_max_len,
+                                 lang=lang)[0]
+
+    def _encode_state(self, state: Union[str, dict, list], ids: List[str], internal: Dict[str, Any],
+                      max_len: int, head_max_len: int) -> List[Dict[str, Any]]:
+        """This state's question rows, tokenizing the state once for all of them."""
+        truncate_left = isinstance(state, list)
         # Tokenize the shared state once and reuse it across questions, instead of
         # re-serializing and re-tokenizing the same document inside build_sequence per
         # question (the PyTorch Agent already does this via `state_ids`).
-        truncate_left = isinstance(state, list)
-        state_ids = self.tok(
+        state_ids = encode_text(
+            self.tok,
             serialize_state(state).replace(self.tok.mask_token, " "),
             add_special_tokens=False,
         )["input_ids"]
 
+        items = []
         for qid in ids:
-            q = self._to_internal(questions[qid])
-            seq, markers = build_sequence(
+            q = internal[qid]
+            seq, markers, stats, state_stats = build_sequence(
                 self.tok, state, q, max_len, head_max_len,
-                truncate_left=truncate_left, state_ids=state_ids,
+                option_order=q.get("option_order"),
+                truncate_left=truncate_left, state_ids=state_ids, return_stats=True,
+                return_truncation_stats=True,
             )
-            if len(markers) != len(render_options(q)):
-                raise ValueError("question %r options exceed head_max_len=%d" % (qid, head_max_len))
-            items.append({"ids": seq, "markers": markers, "qtype": QTYPES[q["t"]]})
+            n_opts = len(render_options(q))
+            if len(markers) != n_opts:
+                # Same diagnosis as `Agent._encode_state`, so both backends report the same thing.
+                # The markers are placed at absolute positions and `build_sequence` drops the ones
+                # past `max_len`, so `head_max_len` is how much of the sequence the options were
+                # given and `max_len` is the ceiling that dropped them -- naming only
+                # `head_max_len` pointed at the wrong knob in both directions. The count is the
+                # markers that survived, not `len(seq)`, which is always exactly `max_len` here.
+                raise ValueError(
+                    "question %r: only %d of its %d option markers fit in max_len=%d with "
+                    "head_max_len=%d spent on the question; lower head_max_len, raise max_len, "
+                    "or use fewer options"
+                    % (qid, len(markers), n_opts, max_len, head_max_len))
+            items.append({"ids": seq, "markers": markers, "qtype": QTYPES[q["t"]], "options": stats,
+                          "state_stats": state_stats})
+        return items
 
-        b = collate_items([items], self.tok.pad_token_id)
-        
-        # Prepare ONNX inputs as numpy arrays
-        ort_inputs = {
-            "input_ids": b["input_ids"].numpy().astype(np.int64),
-            "attention_mask": b["attention_mask"].numpy().astype(np.int64),
-            "marker_pos": b["marker_pos"].numpy().astype(np.int64),
-            "marker_mask": b["marker_mask"].numpy().astype(bool),
-            "qtype": b["qtype"].numpy().astype(np.int64),
-        }
-
-        # Run ONNX inference
-        ort_outs = self.session.run(["logits", "act_logits"], ort_inputs)
-        logits = ort_outs[0]
-        act_logits = ort_outs[1]
-
-        # Compute softmax for actions manually in numpy
-        act_exp = np.exp(act_logits - np.max(act_logits, axis=-1, keepdims=True))
-        act = act_exp / np.sum(act_exp, axis=-1, keepdims=True)
-
+    def _decode_answers(self, logits, act, items: List[Dict[str, Any]], ids: List[str],
+                        internal: Dict[str, Any], offset: int,
+                        lang: Optional[str] = None) -> Dict[str, Any]:
+        """Decode the `len(ids)` head rows starting at `offset` into this state's answers."""
         answers = {}
-        n_tokens = int(b["attention_mask"].sum())
-
+        binning_map = getattr(self, "binning_map", None)
+        if binning_map:
+            from .calibrate import apply_binning_map
         for r, qid in enumerate(ids):
-            q = self._to_internal(questions[qid])
+            q = internal[qid]
             k = len(items[r]["markers"])
             qt = QTYPES[q["t"]]
             t_scale = self.temperature_by_options.get(temp_bucket(qt, k), self.temperature[qt])
-            z = logits[r, :k] / t_scale
+            if lang and lang.split("-")[0].lower() in self.lang_temperatures:
+                l_cfg = self.lang_temperatures[lang.split("-")[0].lower()]
+                t_scale = l_cfg["temperature_by_options"].get(temp_bucket(qt, k), l_cfg["temperature"][qt])
+            z = logits[offset + r, :k] / t_scale
             p = np.exp(z - z.max())
             p = p / p.sum()
+
+            # The row comes back in slot order; everything below indexes by option.
+            p = unpermute_probs(p, q.get("option_order"))
 
             conf_score = round(confidence_from_probs(p, k), 4)
             # `answer_confidence` is the calibrated max(p) confidence, reported on every question
             # type so a caller can gate across types on one number -- matching the PyTorch Agent,
             # whose output ONNX callers otherwise cannot read (KeyError on cross-backend swap).
-            ans_conf = round(answer_confidence(p, k), 4)
-            ext = {"act_probability": round(float(act[r, 0]), 4)}
+            ans_raw = answer_confidence(p, k)
+            lang_override = bool(lang and lang.split("-")[0].lower() in self.lang_temperatures)
+            if binning_map and not lang_override:
+                ans_conf = round(
+                    apply_binning_map(ans_raw, temp_bucket(qt, k), binning_map), 4
+                )
+            else:
+                ans_conf = round(ans_raw, 4)
+            ext = {"act_probability": round(float(act[offset + r, 0]), 4)}
 
             if q["t"] == "choice":
                 keys = list(q["crit"].keys())
@@ -308,7 +713,11 @@ class ONNXAgent(HookRegistry):
                 answers[qid] = {
                     "type": "score",
                     "score": round(exp_score, 4),
-                    "legend": {str(i): c for i, c in enumerate(q["crit"])},
+                    # Same as `Agent._decode_answers`, so both backends return the same legend:
+                    # `render_criterion` gives a dict or list level back as the JSON text the
+                    # model was shown, and a numeric level as a string, rather than a Python repr
+                    # or the caller's own type.
+                    "legend": {str(i): render_criterion(c) for i, c in enumerate(q["crit"])},
                     "probabilities": {str(i): round(float(v), 4) for i, v in enumerate(p)},
                     "confidence": conf_score,
                     "answer_confidence": ans_conf,
@@ -322,15 +731,101 @@ class ONNXAgent(HookRegistry):
                     "answer_confidence": ans_conf,
                     "action": ext,
                 }
+        return answers
 
-        return {
-            "model": "laya-rl-agent-onnx",
-            "answers": answers,
-            "usage": {"input_tokens": n_tokens, "output_tokens": 0},
-        }
+    def _infer_batch(self, states: List[Union[str, dict, list]], questions: Dict[str, Dict[str, Any]],
+                     max_len: Optional[int] = None, head_max_len: Optional[int] = None,
+                     lang: Optional[str] = None,
+                     batch_size: Optional[int] = None,
+                     sort_by_length: bool = False) -> List[Dict[str, Any]]:
+        """Validate once, then encode, collate, run and decode in chunks of `batch_size` states.
+
+        With `sort_by_length`, chunks are formed from length-sorted states inside a lookahead
+        window of eight batches (the same contract as `Agent.predict_batch`), so a batch pads to
+        a shorter maximum; results are returned in input order either way.
+        """
+        from .agent import Agent as _Agent
+
+        ids = list(questions.keys())
+        if not ids:
+            return [{"model": "laya-rl-agent-onnx", "answers": {},
+                     "usage": {"input_tokens": 0, "output_tokens": 0}} for _ in states]
+        for qid in ids:
+            _Agent._check_question(qid, questions[qid])
+        internal = {qid: self._to_internal(questions[qid]) for qid in ids}
+        max_len = self.cfg.get("max_len", 512) if max_len is None else max_len
+        head_max_len = self.cfg.get("head_max_len", 192) if head_max_len is None else head_max_len
+        chunk = batch_size if (batch_size and batch_size > 0) else len(states)
+
+        results: List[Dict[str, Any]] = []
+        reorder = sort_by_length and 1 < chunk < len(states)
+        # Bound the tokenized lookahead independently of the input size (same as the torch Agent):
+        # sort within windows of eight batches, using each state's longest encoded question row.
+        window = chunk * 8 if reorder else chunk
+        for start in range(0, len(states), window):
+            part = states[start:start + window]
+            encoded = [self._encode_state(st, ids, internal, max_len, head_max_len) for st in part]
+            order = list(range(len(encoded)))
+            if reorder:
+                order.sort(key=lambda i: max(len(item["ids"]) for item in encoded[i]))
+            window_results: List[Optional[Dict[str, Any]]] = [None] * len(encoded)
+            for offset in range(0, len(order), chunk):
+                indices = order[offset:offset + chunk]
+                per_state_items = [encoded[i] for i in indices]
+
+                b = collate_items(per_state_items, self.tok.pad_token_id)
+
+                # Prepare ONNX inputs as numpy arrays
+                ort_inputs = {
+                    "input_ids": b["input_ids"].numpy().astype(np.int64),
+                    "attention_mask": b["attention_mask"].numpy().astype(np.int64),
+                    "marker_pos": b["marker_pos"].numpy().astype(np.int64),
+                    "marker_mask": b["marker_mask"].numpy().astype(bool),
+                    "qtype": b["qtype"].numpy().astype(np.int64),
+                }
+
+                # Run ONNX inference
+                ort_outs = self.session.run(["logits", "act_logits"], ort_inputs)
+                logits = ort_outs[0]
+                act_logits = ort_outs[1]
+
+                # Compute softmax for actions manually in numpy
+                act_exp = np.exp(act_logits - np.max(act_logits, axis=-1, keepdims=True))
+                act = act_exp / np.sum(act_exp, axis=-1, keepdims=True)
+                att = b["attention_mask"]
+
+                row = 0
+                for index, items in zip(indices, per_state_items):
+                    nrows = len(items)
+                    n_tokens = int(att[row:row + nrows].sum())
+                    # Same truncation report as Agent.predict_batch (#174).
+                    stats = [item["state_stats"] for item in items]
+                    dropped = max(s["state_tokens_dropped"] for s in stats)
+                    usage = {
+                        "input_tokens": n_tokens,
+                        "output_tokens": 0,
+                        "state_tokens": stats[0]["state_tokens"],
+                        # worst case: the questions share one state, not one head budget
+                        "state_tokens_dropped": dropped,
+                        "truncated": dropped > 0,
+                        "truncated_questions": [qid for qid, s in zip(ids, stats) if s["truncated"]],
+                    }
+                    # Only when a question lost options to the head budget, as on the torch Agent.
+                    collapsed = collapsed_options(ids, items)
+                    if collapsed:
+                        usage["options"] = collapsed
+                    window_results[index] = {
+                        "model": "laya-rl-agent-onnx",
+                        "answers": self._decode_answers(logits, act, items, ids, internal, row, lang=lang),
+                        "usage": usage,
+                    }
+                    row += nrows
+            results.extend(window_results)
+        return results
 
     def decide(self, state: Union[str, dict, list], schema: Any = None, *,
                questions: Optional[Dict[str, Dict[str, Any]]] = None, return_details: bool = False,
+               min_confidence: Optional[float] = None,
                **predict_kwargs) -> Any:
         """Answer `state` against a schema (JSON schema or pydantic model) and return typed values.
 
@@ -339,6 +834,16 @@ class ONNXAgent(HookRegistry):
         """
         from laya.structured import decide as _decide
         return _decide(self, state, schema, questions=questions,
-                       return_details=return_details, **predict_kwargs)
+                       return_details=return_details, min_confidence=min_confidence, **predict_kwargs)
+
+    def decide_batch(self, states: List[Union[str, dict, list]], schema: Any = None, *,
+                     questions: Optional[Dict[str, Dict[str, Any]]] = None,
+                     return_details: bool = False, min_confidence: Optional[float] = None,
+                     **predict_kwargs) -> List[Any]:
+        """Answer many states against one schema through `predict_batch`; see `laya.structured`."""
+        from laya.structured import decide_batch as _decide_batch
+        return _decide_batch(self, states, schema, questions=questions,
+                             return_details=return_details, min_confidence=min_confidence,
+                             **predict_kwargs)
 
     predict = system_one

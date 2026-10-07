@@ -9,7 +9,7 @@ neither one the end. It carries a second meaning specific to this project -- a c
 resolving into discrete points is what the model does, turning unstructured state into a typed
 decision.
 
-  python3 notebooks/make_logo.py   ->  assets/logo-mark.svg  logo-mark.png
+  python3 assets/make_logo.py   ->  assets/logo-mark.svg  logo-mark.png
                                        assets/logo-lockup.svg  logo-lockup.png
                                        assets/logo-mark-mono.svg
 """

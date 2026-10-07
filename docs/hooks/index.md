@@ -7,6 +7,10 @@ redaction before inference, caching, metrics, confidence gating, routing overrid
 forwarding a decision to an external service. They are **opt-in**: with no hooks configured the
 behaviour of `Agent`, `Router` and `ONNXAgent` is unchanged.
 
+They are not only for direct calls. Each [LangChain and LangGraph](../langchain.md) runnable takes
+the same five per-call arguments, so a hook can be attached to one node in a graph rather than to
+the whole agent.
+
 This folder is the full reference. Start here, then dive into the page you need:
 
 | page | what is in it |
@@ -69,13 +73,18 @@ hooks.set_default_hooks(hooks=[Tracer()])
 There are three ideas.
 
 1. **A hook is a callable or an object.** A plain function is convenient for one event; an
-   object is convenient for several. Both are passed to `hooks=` / `on_predict_start=` /
-   `on_predict_end=`.
+   object is convenient for several. Only the object form goes to `hooks=` -- a plain callable
+   there is refused at construction, because `hooks=` reads for lifecycle methods (`on_route`,
+   `on_load`, `on_evict`, `on_predict_start`, `on_predict_end`) and a bare function has none of
+   them. Pass a plain callable as `on_predict_start=` or `on_predict_end=`; those are the
+   single-event parameters, so a callable is exactly what they take.
 
 2. **Every hook of one call shares one mutable `PredictContext`.** It carries the states,
-   questions, results, routing decision, model name, usage, timing and any error. Because it is
-   mutable, a hook can *shape* the call, not only watch it: redact the state, rewrite the
-   questions, replace the result, or skip inference with a cached answer.
+   questions, results, routing decision, model name, usage, timing and any error. A call can carry
+   many states at once (`predict_batch`), so a hook that means to cover *every* decision has to
+   iterate `ctx.states` and `ctx.results`; `ctx.usage` and `ctx.elapsed_ms` are totals for the
+   call. Because the context is mutable, a hook can *shape* the call, not only watch it: redact the
+   state, rewrite the questions, replace the result, or skip inference with a cached answer.
 
 3. **There are two scopes.** `Agent` hooks wrap a forward pass; `Router` hooks wrap routing plus
    inference and can also see model lifecycle (`on_route`, `on_load`, `on_evict`). This mirrors
@@ -124,8 +133,12 @@ automatically. `Agent` hooks fire whenever the Router runs an attached or built 
 - No hooks configured means no behavioural change. The unset path is regression-tested.
 - All hook parameters are keyword arguments with defaults, so existing calls keep working.
 - `laya/hooks.py` is pure Python: `import laya` does not pull in torch because of it.
-- Hooks are synchronous. Keep them fast and non-blocking; see
-  [errors](errors.md) and [patterns](patterns.md) for the consequences on `laya.serve`.
+- Hooks are synchronous by default. An `async def` event can be wrapped in
+  [`AsyncHook`](api.md#async-hooks), or passed as a plain async callable, and it runs to
+  completion for you.
+- [`hooks_timeout`](errors.md#timeouts) bounds a slow hook so it cannot hang a served request.
+- Keep hooks fast and non-blocking; see [errors](errors.md) and [patterns](patterns.md) for the
+  consequences on `laya.serve`.
 
 ## See also
 

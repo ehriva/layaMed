@@ -5,11 +5,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ci-${{ github.ref }}
-  # Cancel outdated pull request runs. On main, let a started run finish: merges land minutes
-  # apart, and cancelling there left whole bursts of merges without a result of their own. A
-  # newer push still replaces a run that is queued and has not started.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  # Cancel outdated pull request runs. On main, use a per-commit group so each push
+  # gets its own run and started runs finish without cancelling or being cancelled by adjacent merges.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -32,8 +34,8 @@ jobs:
       matrix:
         node: ["20", "22"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -49,12 +51,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: python research/benchmarks/feishu_zh/audit.py
       - run: python -m unittest discover -s research/benchmarks/feishu_zh/tests -v
+      # This job installs nothing, so running the audit here is what proves it needs
+      # nothing but the standard library. Its test suite imports numpy and runs in `test`.
+      - run: python research/benchmarks/zh_short_commands/audit.py
+      # Standard library only, audit and tests alike, so both run here.
+      - run: python research/benchmarks/es_phone_turns/audit.py
+      - run: python -m unittest discover -s research/benchmarks/es_phone_turns/tests -v
 
   test:
     name: tests (py${{ matrix.python }})
@@ -66,8 +74,8 @@ jobs:
         # Keep this in lockstep with pyproject classifiers; packaging tests enforce that.
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -80,69 +88,111 @@ jobs:
           # `mcp` so laya[mcp] resolution and the laya.mcp layer are both exercised, and
           # `serve` because laya.serve and examples/server.py both import fastapi -- without
           # it every test that touches them skips itself silently and passes.
-          pip install -e ".[mcp,serve]" httpx
+          # `langchain` for the same reason: without langchain-core the runnables fall back
+          # to their plain-object path, so tests/test_langchain.py never checks the real
+          # Runnable behaviour (batch delegation, pydantic field validation) it is there for.
+          pip install -e ".[mcp,serve,langchain]" httpx
           # The pytest-style suites need the runner; nothing else in this job uses it.
           pip install pytest
 
       - name: Import check
         run: python -c "import laya; print(laya.__version__); print(sorted(laya.__all__))"
 
-      - name: Routing and language-detection tests
+      # The install above is what makes tests/test_langchain.py run on real Runnables, and
+      # nothing proves it took: with langchain-core missing, the checks inside that file's
+      # `if _RUNNABLE_AVAILABLE:` block vanish instead of failing and it still prints FAIL: 0.
+      # Assert the install took before the shared list runs test_langchain_real_mode.py.
+      - name: LangChain integration runs on the real base class
         run: |
-          python tests/test_router.py
-          python tests/test_criteria.py
-          python tests/test_batch.py
-          python tests/test_hooks.py
-          python tests/test_hooks_api.py
-          python tests/test_structured.py
-          python tests/test_structured_api.py
-          python tests/test_download.py
-          python tests/test_shortlist.py
-          python tests/test_decision_model.py
-          python tests/test_head_checkpointing.py
-          python tests/test_packaging.py
-          python tests/test_doc_tables.py
-          python tests/test_tokenizer_cache.py
-          python tests/test_lazy_import.py
-          python tests/test_runtime_fixes.py
-          python tests/test_lang_guess.py
-          python tests/test_identifier_complexity.py
-          python tests/test_lang_stats.py
-          python tests/test_calibration_persistence.py
-          python tests/test_context_manager.py
-          python tests/test_criteria_normalization.py
-          python tests/test_docker_entrypoint.py
-          python tests/test_empty_questions.py
-          python tests/test_router_memory.py
-          python tests/test_shortlist_cosine.py
-          python tests/test_temperature_loading.py
-          python tests/test_confidence.py
-          python tests/test_cli.py
-          python tests/test_mcp.py
-          python tests/test_langchain.py
-          python tests/test_portability.py
-          python tests/test_training.py
-          python tests/test_example_server_limits.py
+          python -c "from laya.integrations.langchain import RunnableSerializable; \
+            assert RunnableSerializable is not object, \
+            'langchain-core is missing: laya.integrations.langchain fell back to a plain object, ' \
+            'so the LangChain suites in this job test a shape no install produces'"
 
-      - name: Email cleaning tests
-        run: python tests/test_email.py
+      # The canonical suite list lives in `scripts/test_suites.py`, which the release gate invokes
+      # too. Naming the suites here and again in `release.yml` is how the publish gate came to run
+      # 33 fewer than CI, so this step names one file and the script names them all (#374).
+      - name: Test suites
+        run: python scripts/test_suites.py
 
-      # These four are pytest suites, and `python tests/<name>.py` does not run them: it defines
-      # the test functions and exits 0, having asserted nothing. They were counted by the suite
-      # list above without ever executing, which is how the HTTP surface came to have no coverage
-      # in CI at all (#374).
-      #
-      # test_onnx.py and test_fast.py are deliberately not here: both are skip-guarded on an extra
-      # this job does not install, so they would pass trivially, and their real execution belongs
-      # in a lane that installs `onnx` or has a GPU.
-      - name: Pytest suites (serve, batch, system-one, audit regressions, truncation)
+      - name: Chinese short-command benchmark tests
+        run: python -m unittest discover -s research/benchmarks/zh_short_commands/tests -v
+
+  # The `test` job above deliberately stays free of `onnx`: this is the lane that
+  # installs it, so the exporter's quantization suite runs for real instead of
+  # skip-guarding into a trivial pass. Weight-free -- it builds tiny synthetic
+  # graphs, no checkpoint download.
+  onnx-export:
+    name: onnx export (quantization, weight-free)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
         run: |
-          python -m pytest tests/test_serve.py \
-                           tests/test_router_batch.py \
-                           tests/test_system_one_lang.py \
-                           tests/test_audit_regressions.py \
-                           tests/test_truncation_direction.py \
-                           -q
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+          pip install onnx onnxruntime
+
+      - name: Quantized-export tests
+        run: python tests/test_onnx_quantize.py
+
+  # The eval harness needs numpy and laya only, so it stays a separate, weight-free job: metric
+  # math, dataset parsing, the CLI and the API guard. The real-checkpoint gate is the scheduled
+  # `evals` workflow, which needs weights and network.
+  evals:
+    name: evals (metric math, dataset, API guard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e . pytest
+
+      - name: Eval harness tests
+        run: python -m pytest tests/test_evals.py -q
+
+      - name: Shortlist attribution tests
+        run: python -m pytest tests/test_evals_shortlist.py -q
+
+      - name: Eval API guard
+        run: python tests/test_evals_api.py
+
+      # The ONNX runner suite fakes the agent, so it stays weight-free and needs no
+      # onnxruntime: the module only imports numpy, and ONNXAgent's constructor is
+      # never called.
+      - name: Eval ONNX runner tests
+        run: python tests/test_evals_onnx.py
+
+      # The offline research suites. Each claims a CI consumer and had none: `test_laya_eval.py`
+      # says in its own docstring that it "runs in CI next to the other suites", while
+      # `test_presentation_checks.py` and `test_act_head_eval.py` guard the eval harness's own
+      # presentation and act-head math. They need only `laya` and numpy, so they belong here
+      # rather than in the weekly weight lane. `test_metamorphic` is invoked as a module: run as a
+      # script its `research` import fails (`No module named 'research'`).
+      - name: Offline research eval suites
+        run: |
+          python research/eval/test_laya_eval.py
+          python research/eval/test_presentation_checks.py
+          python -m research.eval.test_metamorphic
+          python research/evals/test_act_head_eval.py
+
+      - name: Fixture dataset validates
+        run: laya-evals validate research/evals/fixture.jsonl
 
   # Every workflow in this repo ran on ubuntu-latest only, so a test that fails off Linux was
   # invisible until a user hit it -- which is what happened to tests/test_download.py (#140).
@@ -155,21 +205,24 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
 
       # The +cpu index used on Linux is Linux/macOS only. On Windows the default PyPI wheel is
       # already CPU-only, so installing torch plainly is both correct and what a user gets.
-      # The serve extra and pytest are here for the same reason as the Linux job: the HTTP
-      # surface is otherwise skipped and the pytest suites otherwise do not run at all.
+      # The extras mirror the Linux install because the suite list below assumes them: without
+      # `mcp`, tests/test_mcp.py prints SKIP and exits 0; without `langchain-core`,
+      # tests/test_langchain.py runs against plain-object shims; and without `httpx` the
+      # starlette TestClient that tests/test_serve.py imports raises at collection. Any of the
+      # three leaves this lane green without testing the surface it names.
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install torch
-          pip install -e ".[serve]"
+          pip install -e ".[mcp,serve,langchain]" httpx
           pip install pytest
         shell: bash
 
@@ -181,27 +234,22 @@ jobs:
 
       # Same suites as the Linux job. Guarded with -f so a suite added by another open branch
       # cannot make this job red on a tree that does not have it yet.
-      #
-      # test_docker_entrypoint is skipped here on purpose. It drives docker/entrypoint.py, which
-      # only ever runs inside a Linux container, through `os.execvp`. On Windows exec* rebuilds
-      # the command line from argv without re-applying the quoting `subprocess` used to build it,
-      # so its `-c "<script>"` argument arrives split at the first space and the child dies with
-      # "SyntaxError: invalid syntax" before printing. The environment passthrough the suite
-      # exists to check is unaffected, and switching the entrypoint to `subprocess.run` makes it
-      # pass -- a change to a container script, so it belongs in its own PR, not this one.
       - name: Routing and language-detection tests
         run: |
-          for t in test_router test_criteria test_download test_shortlist \
-                   test_decision_model test_packaging test_lang_guess \
-                   test_identifier_complexity \
-                   test_calibration_persistence test_context_manager \
+          for t in test_router test_criteria test_batch test_predict_long \
+                   test_structured test_structured_api test_onnx_lang_parity \
+                   test_download test_verify_checkpoints test_shortlist test_decision_model \
+                   test_head_checkpointing test_packaging test_doc_tables \
+                   test_tokenizer_cache test_tokenizer_concurrency test_lazy_import \
+                   test_runtime_fixes test_lang_guess test_identifier_complexity \
+                   test_lang_stats test_calibration_persistence test_calibrate test_context_manager \
                    test_criteria_normalization test_docker_entrypoint \
                    test_empty_questions test_router_memory test_shortlist_cosine \
-                   test_temperature_loading; do
-            if [ "$t" = "test_docker_entrypoint" ]; then
-              echo "skipping $t: docker/entrypoint.py is Linux-container only"
-              continue
-            fi
+                   test_temperature_loading test_confidence test_cli test_mcp \
+                   test_mcp_device \
+                   test_langchain test_portability test_training test_train \
+                   test_example_server_limits test_blank_lang_routing \
+                   test_export_onnx_safety test_load_errors test_revision_pinning; do
             if [ -f "tests/$t.py" ]; then python "tests/$t.py"; fi
           done
         shell: bash
@@ -212,17 +260,35 @@ jobs:
           python tests/test_hooks_api.py
         shell: bash
 
-      # Same five pytest suites as the Linux job. They are named explicitly rather than added to
+      - name: Question token reuse tests
+        run: python tests/test_question_token_reuse.py
+        shell: bash
+
+      # Same pytest suites as the Linux job. They are named explicitly rather than added to
       # the loop above, because the loop runs each file as a script and that is exactly what does
       # not execute a pytest suite (#374).
-      - name: Pytest suites (serve, batch, system-one, audit regressions, truncation)
+      - name: Pytest suites (serve, batch, system-one, audit regressions, truncation, compile)
         run: |
           python -m pytest tests/test_serve.py \
                            tests/test_router_batch.py \
+                           tests/test_predict_batch.py \
                            tests/test_system_one_lang.py \
                            tests/test_audit_regressions.py \
                            tests/test_truncation_direction.py \
+                           tests/test_compile.py \
                            -q
+        shell: bash
+
+      # The Linux job's guard, repeated here: the install is what makes test_mcp.py and
+      # test_langchain.py exercise their real base classes, and nothing else proves it took. mcp
+      # and httpx are asserted the same way because their suites skip instead of failing.
+      - name: Integrations run on their real base classes
+        run: |
+          python -c "import mcp, httpx, langchain_core"
+          python -c "from laya.integrations.langchain import RunnableSerializable; \
+            assert RunnableSerializable is not object, \
+            'langchain-core is missing: laya.integrations.langchain fell back to a plain object'"
+          python tests/test_langchain_real_mode.py
         shell: bash
 
       - name: Email cleaning tests
@@ -234,8 +300,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: pip install ruff
@@ -244,13 +310,47 @@ jobs:
       - name: Byte-compile every module
         run: python -m compileall -q laya/ tests/
 
+  typescript-sdk:
+    name: TypeScript SDK (node${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install server and SDK
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[serve]' httpx pytest
+          npm ci --prefix sdk/typescript
+      - name: Server contract and generated presets
+        run: |
+          python -m pytest tests/test_serve.py
+          python sdk/typescript/scripts/sync_presets.py --check
+      - name: SDK types, transport, packaging and live inference
+        working-directory: sdk/typescript
+        run: |
+          npm test
+          npm run test:integration
+          npm pack --dry-run
+
   build:
     name: package
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: pip install build twine
@@ -263,7 +363,7 @@ jobs:
           pkg=$(python -c "import re;print(re.search(r'version = \"(.*)\"', open('pyproject.toml').read()).group(1))")
           tag="${GITHUB_REF_NAME#v}"
           test "$pkg" = "$tag" || { echo "pyproject $pkg != tag $tag"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/

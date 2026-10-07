@@ -14,7 +14,8 @@ start, end and error events (and any spans it opens) without keeping its own boo
 ## run_id
 
 - A `uuid4().hex` string, created once per public call (`predict_batch`, `system_one`,
-  `Router.predict`, `ONNXAgent.system_one`).
+  `Router.predict`, `ONNXAgent.system_one`). `Router.predict_batch` creates one per request
+  instead, the `run_id` a `Router.predict` call for that request would have had.
 - Shared by every hook of that call, including `on_error` and `on_predict_end`.
 - Not global and not persisted: it identifies a call within the process. Put it in your logs and
   outbound payloads to correlate across systems.
@@ -156,13 +157,20 @@ serving concurrently. See [patterns](patterns.md#blocking-work).
 ## Nested calls
 
 A hook that calls `predict` again starts a new call with a new `run_id`. The parent and child are
-independent unless you link them yourself. Capture the parent id and pass it along:
+independent unless you link them yourself. The child's `run_id` lives on the child's own
+`PredictContext`, not on the payload `predict` returns, so capture it with a per-call hook:
 
 ```python
 def enrich(ctx):
-    child = enricher.predict(ctx.states[0], EXTRA_QUESTIONS)
-    record_child_span(parent_run_id=ctx.run_id, child_run_id=child.get("run_id"))
+    for state in ctx.states:                     # a hook sees every state of the call
+        def link(child_ctx, parent_run_id=ctx.run_id):
+            record_child_span(parent_run_id=parent_run_id, child_run_id=child_ctx.run_id)
+
+        enricher.predict(state, EXTRA_QUESTIONS, on_predict_start=link)
 ```
+
+One parent `run_id`, one child call per state. A body that reads `ctx.states[0]` links the first
+decision of a batch and silently drops the rest.
 
 Guard against recursion (see [anti-patterns](patterns.md#recursive-predict)); the easiest guard
 is a separate `enricher` agent with no hooks.

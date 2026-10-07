@@ -12,6 +12,8 @@ is explicitly best-effort: pass an explicit model or `lang=` when you already kn
 """
 import re
 import unicodedata
+from collections import Counter
+from collections.abc import Mapping
 from typing import Dict, List, Optional, Union
 
 # Unicode blocks that the English (ModernBERT-large, 50k English BPE) checkpoint cannot read.
@@ -116,6 +118,19 @@ _STOP = {
            "delle", "dello", "degli", "agli", "alle", "col"},
     "nl": {"het", "een", "van", "is", "op", "te", "dat", "niet", "met", "voor", "zijn", "aan",
            "door", "maar", "ook", "worden", "deze", "naar", "wordt"},
+    # Swedish function words and common auxiliaries. Several overlap with English or German
+    # (`i`, `kan`, `har`), so the distinctive words below are what lets Swedish text survive an
+    # ASCII-normalising ticket pipeline without treating one stray Nordic letter as the only hint.
+    "sv": {"jag", "är", "och", "inte", "att", "från", "till", "behöver", "får", "skulle", "ska",
+           "vill", "måste", "också", "dessa", "detta", "säger", "upp", "utan", "mitt", "min", "om",
+           "kommer", "här", "två", "vi", "nästa", "gör", "göra",
+           "hjälp", "hjälpa", "mig", "återbetalning", "återbetala", "faktura", "gång", "gånger",
+           "hittar", "inställningen", "inställningarna", "lösenord", "när", "öppnar", "spårningen",
+           # Common spellings from ticket systems that strip Swedish diacritics.
+           "aterbetalning", "aterbetala", "behover", "fel", "ganger", "hjalp", "hjalpa",
+           "installningen", "installningarna", "kraschar", "kvittot", "losenord", "nar",
+           "oppnar", "paket", "skicka", "sparningen", "tva", "uppdaterats", "blivit", "debiterade",
+           "appen"},
     # Romanian words that its Romance neighbours do not share, so adding `ro` cannot steal a
     # French/Spanish/Italian/Portuguese state: `la`, `o`, `un`, `de`, `pe`, `ca` are deliberately
     # left out for that reason, and the diacritic signal below carries the rest.
@@ -151,6 +166,18 @@ _STOP = {
            "hər", "nə", "kimi", "görə", "sonra", "əgər", "eger", "deyil", "lakin", "amma",
            "ancaq", "artıq", "artiq", "də", "isə", "həm", "yalnız", "yalniz"},
 }
+
+# Short support fragments often consist of only two or three words, so they do not reach the
+# four-token minimum used by the general language guess. These spellings are specific enough to
+# identify Swedish in that narrow case; generic words such as `fel`, `hjälp`, `paket` and `appen`
+# are deliberately not sufficient on their own. Keep ASCII-normalised variants beside the forms
+# users commonly type without Swedish characters.
+_SHORT_SWEDISH_WORDS = {
+    "åtkomst", "atkomst", "lösenord", "losenord", "fakturan", "betalningen", "inloggningen",
+    "glömt", "glomt", "behöver", "behover", "återbetalning", "aterbetalning", "kvitto", "kvittot",
+    "spårningen", "sparningen", "inställningen", "installningen", "felmeddelande",
+    "abonnemanget",
+}
 # Letters that ordinary English does not use. This is the signal that catches a Latin-script
 # language we hold no stopwords for at all (Romanian, Polish, Czech, Turkish, Baltic, ...),
 # which is the difference between routing it to the multilingual checkpoint and silently
@@ -172,6 +199,28 @@ _NON_EN_DIACRITICS = set(
 # way), though it still counts toward the total of a language that also matched a word of its own.
 _SHARED_WORDS = {w for w in {word for words in _STOP.values() for word in words}
                  if sum(w in words for words in _STOP.values()) > 1}
+# Danish is not in `_STOP`, but several of its common words also occur in the Swedish list.
+# Do not let these words alone name a Danish sentence as Swedish; they remain useful score hits
+# when another, more distinctive Swedish word is present.
+_NORDIC_OVERLAP_WORDS = {
+    "hej", "ja", "nej", "jo", "tack", "mig", "min", "om", "kommer", "får", "skulle", "vi",
+}
+_SHARED_WORDS.update(_NORDIC_OVERLAP_WORDS)
+# English function words no other list holds (`in`, `is`, `as`, `was` are shared with German,
+# Dutch and Portuguese). They alone carry the English rescue of `latin_profile`.
+_EN_ONLY_WORDS = _STOP["en"] - _SHARED_WORDS
+# A few of these function words are also ordinary English words: `come` (Italian), `son` (Spanish),
+# `do` (Portuguese), `care` (Romanian), `todo` (a to-do list), `per`, `plus`, and `im` -- German
+# `im`, and also how `I'm` is written without the apostrophe. For those a repeat is evidence of the
+# foreign language exactly once: "do more, do less" repeats an English word, and counting both hits
+# let one such word clear the `best >= 2` bar below and send plain English to the multilingual
+# checkpoint. Every other word keeps counting occurrences: `der`, `los` and `sa` are nobody's
+# English, so a request whose only evidence is `der` twice ("reduzieren der helligkeit der lichter")
+# is still German, and deduping every word instead sent 791 of 148,700 non-English MASSIVE test rows
+# to the English checkpoint. Dutch `van` is the word this list deliberately leaves out: "liedje van
+# ... van" is ordinary Dutch, and deduping it moved 14 of those rows while rescuing no English one.
+_EN_COLLISION_WORDS = {"come", "son", "do", "care", "todo", "im", "per", "plus"} & {
+    w for lg, sw in _STOP.items() if lg != "en" for w in sw}
 
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 # A token whose dot or @ joins word characters is an identifier, not prose: `github.com`,
@@ -190,13 +239,23 @@ _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 _IDENTIFIER = re.compile(r"(?<![\w-])[\w-]*(?:[.@][\w-]+)+", re.UNICODE)
 
 
-def _iter_text(state: Union[str, dict, list, None], _depth: int = 0) -> List[str]:
-    """Collect the string leaves of a state (str / dict / list), so detection sees real content."""
+def _iter_text(state: Union[str, bytes, Mapping, list, None], _depth: int = 0) -> List[str]:
+    """Collect the string leaves of a state, so detection sees real content.
+
+    Keys are ignored: they are usually English field names. Any mapping counts, not only
+    `dict` -- a UserDict or mappingproxy has the same string values and used to contribute
+    nothing, which made `analyse` report no letters and the router fall through to English.
+    """
     if _depth > 6 or state is None:
         return []
     if isinstance(state, str):
         return [state]
-    if isinstance(state, dict):
+    if isinstance(state, (bytes, bytearray)):
+        try:
+            return [bytes(state).decode("utf-8")]
+        except UnicodeDecodeError:
+            return []
+    if isinstance(state, Mapping):
         out = []
         for v in state.values():
             out.extend(_iter_text(v, _depth + 1))
@@ -209,7 +268,7 @@ def _iter_text(state: Union[str, dict, list, None], _depth: int = 0) -> List[str
     return []
 
 
-def state_text(state: Union[str, dict, list, None], max_chars: int = 4000) -> str:
+def state_text(state: Union[str, bytes, Mapping, list, None], max_chars: int = 4000) -> str:
     """Flatten a state into the text used for detection (keys are ignored: they are usually English)."""
     parts: List[str] = []
     budget = max_chars
@@ -295,6 +354,13 @@ def script_profile(text: str) -> Dict[str, float]:
 # stopword list matches it.
 NON_EN_DIACRITIC_RATE = 0.02
 
+# One accented loanword or proper noun (`café`, `résumé`, `José`) must not alone pull otherwise
+# plain English off the English checkpoint: the rate is measured over every character, so a
+# single `é` in a short sentence clears the floor above. English function words keep their say
+# only through the rescue below -- two distinct words no other list holds, at most one
+# non-English letter word, and a rate still well above the floor vetoes regardless.
+ENGLISH_RESCUE_DIACRITIC_RATE = 0.06
+
 # Non-Latin text is not for the English checkpoint even when Latin letters are the plurality: a
 # brand name or order code outvotes the CJK request around it letter for letter, though one CJK
 # character carries far more than a letter. A short message needs a large share to count; a long
@@ -303,6 +369,12 @@ NON_EN_DIACRITIC_RATE = 0.02
 NON_LATIN_FRACTION = 0.2
 NON_LATIN_MIN_FRACTION = 0.1
 NON_LATIN_MIN_LETTERS = 10
+
+
+def _non_latin_carries(non_latin: float, n_non_latin: int) -> bool:
+    """Whether the non-Latin letters of a Latin-plurality text are enough to carry the state."""
+    return (non_latin >= NON_LATIN_FRACTION
+            or (non_latin >= NON_LATIN_MIN_FRACTION and n_non_latin >= NON_LATIN_MIN_LETTERS))
 
 
 def _script_of(ch: str) -> Optional[str]:
@@ -341,13 +413,31 @@ def _non_latin_words(text: str) -> List[str]:
     return [w for w in runs if len(w) >= 2 and not w[0].isupper()]
 
 
+def _english_rescued_by_words(words: List[str], diac_rate: float) -> bool:
+    """Whether plain-English function words outvote a marginal diacritic rate (#337).
+
+    The rate is measured over every character, so one accented loanword or proper noun in a
+    short sentence clears `NON_EN_DIACRITIC_RATE` outright. English still wins when it shows at
+    least two distinct function words no other list holds and at most one word carrying a
+    non-English letter: one loanword is not a non-English vocabulary, while the odd word a
+    Danish or Swedish sentence picks up (`i`, `at`, `for`, `have`) is not an English sentence
+    either. A rate well above `ENGLISH_RESCUE_DIACRITIC_RATE` vetoes regardless.
+    """
+    if diac_rate >= ENGLISH_RESCUE_DIACRITIC_RATE:
+        return False
+    if len(set(words) & _EN_ONLY_WORDS) < 2:
+        return False
+    return sum(1 for w in set(words) if any(ch in _NON_EN_DIACRITICS for ch in w)) <= 1
+
+
 def latin_profile(text: str) -> Dict[str, object]:
     """Evidence behind the Latin-script language guess.
 
     Returns `language` (may be None when undecided), `english_hits`, `diacritic_rate` and
-    `looks_non_english`. `analyse` needs the evidence and not just the verdict, because
-    "undecided" and "English" are different answers and only one of them is safe to send to the
-    English checkpoint.
+    `looks_non_english`. The latter can be true for non-English diacritics or an overlapping
+    Swedish-Danish marker even when this heuristic cannot name the language. `analyse` needs the
+    evidence and not just the verdict, because "undecided" and "English" are different answers
+    and only one of them is safe to send to the English checkpoint.
 
     A non-English language is only named when it matched at least one word that no other list
     claims: shared function words alone (`la`, `e`, `o`) identify no particular language.
@@ -358,11 +448,18 @@ def latin_profile(text: str) -> Dict[str, object]:
     diac = sum(1 for ch in lowered if ch in _NON_EN_DIACRITICS)
     diac_rate = diac / max(1, len(lowered))
     non_english = diac_rate >= NON_EN_DIACRITIC_RATE
+    nordic_overlap = bool(set(words) & _NORDIC_OVERLAP_WORDS) and not bool(set(words) & _EN_ONLY_WORDS)
+    if 1 < len(words) < 4 and set(words) & _SHORT_SWEDISH_WORDS:
+        return {"language": "sv", "english_hits": 0, "diacritic_rate": diac_rate,
+                "looks_non_english": non_english}
     if len(words) < 4:
         return {"language": None, "english_hits": 0, "diacritic_rate": diac_rate,
-                "looks_non_english": non_english}
+                "looks_non_english": non_english or nordic_overlap}
 
-    scores = {lg: sum(1 for w in words if w in sw) for lg, sw in _STOP.items()}
+    # A collision word counts once however often it repeats; every other word counts its hits.
+    counts = Counter(words)
+    scores = {lg: sum(1 if w in _EN_COLLISION_WORDS else n for w, n in counts.items() if w in sw)
+              for lg, sw in _STOP.items()}
     en = scores.get("en", 0)
     # Only a language that matched at least one word no other list claims may be named. Without
     # that condition the top score can be pure overlap -- `la` and `e` in Romanian text made
@@ -377,14 +474,20 @@ def latin_profile(text: str) -> Dict[str, object]:
     if best_lg and best >= max(2, en + 2):
         # a non-English language needs a clear margin over English function words
         lang = best_lg
+    elif (best_lg == "sv" and "inte" in words and "kan" in words
+          and words[0] in {"kan", "jag", "vi"} and en <= 1):
+        # Short login requests such as "kan inte logga in" carry a distinctive Swedish phrase
+        # but also one English-shaped token (`in`). Do not treat `kan` alone as Swedish: it is
+        # common in Danish and Norwegian too.
+        lang = best_lg
     elif best_lg and non_english and best >= max(2, en):
         # Needs two hits here too. One shared function word ("para" in Turkish text) named Spanish
         # on the strength of the diacritics alone, which is a guess dressed as a detection.
         lang = best_lg
-    elif en and not non_english:
+    elif en and (not non_english or _english_rescued_by_words(words, diac_rate)):
         lang = "en"
     return {"language": lang, "english_hits": en, "diacritic_rate": diac_rate,
-            "looks_non_english": non_english}
+            "looks_non_english": non_english or (lang is None and nordic_overlap)}
 
 
 def guess_latin_language(text: str) -> Optional[str]:
@@ -415,9 +518,128 @@ _JOINED = re.compile(r"[^\W_][._/\\][^\W_]")
 # are hockey teams, states, time zones and radio bands, not French or Portuguese. A segment written
 # entirely in capitals keeps its words -- a customer shouting in Portuguese is still Portuguese.
 _LETTER_RUN = re.compile(r"[^\W\d_]{2,}")
+# ...but a line of nothing but acronyms has no lowercase either, so it skips the blanking above
+# and is read as prose. `MON DES EST LA` -- a hockey team, a state, a time zone and an airport --
+# was named French, and `STORES LOS ANGELES LAS VEGAS EL PASO CLOSED` Spanish. An all-caps line
+# must therefore show evidence that is more than acronym-shaped before it is believed.
+#
+# The bar is on the tokens that actually scored, not on the line. Requiring one long word
+# anywhere does almost nothing by itself: `ANGELES`, `VEGAS` and `SEGUNDO` are long and are not
+# what named Spanish -- `LOS`, `LAS` and `EL` did.
+#
+# Three corpora decide these two numbers, and `research/evals/shouted_bar_corpora.py` builds all
+# three and prints the table below: upper-cased MASSIVE test rows that the rule names as their
+# own locale with no bar at all (genuine shouted prose, must survive); 500,000 lines of 4-8
+# acronyms; 50,000 all-caps US address and signage lines. Pinned to the MASSIVE test split at
+# revision 940fd47a and `random.Random(0)`, with the acronym and place-name pools committed in
+# that script, so every row here can be rechecked when someone wants to move a constant. Each
+# row applies one bar, named in full, so the rows are comparable:
+#
+#   rule                                   prose kept      acronym FP   address FP
+#   none (no bar at all)                 10,960 100.00%      4,219         141
+#   diacritics only                      10,960 100.00%      4,219         141
+#   word >= 5 only                       10,854  99.03%        431         141  <- addresses stand
+#   stopword >= 3 only                   10,729  97.89%      3,751         109  <- keeps LOS/LAS/EL
+#   stopword >= 4 only                    8,841  80.67%          0           0
+#   stopword >= 5 only                    6,963  63.53%          0           0
+#   stopword >= 3 AND word >= 5          10,625  96.94%        386         109
+#   stopword >= 4 AND word >= 5           8,762  79.95%          0           0  <- chosen
+#   stopword >= 5 AND word >= 5           6,902  62.97%          0           0
+#   stopword >= 4 AND word >= 6           8,418  76.81%          0           0
+#   stopword >= 4 AND word >= 7           7,459  68.06%          0           0
+#   stopword >= 4 AND word >= 5, no dia   6,749  61.58%          0           0
+#
+# `LOS`, `LAS` and `EL` are three, three and two letters, so any bar of 4 or more rejects them;
+# what the table has to decide is the other side of that, and it is 3 that it rules out -- at 3
+# the reported address line still reads as Spanish, and 3,751 of 500,000 acronym runs and 109 of
+# 50,000 address lines still read as prose. 4 closes both columns outright. Going on to 5 buys
+# nothing measurable and costs 1,860 more real lines. Non-English diacritics are accepted in
+# place of a long stopword, because the module already treats them as non-English evidence
+# (NON_EN_DIACRITIC_RATE) and neither an acronym nor a US place name carries any: that disjunct
+# is free on both false-positive corpora (0 and 0 either way) and lifts prose kept from 61.58%
+# to 79.95%.
+_SHOUTED_MIN_STOPWORD = 4
+# A length bar as well: a token of this many letters is a word rather than an acronym. Used
+# twice -- here, on an all-caps line, and in `_analyse_text` to decide whether an all-caps run
+# inside mixed-case text is an acronym worth blanking.
+#
+# Stated plainly, this bar is not justified by the table above: at a stopword bar of 4 both
+# false-positive columns are already 0, so the 79 real prose lines it costs (8,841 -> 8,762) buy
+# nothing those corpora can see. It is powerful on its own -- row three takes acronym false
+# positives from 4,219 to 431 -- and it is kept because the corpora it was first chosen against
+# were larger than the ones committed here (5,670 acronyms and 18,718 place names, neither
+# committed, so their counts are not reproducible and are not quoted) and did report false
+# positives surviving a stopword bar of 4. Absence on this corpus is not absence. Anyone who
+# wants those 79 lines back should widen the acronym pool in that script first and show the
+# column stays at 0. Swept with the stopword bar at 4: no bar 8,841 prose, >= 5 8,762,
+# >= 6 8,418, >= 7 7,459.
+#
+# What the pair costs is not small and is not only short lines: 2,198 of the 10,960
+# shouted-prose lines are given up, 1,816 of them (82.62%) six tokens or longer, the longest a
+# 34-token Dutch sentence. On MASSIVE as written none of this is visible -- not one of the
+# 151,674 rows holds a single uppercase character -- so it has to be measured on rows that do:
+# over the 77,324 rows of the 26 non-English Latin locales, upper-cased, the multilingual share
+# falls 0.5912 -> 0.5430, which is 3,727 rows. The casualties are sentences.
+_SHOUTED_MIN_WORD = 5
 
 
-def _non_english_segment(state: Union[str, dict, list, None], max_chars: int = 4000):
+def _shouted(text: str) -> bool:
+    """True for a *cased* segment written entirely in capitals.
+
+    The `isupper` half is not redundant. A caseless script -- Devanagari, Bengali, CJK -- has no
+    lowercase either, so testing only `islower` would call every such segment shouted and hold it
+    to a bar it cannot clear: `_WORD` splits at every combining mark, so the tokens are short by
+    construction. Nothing is routed on that path today (`_STOP["bn"]` is romanised, so a
+    Bengali-script line is named by script and never reaches here), but the bar belongs to cased
+    text and saying so here keeps it that way.
+
+    That argument covers *pure* caseless text, which never reaches a caps bar at all. Text that
+    merely contains some has no lowercase either and does reach one; `_analyse_text` keeps both
+    bars off it, because a bar that works by discarding Latin evidence has nothing to say about
+    the half of the state it cannot read.
+    """
+    return any(ch.isupper() for ch in text) and not any(ch.islower() for ch in text)
+
+
+def _shouted_evidence(tokens, lang: str, diacritic_rate: float) -> bool:
+    """Whether an all-caps line's evidence for `lang` is more than acronym-shaped tokens."""
+    if not any(len(t) >= _SHOUTED_MIN_WORD for t in tokens):
+        return False
+    if diacritic_rate >= NON_EN_DIACRITIC_RATE:
+        return True
+    matched = {t.lower() for t in tokens} & _STOP.get(lang, set())
+    return any(len(w) >= _SHOUTED_MIN_STOPWORD for w in matched)
+
+
+def _named_prose_language(segment: str):
+    """Language code for one non-code line, or None when it does not name a foreign language.
+
+    Same evidence bar as `_non_english_segment`: four words, a language `latin_profile` will name,
+    and two *different* words of that language. Acronyms and slash compounds are not words. A
+    segment in all capitals keeps its acronym-shaped tokens -- shouting is not a foreign language
+    -- so it must also clear `_shouted_evidence`.
+    """
+    if not segment.strip() or _CODE_LINE.search(segment):
+        return None
+    prose = " ".join(tok for tok in segment.split() if not _JOINED.search(tok))
+    shouted = _shouted(prose)
+    if not shouted:
+        prose = _LETTER_RUN.sub(lambda m: " " if m.group().isupper() else m.group(), prose)
+    tokens = _WORD.findall(prose)
+    if len(tokens) < 4:
+        return None
+    prof = latin_profile(prose)
+    lang = prof["language"]
+    if lang in (None, "en"):
+        return None
+    if shouted and not _shouted_evidence(tokens, lang, float(prof["diacritic_rate"])):
+        return None
+    if len({w.lower() for w in tokens} & _STOP.get(lang, set())) < 2:
+        return None
+    return lang
+
+
+def _non_english_segment(state: Union[str, bytes, Mapping, list, None], max_chars: int = 4000):
     """First line or field that, read on its own, is named a non-English language, else None.
 
     Returns (language, segment). A segment needs the evidence a whole state needs -- at least four
@@ -434,36 +656,25 @@ def _non_english_segment(state: Union[str, dict, list, None], max_chars: int = 4
                 return None
             seg = seg[:max_chars - seen]
             seen += len(seg)
-            if _CODE_LINE.search(seg):
-                continue
-            prose = " ".join(tok for tok in seg.split() if not _JOINED.search(tok))
-            if any(ch.islower() for ch in prose):
-                prose = _LETTER_RUN.sub(lambda m: " " if m.group().isupper() else m.group(), prose)
-            tokens = _WORD.findall(prose)
-            if len(tokens) < 4:
-                continue
-            lang = latin_profile(prose)["language"]
-            if lang not in (None, "en") and len({w.lower() for w in tokens} & _STOP.get(lang, set())) >= 2:
+            lang = _named_prose_language(seg)
+            if lang:
                 return lang, seg.strip()
     return None
 
 
-def analyse(state: Union[str, dict, list, None]) -> Dict[str, object]:
-    """Full detection result for a state.
+def _analyse_text(text: str) -> Dict[str, object]:
+    """Detection result for one already-flattened string.
 
-    Returns `script`, `script_profile`, `language` (best effort, may be None),
-    `is_english`, `non_latin_fraction` and `mixed_segment` (the line or field that made a mostly
-    English state non-English, else None).
+    Does not look for a foreign line inside mostly-English text. `analyse` does that, because it
+    needs the original state and not only the joined window.
     """
-    text = state_text(state)
     counts = _script_counts(text)
     prof = _profile_from_counts(counts)
     script = _script_from_counts(counts)
     non_latin = round(1.0 - prof.get("latin", 0.0), 4) if prof else 0.0
     n_non_latin = round(non_latin * sum(ch.isalpha() for ch in text))
-    if script == "latin" and _non_latin_words(text) and (
-            non_latin >= NON_LATIN_FRACTION or (
-                non_latin >= NON_LATIN_MIN_FRACTION and n_non_latin >= NON_LATIN_MIN_LETTERS)):
+    if (script == "latin" and _non_latin_words(text)
+            and _non_latin_carries(non_latin, n_non_latin)):
         script = max((s for s in prof if s != "latin"), key=prof.get)
     if script == "unknown":
         return {"script": "unknown", "script_profile": prof, "language": None,
@@ -475,31 +686,180 @@ def analyse(state: Union[str, dict, list, None]) -> Dict[str, object]:
                 "non_latin_fraction": non_latin, "mixed_segment": None}
     prof_lat = latin_profile(text)
     lang = prof_lat["language"]
+    # The acronym bar belongs here too, not only in the segment scan. The scan runs only once a
+    # state already reads English overall, so a state that is *nothing but* an acronym line --
+    # or one diluted by fewer English lines than it takes to tip this verdict -- never reached it
+    # and was named foreign outright: `MON DES EST LA` routed multilingual on its own, and so did
+    # the same line under one or two lines of English. Vetoing here leaves the text undecided, so
+    # `looks_non_english` still decides it: a shouted line with non-English diacritics is kept.
+    # Neither bar applies when the state is carried by a caseless script. Both of them answer
+    # the verdict by taking evidence *away* from the Latin letters, and `looks_non_english`,
+    # which decides what is left, reads Latin diacritics only -- it cannot see the caseless half.
+    # Nothing else catches the fall, either: the script promotion above needs
+    # `_non_latin_words`, which drops any run starting with a capital, so a shouted mixed-script
+    # line has no promotable word by construction. `ПРИВЕТ MON DES EST LA` is 35% Cyrillic
+    # letters and was being sent to the English checkpoint on the strength of disbelieving `MON
+    # DES EST LA`. Whatever the Latin part is worth, text this far from Latin is not English, so
+    # there is nothing for either bar to buy here and a wrong language name costs nothing: the
+    # checkpoint is chosen on `is_english`.
+    if lang not in (None, "en") and not _non_latin_carries(non_latin, n_non_latin):
+        if _shouted(text):
+            if not _shouted_evidence(_WORD.findall(text), lang,
+                                     float(prof_lat["diacritic_rate"])):
+                lang = None
+        else:
+            # Mixed-case text: the segment scan has always held that an acronym is not a word,
+            # but the whole-state verdict never applied that rule, so the acronyms voted in it.
+            # That is what let a short English state be outvoted -- one or two lines of English
+            # above `MON DES EST LA` still read as French overall, and only at three did English
+            # win the margin. Re-take the verdict without the all-caps runs. `looks_non_english`
+            # and `diacritic_rate` stay measured on the original text, so a foreign word that
+            # happens to be shouted cannot be blanked out of the diacritic safety net.
+            #
+            # Only *acronym-shaped* runs are blanked. Blanking every all-caps run deleted
+            # emphasis capitals, which are ordinary in real prose and are usually on the words
+            # that carry the sentence, so when the shouted words were the ones that named the
+            # language the evidence simply went: `sag mir das HEUTIGE DATUM` and `quiero
+            # cancelar mi PEDIDO POR FAVOR` both lost their verdict and routed english. It also
+            # broke monotonicity -- the fully upper-cased form held the shouted bar, but adding
+            # one lowercase English token moved the text to this branch, where it had no bar at
+            # all. So a run is blanked only while every one of them is short enough to be an
+            # acronym, by `_shouted_evidence`'s own first test: a run of `_SHOUTED_MIN_WORD`
+            # letters is a word, and a word is not blanked out of its own sentence. Measured
+            # over the 20,708 Latin-locale MASSIVE test rows, emphasis-capitalised two ways
+            # (see the commit message): regressions 1,753 -> 293 and 3,835 -> 752.
+            caps = [m.group() for m in _LETTER_RUN.finditer(text) if m.group().isupper()]
+            if caps and not any(len(c) >= _SHOUTED_MIN_WORD for c in caps):
+                blanked = _LETTER_RUN.sub(
+                    lambda m: " " if m.group().isupper() else m.group(), text)
+                if blanked != text:
+                    lang = latin_profile(blanked)["language"]
     # Undecided is not English. Treating it as English sent every Latin-script language we hold no
     # stopwords for to the checkpoint that cannot read it, silently. When nothing identifies the
-    # language, non-English letters are enough to prefer the multilingual checkpoint; text with no
-    # such letters (including short English) still goes to the English one.
+    # language, non-English letters or a shared Swedish-Danish marker can still prefer the
+    # multilingual checkpoint; text with neither signal still goes to the English one.
     undecided = lang is None
     english = lang == "en" or (undecided and not prof_lat["looks_non_english"])
-    # A Portuguese ticket with an English stack trace, error payload or form template reads as
-    # English as a whole, because the English part is longer -- yet the part a question is about is
-    # the customer's, and the English checkpoint cannot read it (0.97 confidence at 0.47 accuracy on
-    # `pt`). The cost is lopsided: English sent to multilingual loses a few points, the reverse loses
-    # calibration. So a state that would go to English is checked line by line and field by field.
-    mixed = None
-    leaves = _iter_text(state)
-    # a single line has no other part to be outvoted by, and was just read whole
-    if english and (len(leaves) > 1 or any("\n" in leaf for leaf in leaves)):
-        found = _non_english_segment(state)
-        if found:
-            lang, mixed = found
-            english, undecided = False, False
     return {"script": "latin", "script_profile": prof, "language": lang,
             "is_english": english, "language_undecided": undecided,
             "diacritic_rate": round(float(prof_lat["diacritic_rate"]), 4),
-            "non_latin_fraction": non_latin, "mixed_segment": mixed}
+            "non_latin_fraction": non_latin, "mixed_segment": None}
 
 
-def is_english(state: Union[str, dict, list, None]) -> bool:
+def _leaf_non_english(leaf: str) -> Optional[Dict[str, object]]:
+    """A string value that is itself not safe for the English checkpoint, else None.
+
+    A one-word name ("José") and a capitalised non-Latin name stay out: the same rules
+    `latin_profile` and `_non_latin_words` already use, so a name field cannot pull an
+    English ticket onto the multilingual checkpoint. Code lines, acronyms and slash compounds
+    stay out too, matching `_non_english_segment`, so a pasted traceback is not a message.
+    Each line is capped at 4000 characters; unlike the segment scan, a long earlier field
+    does not consume the budget of the next one (#384).
+    """
+    best_n = -1
+    best: Optional[Dict[str, object]] = None
+    for line in leaf.split("\n"):
+        # A line this short cannot be selected, so skip it before the slice, `strip`,
+        # `_CODE_LINE` and a full `_analyse_text` pass. Each branch below needs four `_WORD`
+        # tokens or NON_LATIN_MIN_LETTERS letters. `_WORD` matches maximal runs of letters and
+        # letter-like numerals, so four tokens need three separators between them: seven
+        # characters, and ten letters need ten. What makes seven safe rather than six is that
+        # every one of those counts is taken on the raw line -- `İ` lowers to two code points, so
+        # counting on `sample.lower()` would let a four-character line reach four tokens, which is
+        # why `latin_profile` replaces `İ` before lowering.
+        if len(line) < 7:
+            continue
+        sample = line[:4000]
+        if not sample.strip() or _CODE_LINE.search(sample):
+            continue
+        det = _analyse_text(sample)
+        if det["is_english"]:
+            continue
+        # A named language still has to survive `_named_prose_language`: acronyms and slash
+        # compounds are not words. But a veto is not a verdict of English. Dropping the line here
+        # skipped the diacritic branch below, which exists for exactly this -- text that carries
+        # non-English letters and that no stopword list can name. `WIE SPÄT IST ES IN KÖLN`
+        # was vetoed for having no long stopword and then thrown away, so a German field routed
+        # english; now it falls through and its umlauts carry it. That is also why
+        # `language_undecided` is no longer required below: a language named and then disbelieved
+        # is in the same evidential position as one never named.
+        #
+        # The ASCII spelling `WIE SPAET IST ES IN KOELN` is a different case and is not fixed
+        # here. It has no diacritics to fall through to, and its longest matched German stopword
+        # is `wie`, three letters, so `_SHOUTED_MIN_STOPWORD` vetoes it and nothing recovers it:
+        # genuine German on the English checkpoint, one of the 3,727 upper-cased casualties
+        # counted above and not an example of what this branch buys.
+        named = (det["language"] not in (None, "en")
+                 and _named_prose_language(sample) is not None)
+        if not named:
+            if det["script"] not in ("latin", "unknown"):
+                if not (_non_latin_words(sample) and sum(ch.isalpha() for ch in sample) >= NON_LATIN_MIN_LETTERS):
+                    continue
+            elif not (float(det["diacritic_rate"]) >= NON_EN_DIACRITIC_RATE
+                      and len(_WORD.findall(sample)) >= 4):
+                continue
+        n_alpha = sum(ch.isalpha() for ch in sample)
+        if n_alpha > best_n:
+            best_n = n_alpha
+            best = det
+    return best
+
+
+def analyse(state: Union[str, bytes, Mapping, list, None]) -> Dict[str, object]:
+    """Full detection result for a state.
+
+    Returns `script`, `script_profile`, `language` (best effort, may be None),
+    `is_english`, `non_latin_fraction` and `mixed_segment` (the line or field that made a mostly
+    English state non-English, else None).
+
+    String values are what get read. When a state has several of them, one non-English value is
+    enough: joining every value into one window let a long English note fill the 4000 characters,
+    or outvote a short German message, and that message was then sent to the English checkpoint
+    (#384). The segment scan still stops at 4000 characters, which is what keeps a huge field
+    cheap; a value it did not reach is read on its own afterwards.
+    """
+    result = _analyse_text(state_text(state))
+    if result["script"] == "latin" and result["is_english"]:
+        # A Portuguese ticket with an English stack trace, error payload or form template reads as
+        # English as a whole, because the English part is longer -- yet the part a question is about
+        # is the customer's, and the English checkpoint cannot read it (0.97 confidence at 0.47
+        # accuracy on `pt`). The cost is lopsided: English sent to multilingual loses a few points,
+        # the reverse loses calibration. So a state that would go to English is checked line by line
+        # and field by field.
+        leaves = _iter_text(state)
+        # a single line has no other part to be outvoted by, and was just read whole
+        if len(leaves) > 1 or any("\n" in leaf for leaf in leaves):
+            found = _non_english_segment(state)
+            if found:
+                lang, mixed = found
+                result = dict(result)
+                result["language"] = lang
+                result["is_english"] = False
+                result["language_undecided"] = False
+                result["mixed_segment"] = mixed
+    # A plain string was just read whole. A structured state can still hide a message past the
+    # segment cap, or in a script `latin_profile` does not name.
+    if isinstance(state, (str, bytes, bytearray)) or state is None or not result["is_english"]:
+        return result
+    best_n = -1
+    best: Optional[Dict[str, object]] = None
+    for leaf in _iter_text(state):
+        det = _leaf_non_english(leaf)
+        if det is None:
+            continue
+        n_alpha = sum(ch.isalpha() for ch in leaf[:4000])
+        if n_alpha > best_n:
+            best_n = n_alpha
+            best = det
+    if best is None:
+        return result
+    updated = dict(result)
+    updated["language"] = best["language"]
+    updated["is_english"] = False
+    updated["language_undecided"] = best["language_undecided"]
+    return updated
+
+
+def is_english(state: Union[str, bytes, Mapping, list, None]) -> bool:
     """True when the English checkpoint can be expected to read this state."""
     return bool(analyse(state)["is_english"])

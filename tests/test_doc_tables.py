@@ -72,6 +72,10 @@ HEADER = ("| checkpoint | type | n | max \\|p_fast - p_stock\\| | max \\|p_fast 
           "| max \\|p_stock - p_fp32\\| | argmax fast = stock | fast = fp32 |")
 
 
+FP16_HEADER = ("| checkpoint | type | n | max \\|p_fast - p_fp32\\| bf16 | max \\|p_fast - p_fp32\\| fp16 "
+               "| argmax fast = fp32, bf16 | fp16 |")
+
+
 def split_row(line: str) -> List[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
@@ -153,6 +157,98 @@ def main() -> int:
                     if isinstance(v, dict) and v["d_fast_fp32"] > v["d_stock_fp32"]]
     check("the row that falsified the old sentence is still the multilingual noul one",
           contradicted, [("laya-multilingual", "noul")])
+
+    # ------------------------------------------------- the fp16 table (same files, plus fp16 runs)
+    fp16_sources = {
+        "laya": ("parity_english_rtx4070.json", "parity_english_fp16_rtx4070.json"),
+        "laya-multilingual": ("parity_multilingual_rtx4070.json", "parity_multilingual_fp16_rtx4070.json"),
+        "laya-typed-decisions": ("parity_typed_decisions_rtx4070.json", "parity_typed_decisions_fp16_rtx4070.json"),
+    }
+    pairs: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
+    for ckpt, (bf, fp) in fp16_sources.items():
+        loaded = []
+        for name in (bf, fp):
+            with open(os.path.join(PARITY_DIR, name), encoding="utf-8") as fh:
+                loaded.append(json.load(fh))
+        check("fp16 table/%s bf16 file is a bf16 run" % ckpt, loaded[0]["dtype"], "torch.bfloat16")
+        check("fp16 table/%s fp16 file is an fp16 run" % ckpt, loaded[1]["dtype"], "torch.float16")
+        pairs[ckpt] = (loaded[0]["summary"], loaded[1]["summary"])
+    rows16 = parse_table(read(BENCHMARKS), FP16_HEADER)
+    check_true("fp16 table/parsed nine rows", len(rows16) == 9, "got %d" % len(rows16))
+    for row in rows16:
+        ckpt, qtype = row[0], row[1]
+        if ckpt not in pairs or qtype not in pairs[ckpt][0] or qtype not in pairs[ckpt][1]:
+            FAIL.append("fp16 table/unknown row %s/%s" % (ckpt, qtype))
+            continue
+        b, f = pairs[ckpt][0][qtype], pairs[ckpt][1][qtype]
+        label = "fp16 table/%s/%s" % (ckpt, qtype)
+        check(label + " n", int(row[2]), f["n"])
+        check(label + " bf16 d_fast_fp32", unstyled(row[3]), rounded(b["d_fast_fp32"]))
+        check(label + " fp16 d_fast_fp32", unstyled(row[4]), rounded(f["d_fast_fp32"]))
+        check(label + " bf16 agree_fast_fp32", unstyled(row[5]), "%d/%d" % (b["agree_fast_fp32"], b["n"]))
+        check(label + " fp16 agree_fast_fp32", unstyled(row[6]), "%d/%d" % (f["agree_fast_fp32"], f["n"]))
+    # the prose under it: fp16 fast agrees with fp16 stock everywhere, and moves nothing by more than 0.009
+    fp16_rows = [v for _, f in pairs.values() for v in f.values() if isinstance(v, dict)]
+    check("fp16 prose/argmax fast = stock on every question",
+          sum(v["agree_fast_stock"] for v in fp16_rows), sum(v["n"] for v in fp16_rows))
+    check("fp16 prose/max |fast - stock| rounds to 0.009",
+          rounded(max(v["d_fast_stock"] for v in fp16_rows)), "0.009")
+    check("fp16 prose/README's 'within 0.009 of fp32'",
+          rounded(max(v["d_fast_fp32"] for v in fp16_rows)), "0.009")
+    # ------------------------------------- the 51-language table (#208)
+    # The multilingual half of the committed sweep does not reproduce on current code, so the
+    # table prints the refreshed re-run instead. That makes `cpu_51_language_sweep_refreshed.json`
+    # the artifact behind every cell, and it is checkable here: the `laya` column must still
+    # equal the committed file (it reproduces exactly, which is what makes the multilingual
+    # divergence interesting rather than a harness change), and the `laya-multilingual` column
+    # must equal the refresh.
+    REFRESH = os.path.join("research", "results", "cpu_51_language_sweep_refreshed.json")
+    if os.path.exists(REFRESH):
+        with open(REFRESH, encoding="utf-8") as fh:
+            refreshed = json.load(fh)
+        committed_sweep = json.loads(read(os.path.join("research", "results",
+                                                       "cpu_51_language_sweep.json")))
+        en = refreshed["by_model"]["english"]
+        ml = refreshed["by_model"]["multilingual"]
+
+        # the refreshed `laya` column is the committed one, per language
+        same = [lg for lg in en["per_language"]
+                if abs(en["per_language"][lg]["refreshed_clamped"]["accuracy"]
+                       - committed_sweep["part_a"]["by_model"]["english"]["per_language"][lg]["accuracy"]) > 5e-5]
+        check("51-language/laya reproduces the committed file exactly", same, [])
+
+        # ...and the multilingual one does not, which is why the refresh exists
+        differ = [lg for lg in ml["per_language"]
+                  if abs(ml["per_language"][lg]["refreshed_clamped"]["accuracy"]
+                         - ml["per_language"][lg]["committed"]["accuracy"]) > 5e-5]
+        check_true("51-language/multilingual differs from committed in most languages",
+                   len(differ) > 40, "%d of 51 differ" % len(differ))
+
+        bench = read(BENCHMARKS)
+        header = "| lang | laya | laya-multilingual | \u0394 | laya ECE | multilingual ECE |"
+        start = bench.find(header)
+        check_true("51-language/table found in BENCHMARKS.md", start != -1, "header not found")
+        if start != -1:
+            body = bench[start:bench.find("</details>", start)]
+            rows = [l for l in body.splitlines() if l.startswith("| `")]
+            check("51-language/table has one row per language", len(rows), 51)
+            mismatched = []
+            for row in rows:
+                cells = [c.strip() for c in row.strip("|").split("|")]
+                lg = cells[0].strip("`")
+                e = en["per_language"].get(lg, {}).get("refreshed_clamped")
+                m = ml["per_language"].get(lg, {}).get("refreshed_clamped")
+                if e is None or m is None:
+                    mismatched.append("%s: not in the artifact" % lg)
+                    continue
+                want = ["%.3f" % e["accuracy"], "%.3f" % m["accuracy"],
+                        "%+.3f" % (m["accuracy"] - e["accuracy"]),
+                        "%.3f" % e["ece"], "%.3f" % m["ece"]]
+                if cells[1:] != want:
+                    mismatched.append("%s: %s != %s" % (lg, cells[1:], want))
+            check("51-language/every cell matches the refreshed artifact", mismatched, [])
+    else:
+        FAIL.append("51-language/%s is missing, so the table is unbacked" % REFRESH)
 
     # ------------------------------------------------- what this cannot check
     unbacked = [

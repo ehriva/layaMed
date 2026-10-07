@@ -1,0 +1,86 @@
+name: Evals
+
+# The real-checkpoint quality gate. It downloads weights and the MASSIVE dataset, so it is kept
+# out of PR CI: it runs weekly, before a release, and on demand, and compares the fresh numbers
+# to the committed baseline in research/results/. A failure is a regression in the published
+# numbers, not a blocked PR.
+on:
+  schedule:
+    - cron: "0 3 * * 1"       # Mondays 03:00 UTC
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A run here is never obsolete. `github.ref` is the default branch for `schedule` and for a
+# `workflow_dispatch` on it, so the weekly baseline and a manual re-run shared this group, as
+# do two dispatches on one ref, and `cancel-in-progress: true` made whichever started second
+# kill the first. That job spends 60 minutes downloading weights and the dataset, and a
+# cancelled run uploads no report, so the cancellation reads as a clean gate.
+#
+# `release: published` is the one trigger that never collided: its ref is the tag
+# (`refs/tags/<tag_name>`), so each release already had a group of its own.
+#
+# The group is left as it is. Same-ref runs are the same 60-minute comparison against the same
+# committed baseline, so serialising them is right; only the cancellation was wrong. (Adding
+# `${{ github.run_id }}` would also stop GitHub dropping a *queued* run when a third invocation
+# arrives, at the cost of letting several run at once -- a maintainer's call, not this file's.)
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  english-regression:
+    name: English checkpoint vs committed baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # `onnx` for the torch/ONNX parity suite, `serve` + httpx for the demo-server
+          # suite. Both download weights, which is why they live in this lane and not in PR CI.
+          pip install -e ".[onnx,serve]" datasets httpx pytest
+
+      - name: Evaluate the English checkpoint on MASSIVE English
+        run: |
+          python research/eval/laya_eval.py \
+            --model convaiinnovations/laya --langs en --out report.json
+
+      - name: Compare to the committed baseline
+        run: |
+          python research/evals/check_regression.py report.json \
+            research/results/eval_english_51_languages.json \
+            research/evals/thresholds.json
+
+      # `tests/test_onnx.py` performs a real export and a numerical parity check, and the export
+      # downloads `convaiinnovations/laya`; it is skip-guarded on `onnxruntime`, so no workflow
+      # running it means torch<->ONNX parity and the dynamic-shape export (#695) have no automated
+      # check anywhere while `AGENTS.md` presents the suite as the ONNX check. The weight-free
+      # `tests/test_onnx_quantize.py` stays in the PR `onnx-export` job.
+      - name: Torch/ONNX numerical parity
+        run: python -m pytest tests/test_onnx.py -q
+
+      # The demo server's renderer and escaping, and the `/health`, `/models`, `/presets` and `/gui`
+      # wiring, are otherwise unguarded: no workflow referenced this suite, which by its own
+      # comments is what caught the `None`-criteria and missing `python-multipart` bugs. It loads
+      # the English weights only, which this lane has already downloaded.
+      - name: Demo server smoke tests
+        run: python tests/test_server_example.py
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eval-report
+          path: report.json
+          if-no-files-found: ignore

@@ -26,10 +26,25 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+node_modules/
+*.tgz
+.pytest_cache/
 .DS_Store
 .env
 .pypirc
+.ruff_cache/
 .idea/
+
+# local setup artifacts from setup_laya.sh: ~2.3 GB of checkpoint weights and the download caches
+models/
+.hf-cache/
+.pip-cache/
+
+# outputs written by the research/scripts harnesses; curated runs live in research/results/
+research/*_benchmark_results.json
+
+# output of a local notebook run (Kaggle uses /kaggle/working)
+notebooks/finetune_run/
 
 
 # session transcripts (may contain pasted credentials)
@@ -73,3 +88,7 @@ site/
 # ruff's cache, and the JSON the research harnesses write on every run
 .ruff_cache/
 research/*_benchmark_results.json
+
+# local checkpoint weights, kept out of the tree
+# (fetch them with: python verify/checkpoints.py --fetch)
+models/
