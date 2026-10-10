@@ -1949,6 +1949,122 @@ _rr.register("fresh", "/z")
 check("register/a new name unloads nothing", _log.evicts, ["papers"])
 
 
+# --------------------------------------------------------------------- near-typo names
+# A custom name one edit from a built-in is still registered. The call warns and names both,
+# so the typo is visible without taking the name away. An exact built-in, an alias, and a
+# clearly different name do not warn; neither does a registration refused for another reason.
+import inspect as _inspect
+import warnings as _warnings
+
+
+def _near_notes(caught):
+    return [w for w in caught if str(w.message).startswith("laya: checkpoint name")]
+
+
+def _near_text(name, built_in):
+    return ("laya: checkpoint name %r is one edit from the built-in %r; it is registered "
+            "as a separate checkpoint and %r is unchanged." % (name, built_in, built_in))
+
+
+def _warning_site(note):
+    """(basename, lineno) the warning was attributed to, without reading source."""
+    if note is None:
+        return None
+    return os.path.basename(note.filename), note.lineno
+
+
+with _warnings.catch_warnings(record=True) as _near_ctor_ws:
+    _warnings.simplefilter("always")
+    _near_ctor_line = _inspect.currentframe().f_lineno + 1  # the Router() call on the next line
+    _near_ctor = Router(models={"englsh": "/tmp/x"})
+_near_ctor_notes = _near_notes(_near_ctor_ws)
+_near_ctor_note = _near_ctor_notes[0] if _near_ctor_notes else None
+check("near-typo/constructor warns once", len(_near_ctor_notes), 1)
+check("near-typo/constructor names both",
+      None if _near_ctor_note is None else str(_near_ctor_note.message), _near_text("englsh", "english"))
+check("near-typo/constructor category",
+      None if _near_ctor_note is None else _near_ctor_note.category, RuntimeWarning)
+check("near-typo/constructor points at the caller", _warning_site(_near_ctor_note),
+      ("test_router.py", _near_ctor_line))
+check("near-typo/constructor still registers", _near_ctor.models.get("englsh"), "/tmp/x")
+check("near-typo/constructor leaves the built-in", _near_ctor.models["english"], DEFAULT_MODELS["english"])
+
+_near_reg_router = Router()
+with _warnings.catch_warnings(record=True) as _near_reg_ws:
+    _warnings.simplefilter("always")
+    _near_reg_line = _inspect.currentframe().f_lineno + 1  # the register() call on the next line
+    _near_reg = _near_reg_router.register("typed-decision", "/tmp/x")
+_near_reg_notes = _near_notes(_near_reg_ws)
+_near_reg_note = _near_reg_notes[0] if _near_reg_notes else None
+check("near-typo/register warns once", len(_near_reg_notes), 1)
+check("near-typo/register names both",
+      None if _near_reg_note is None else str(_near_reg_note.message),
+      _near_text("typed-decision", "typed-decisions"))
+check("near-typo/register points at the caller", _warning_site(_near_reg_note),
+      ("test_router.py", _near_reg_line))
+check("near-typo/register returns the name", _near_reg, "typed-decision")
+check("near-typo/register still registers", _near_reg_router.models.get("typed-decision"), "/tmp/x")
+check("near-typo/register leaves the built-in",
+      _near_reg_router.models["typed-decisions"], DEFAULT_MODELS["typed-decisions"])
+
+# An adjacent-letter swap is one edit (`enlgish`), not two substitutions.
+_near_swap_router = Router()
+with _warnings.catch_warnings(record=True) as _near_swap_ws:
+    _warnings.simplefilter("always")
+    _near_swap_router.register("enlgish", "/tmp/x")
+_near_swap_notes = _near_notes(_near_swap_ws)
+check("near-typo/adjacent swap warns once", len(_near_swap_notes), 1)
+check("near-typo/adjacent swap names both",
+      "" if not _near_swap_notes else str(_near_swap_notes[0].message), _near_text("enlgish", "english"))
+check("near-typo/adjacent swap still registers", _near_swap_router.models.get("enlgish"), "/tmp/x")
+
+with _warnings.catch_warnings(record=True) as _quiet_ws:
+    _warnings.simplefilter("always")
+    _quiet = Router(models={"papers": "/tmp/papers", "tone": "/tmp/tone", "english": "/tmp/my-english"})
+    _quiet.register("en", "/tmp/alias")
+    _quiet.register("ml", "/tmp/ml-alias")
+check("near-typo/distinct names and built-ins do not warn", _near_notes(_quiet_ws), [])
+check("near-typo/a built-in re-point still lands", _quiet.models["english"], "/tmp/alias")
+check("near-typo/an alias re-point still lands", _quiet.models["multilingual"], "/tmp/ml-alias")
+
+with _warnings.catch_warnings(record=True) as _bad_ws:
+    _warnings.simplefilter("always")
+    try:
+        Router().register("Bad/Name", "/tmp/x")
+        _bad_raised = None
+    except ValueError as _exc:
+        _bad_raised = _exc
+check("near-typo/invalid name raises", isinstance(_bad_raised, ValueError), True)
+check("near-typo/invalid name does not warn", _near_notes(_bad_ws), [])
+
+with _warnings.catch_warnings(record=True) as _src_ws:
+    _warnings.simplefilter("always")
+    try:
+        Router().register("englsh", 42)
+        _src_raised = None
+    except TypeError as _exc:
+        _src_raised = _exc
+check("near-typo/invalid source raises", isinstance(_src_raised, TypeError), True)
+check("near-typo/invalid source does not warn", _near_notes(_src_ws), [])
+
+# Promoting the warning to an error must not leave the name behind. The warning is raised
+# inside `register`'s try, so the existing rollback restores the router.
+_roll = Router(models={"papers": "/tmp/papers"})
+_roll_before = (dict(_roll.models), dict(_roll.descriptions), dict(_roll.sha256_digests))
+with _warnings.catch_warnings():
+    _warnings.simplefilter("error")
+    try:
+        _roll.register("englsh", "/tmp/x", description="typo")
+        _roll_raised = None
+    except RuntimeWarning as _exc:
+        _roll_raised = _exc
+check("near-typo/warnings-as-errors raises", isinstance(_roll_raised, RuntimeWarning), True)
+check("near-typo/warnings-as-errors names both",
+      _roll_raised is not None and "englsh" in str(_roll_raised) and "english" in str(_roll_raised), True)
+check("near-typo/warnings-as-errors leaves the router unchanged",
+      (dict(_roll.models), dict(_roll.descriptions), dict(_roll.sha256_digests)), _roll_before)
+
+
 # --------------------------------------------------------------------- report
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:

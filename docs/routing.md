@@ -131,7 +131,8 @@ router = Router(auto_task_detection=True)
 three built-in ones. A source is a Hub repo id, a `(repo, subfolder)` pair or a local directory. A
 registered checkpoint loads, is evicted and unloads like a built-in, and is named in `model=` or
 `task=` like one. `Router.registered` lists the registered checkpoints and `Router.unregister(name)`
-removes one.
+removes one. A name one edit from a built-in, such as `englsh` for `english`, is still registered
+as its own checkpoint and a warning names the built-in, which is left unchanged.
 
 ```python
 router = Router(models={"papers": "/models/laya-papers"})

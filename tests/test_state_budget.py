@@ -24,6 +24,15 @@ fires on the spare budget, while they still fit), that 16 is a minimum *reserved
 per option the head grows past the cap and takes the state's room with it). The last sections of
 this file pin the page to `build_head` — behaviourally, and by reading the budget's literals out of
 the function instead of typing them in here.
+
+A third surface teaches the same budget from the other side: the *default scan window* of
+`predict_long`, which `window_budget` guards with a floor. README.md and
+`docs/hooks/patterns.md` both stated the guarded quantity on its own, which is wrong exactly where
+the floor is the answer -- at `max_len=512, head_max_len=448` the stated figure is 56 while the scan
+runs 64-token windows -- and neither page said that the state's room still binds below the floor, or
+that a head which fills the sequence is refused instead of scanning at the 0 the subtraction leaves.
+The final sections pin those two pages to `window_budget`, and `window_budget` to what they now
+promise.
 """
 import ast
 import inspect
@@ -34,7 +43,7 @@ import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from laya.common import build_head, build_sequence, render_options  # noqa: E402
+from laya.common import build_head, build_sequence, render_options, state_room, window_budget  # noqa: E402
 
 PASS, FAIL, SKIPPED = [], [], []
 
@@ -459,6 +468,178 @@ def test_page_arithmetic_is_build_head_arithmetic():
               int(result), want)
 
 
+# ------------------------------------------- the default scan window, against the floor it teaches
+
+# `window_budget` has guarded the default window with a floor since the feature landed, and the two
+# markdown pages that teach the default taught the guarded quantity alone. Scoped to the pages that
+# teach the *window* on purpose, like the docstring gate in tests/test_predict_long.py: the bare
+# subtraction is a true statement about the STATE room elsewhere in the README (`state_room`
+# measures the head that was actually built), and a sweep that demanded the floor on every mention
+# of it would be wrong.
+
+DOC_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WINDOW_PAGES = ("README.md", os.path.join("docs", "hooks", "patterns.md"))
+SUBTRACTION = re.compile(r"max_len\s*-\s*head_max_len")
+
+
+def _window_default_expr():
+    """The default window exactly as `window_budget` computes it, as `(expression, floor)`.
+
+    Read out of the function rather than typed in here, so a page holding a stale number fails
+    instead of agreeing with itself -- and so does the other direction, a `window_budget` that
+    stopped guarding the default, because then the guard this function looks for is not there.
+    """
+    src = textwrap.dedent(inspect.getsource(window_budget))
+    tree = ast.parse(src)
+    assigns = [node for node in ast.walk(tree)
+               if isinstance(node, ast.Assign)
+               and any(getattr(t, "id", "") == "requested" for t in node.targets)]
+    assert assigns, (
+        "`window_budget` no longer works the default out into `requested`, so this suite cannot read "
+        "the expression the pages have to teach")
+    calls = [node for node in ast.walk(assigns[0])
+             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "max"
+             and len(node.args) == 2 and isinstance(node.args[0], ast.Constant)
+             and isinstance(node.args[0].value, int)]
+    assert calls, (
+        "`window_budget` no longer guards the default window with max(<constant>, the budget), so "
+        "the floor README.md and docs/hooks/patterns.md teach is not the code's: the prose has to "
+        "change, not these assertions")
+    return ast.get_source_segment(src, calls[0]), calls[0].args[0].value
+
+
+def _markdown_paragraphs():
+    """Paragraphs of the repo's markdown, as `(repo-relative path, first line, normalised text)`.
+
+    A paragraph is a run of contiguous non-blank lines -- the unit a reader sees, and the unit both
+    pages carry this teaching in. Code fences come along as paragraphs too, so a fence that pairs
+    the budget with the word `window` has to teach the floor like prose does.
+    """
+    paths = [os.path.join(DOC_ROOT, "README.md")]
+    for dirpath, _dirnames, filenames in sorted(os.walk(os.path.join(DOC_ROOT, "docs"))):
+        for filename in sorted(filenames):
+            if filename.endswith(".md"):
+                paths.append(os.path.join(dirpath, filename))
+
+    out = []
+    for path in paths:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        start, block = None, []
+        for i, line in enumerate(lines, 1):
+            if line.strip():
+                if start is None:
+                    start = i
+                block.append(line)
+            elif block:
+                out.append((os.path.relpath(path, DOC_ROOT), start,
+                            re.sub(r"\s+", " ", " ".join(block))))
+                start, block = None, []
+        if block:
+            out.append((os.path.relpath(path, DOC_ROOT), start, re.sub(r"\s+", " ", " ".join(block))))
+    return out
+
+
+def test_the_window_default_is_floored():
+    """Widening the head stops shaving the default once the floor is reached.
+
+    The ground truth the two pages have to match: at `max_len=512` a `head_max_len=448` leaves a
+    budget under the floor and the scan still runs floor-sized windows, and at 504 the budget is 0
+    while the window is still the floor. The 4-option question leaves room far above the floor here,
+    so it is the floor that decides and not the room clamp.
+    """
+    expr, floor = _window_default_expr()
+    tok = _FakeTok()
+    for head_max_len in (448, 504):
+        budget = 512 - head_max_len - 8
+        assert budget < floor, (
+            "fixture: head_max_len=%d has to leave a budget under the floor, or the floor is not "
+            "what this case tests (budget %d, floor %d)" % (head_max_len, budget, floor))
+        room = state_room(tok, Q, 512, head_max_len)
+        assert room > floor, (
+            "fixture: this question has to leave room above the floor (%d), or the room clamp and "
+            "not the floor decides the window" % room)
+        size, step, got_room = window_budget(tok, [Q], 512, head_max_len)
+        assert size == floor, (
+            "the default window at max_len=512, head_max_len=%d is %d, not the budget's %d: `%s` "
+            "alone is what the pages must not teach" % (head_max_len, size, budget, expr))
+        assert got_room == room and step == floor // 2, (
+            "the floor is meant to size the window, not to move the room or the stride: %d/%d"
+            % (got_room, step))
+
+
+def test_the_room_still_binds_below_the_floor():
+    """The floor does not rescue a state from its own options, and a full head is refused.
+
+    A question whose head leaves less room than the floor scans at that room, and a head that fills
+    the sequence raises instead of scanning at the 0 the subtraction would leave -- both of them are
+    in docs/hooks/patterns.md now, so they need a witness in the code.
+    """
+    expr, floor = _window_default_expr()
+    tok = _FakeTok()
+    tight = _many_options(110)
+    room = state_room(tok, tight, 512, 192)
+    assert 0 < room < floor, (
+        "fixture: this question has to leave room under the floor, got %d against floor %d -- the "
+        "fake tokenizer's head arithmetic moved, and the page's claim with it" % (room, floor))
+    size, step, got_room = window_budget(tok, [tight], 512, 192)
+    assert (size, step, got_room) == (room, room // 2, room), (
+        "a question under the floor has to scan at its own room, not at the floor: %r"
+        % ((size, step, got_room),))
+
+    full = _many_options(130)
+    assert state_room(tok, full, 512, 192) == 0, (
+        "fixture: this question has to fill the sequence, or the refusal below tests nothing")
+    try:
+        window_budget(tok, [full], 512, 192)
+    except ValueError as e:
+        assert "no room for the state" in str(e), (
+            "the refusal has to say why the scan cannot proceed: %s" % str(e)[:120])
+    else:
+        raise AssertionError(
+            "a head that fills the sequence must be refused, not scan at the 0 `%s` would leave "
+            "unguarded" % expr)
+
+
+def test_no_page_states_the_window_budget_without_the_floor():
+    """Every markdown paragraph pairing the budget with `window` teaches the floored expression."""
+    expr, _floor = _window_default_expr()
+    paragraphs = _markdown_paragraphs()
+    for page in WINDOW_PAGES:
+        assert any(path == page for path, _line, _text in paragraphs), (
+            "the sweep read no paragraph from %s, so it cannot check what the page teaches" % page)
+
+    bare = []
+    for path, line, text in paragraphs:
+        restated = text.replace(expr, "")
+        found = SUBTRACTION.search(restated)
+        if found and re.search(r"\bwindows?\b", restated, re.I):
+            bare.append("%s:%d -- ...%s..." % (path, line,
+                                               restated[max(0, found.start() - 60):found.end() + 60]))
+    assert not bare, (
+        "these paragraphs state the window budget as the bare subtraction, which is not what "
+        "`window_budget` computes -- the default is `%s`: %s" % (expr, bare))
+
+
+def test_both_pages_teach_the_floored_default():
+    """The floor has to be taught as the default on both pages that carry the word `window`."""
+    expr, floor = _window_default_expr()
+    paragraphs = _markdown_paragraphs()
+    for page in WINDOW_PAGES:
+        stated = [para for path, _line, para in paragraphs
+                  if path == page and expr in para and "window" in para.lower()]
+        assert stated, (
+            "%s no longer states the default window as `%s` (floor %d), so the page teaches a "
+            "number the code does not compute" % (page, expr, floor))
+        taught = [para for para in stated
+                  if re.search(r"default\w*", para[max(0, para.find(expr) - 220):
+                                                   para.find(expr)].lower())]
+        assert taught, (
+            "%s carries `%s`, but nowhere inside the sentence that names the default -- a page can "
+            "state the floor beside a different claim and still teach the budget to a reader"
+            % (page, expr))
+
+
 if __name__ == "__main__":
     for fn in (test_state_budget_is_sized_from_the_actual_head,
                test_dropping_the_minus_one_is_caught,
@@ -470,6 +651,10 @@ if __name__ == "__main__":
                test_page_does_not_reserve_sixteen_for_the_instruction,
                test_page_does_not_put_the_option_block_inside_the_cap,
                test_page_arithmetic_is_build_head_arithmetic,
+               test_the_window_default_is_floored,
+               test_the_room_still_binds_below_the_floor,
+               test_no_page_states_the_window_budget_without_the_floor,
+               test_both_pages_teach_the_floored_default,
                test_readme_quotes_the_measured_figures):
 
         try:

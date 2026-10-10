@@ -157,13 +157,13 @@ Laya does not open a network port.
 
 | Tool | What it does | Main inputs |
 |---|---|---|
-| `laya_status` | Reports the configured or actual device, CUDA availability, loaded checkpoints, preload state, readiness, and package versions. | none |
+| `laya_status` | Reports the device per loaded checkpoint (`checkpoint_devices`), the configured or actual device, CUDA availability, loaded checkpoints, preload state, readiness, and package versions. | none |
 | `laya_route` | Selects a checkpoint and returns its model, repository, and reason without running a forward pass. | `state`, `questions`, optional `model`, `task`, `lang`, `lang_guess` |
 | `laya_predict` | Runs typed questions and returns answers, routing metadata, latency, and the answering device when readable. | `state`, `questions`, optional `model` (`auto`, `english`, `multilingual`, or `typed-decisions`), `task`, `lang`, `lang_guess`, `max_len`, `head_max_len`, `min_confidence` |
 | `laya_shortlist` | Shortlists a many-option choice question, then answers it and returns the shortlist metadata. | `state`, `questions`, optional `model`, `k` (default `20`), `task`, `lang`, `lang_guess`, `max_len`, `head_max_len`, `min_confidence` |
 | `laya_preset` | Runs a built-in workflow using its built-in question set. | `preset`, `state`, optional `task`, `lang`, `lang_guess`, `max_len`, `head_max_len`, `min_confidence` |
-| `laya_predict_batch` | Answers many requests in one call. Requests are routed first and grouped by checkpoint, so matching question schemas share forward passes; answers come back in input order. | `requests`, each `{state, questions, model?, task?, lang?, lang_guess?, max_len?, head_max_len?}`, optional `batch_size` |
-| `laya_route_batch` | Decides which checkpoint would answer each request, with no forward pass and no checkpoint load. | `requests`, each `{state, questions, model?, task?, lang?, lang_guess?}`, optional `batch_size` |
+| `laya_predict_batch` | Answers many requests in one call. Requests are routed first and grouped by checkpoint, so matching question schemas share forward passes; answers come back in input order. | `requests`, each `{state, questions, model?, task?, lang?, lang_guess?, max_len?, head_max_len?}`, optional `batch_size`, `hooks_timeout`, `min_confidence`, `sort_by_length` |
+| `laya_route_batch` | Decides which checkpoint would answer each request, with no forward pass and no checkpoint load. | `requests`, each `{state, questions, model?, task?, lang?, lang_guess?}`, optional `hooks_timeout` |
 | `laya_decide` | Answers a JSON-schema-shaped decision in one forward pass and returns the decided values with per-field confidence, instead of an answer map to parse. Schema properties may be enum choices, booleans, or integers with a minimum and maximum; free strings, arrays, and nested objects are rejected by path. | `state`, `schema`, optional `model`, `min_confidence` |
 
 The three batch and schema tools exist because the same operations are available on the SDK and
@@ -242,6 +242,7 @@ the server is ready.
 | `LAYA_DEFAULT_MODEL` | `multilingual` | The checkpoint a state with no language evidence falls back to, same meaning as in `laya.serve`. Unlike `laya.serve`, an unresolvable name does not stop the server: it comes back as a `router construction failed` tool error on the next call, because a stdio server has no startup to refuse. |
 | `LAYA_BASE_URL` | unset | Send predictions to a `laya-serve` on your own hardware instead of loading checkpoints in each MCP process. A bare `host:port` is read as HTTP. |
 | `LAYA_REMOTE_TIMEOUT` | `300` | HTTP timeout in seconds when `LAYA_BASE_URL` is set, including the server's cold load. Invalid or non-positive values use the default. |
+| `LAYA_API_KEY` | unset | Bearer token sent with every remote request when `LAYA_BASE_URL` is set. Required by a `laya-serve` that set its own `LAYA_API_KEY`; ignored in local mode. |
 
 ### Share one model server across MCP sessions
 
@@ -265,8 +266,9 @@ LAYA_HOST=127.0.0.1 LAYA_PRELOAD=0 LAYA_IDLE_UNLOAD_SECONDS=300 laya-serve
 Install `laya[serve]` where the HTTP server runs. MCP still uses stdio with the editor; its
 prediction tools use HTTP to reach your server. `laya_predict`, `laya_predict_batch`, `laya_decide`
 and `laya_preset` use the server's original state, instructions and option descriptions.
-Heterogeneous batches send one `/v1/systemone` request per item, preserving input order;
-`batch_size` and `sort_by_length` do not change the server's execution. `laya_status` reports the
+`laya_predict_batch` sends one `/v1/systemone` request per item -- every batch, not only a
+heterogeneous one -- preserving input order; `batch_size` and `sort_by_length` are accepted and
+ignored, so they do not change the server's execution. `laya_status` reports the
 server's `/health`; `laya_route` and `laya_route_batch` stay local and need no model or HTTP request.
 The MCP process imports no torch and loads no checkpoint, including when `LAYA_THREADS` or
 `LAYA_PRELOAD` is set.

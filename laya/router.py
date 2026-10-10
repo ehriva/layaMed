@@ -98,6 +98,52 @@ _TYPED_DECISION_WORKFLOWS = {
 # with a letter or digit. No `/`, because a Hub id or a path is a source, not a name.
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
+# An adjacent transposition counts as one edit, so `enlgish` is one away from
+# `english`. Set this false for plain Levenshtein, where that pair costs two.
+_COUNT_ADJACENT_SWAP = True
+
+
+def _edit_distance(left: str, right: str) -> int:
+    """Edits that turn `left` into `right`: insert, delete, substitute, adjacent swap.
+
+    The swap is the only step that is not Levenshtein. It is gated by
+    `_COUNT_ADJACENT_SWAP`, so dropping that flag is the whole change.
+    """
+    if left == right:
+        return 0
+    n, m = len(left), len(right)
+    # `prev2` is the row two steps back, which is what an adjacent swap reads.
+    prev2: Optional[List[int]] = None
+    prev: List[int] = list(range(m + 1))
+    for i in range(1, n + 1):
+        cur = [i]
+        lc = left[i - 1]
+        for j in range(1, m + 1):
+            rc = right[j - 1]
+            cost = 0 if lc == rc else 1
+            best = min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+            if (_COUNT_ADJACENT_SWAP and prev2 is not None and j > 1
+                    and lc == right[j - 2] and left[i - 2] == rc):
+                best = min(best, prev2[j - 2] + 1)
+            cur.append(best)
+        prev2 = prev
+        prev = cur
+    return prev[m]
+
+
+def _near_builtin(key: str) -> Optional[str]:
+    """Built-in name within one edit of `key`, or None.
+
+    Compared with the built-in names only, not their aliases. `en` and `ml` are
+    short enough that ordinary names sit one edit away from them.
+    """
+    for name in DEFAULT_MODELS:
+        if abs(len(key) - len(name)) > 1:
+            continue
+        if _edit_distance(key, name) == 1:
+            return name
+    return None
+
 
 def canonical_name(name: Any) -> str:
     """Trim, lowercase and resolve an alias, without asking whether the result names a checkpoint.
@@ -753,6 +799,9 @@ class Router(HookRegistry):
 
         `description` is free text about the checkpoint for whoever reads `registered`.
 
+        A name within one edit of a built-in is still registered, with a warning that names both
+        and leaves the built-in unchanged.
+
         A nested `LAYA_SHA256_DIGESTS` entry for this name is picked up here; an entry for a name the
         constructor did not know still fails at construction, as before.
 
@@ -844,6 +893,20 @@ class Router(HookRegistry):
                             "pair, got %s" % (name, type(source).__name__))
         if isinstance(source, str) and source.startswith("~"):
             source = os.path.expanduser(source)     # a local path, never a Hub repo id
+        # After every check that can refuse the registration, and before the write. A filter
+        # that turns warnings into errors then raises with nothing stored, and `register`'s
+        # rollback still runs because the warning is inside its try. Built-in names and their
+        # aliases re-point that checkpoint, so they are not typos of themselves.
+        # 3, not 2: the frames from here are `_add` -> `register` / `Router.__init__` / `attach`
+        # -> the caller. 2 points inside this file, and the default once-per-location filter
+        # would then warn once for the process instead of once per call site.
+        if key not in DEFAULT_MODELS:
+            near = _near_builtin(key)
+            if near is not None:
+                warnings.warn(
+                    "laya: checkpoint name %r is one edit from the built-in %r; it is registered "
+                    "as a separate checkpoint and %r is unchanged." % (key, near, near),
+                    RuntimeWarning, stacklevel=3)
         self.models[key] = source
         return key
 

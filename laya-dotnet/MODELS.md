@@ -405,10 +405,11 @@ run; a much larger number of theory rows additionally run once `onnx/<checkpoint
 per shape, and now per layout. That theory-row count is not a fixed constant — it grows every time
 a checkpoint's golden-answer coverage or shape sweep grows, and again once split-layout artifacts
 exist for a checkpoint — so treat any specific figure quoted here as a snapshot, not a target.
-As of 0.1.0 the full count (all three checkpoints, both layouts, everything present) is 1368.
-Re-derive it yourself with `dotnet test --solution laya-dotnet/Laya.slnx -c Release` (all
-artifacts present) or with `-class-` exclusions for the model-backed classes (see
-[README.md § Tests](https://github.com/NandhaKishorM/laya/blob/main/laya-dotnet/README.md#tests)) if you need the true count without loading any weights.
+The 0.1.0 snapshot of the full count (all three checkpoints, both layouts, everything present)
+is kept in one place, [README.md § Tests](https://github.com/NandhaKishorM/laya/blob/main/laya-dotnet/README.md#tests), rather than restated here. Re-derive it
+yourself with `dotnet test --solution laya-dotnet/Laya.slnx -c Release` (all artifacts present),
+or with the `-class-` exclusions that section lists for the model-backed classes if you need the
+true count without loading any weights.
 
 ---
 

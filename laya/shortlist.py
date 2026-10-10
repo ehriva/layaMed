@@ -19,6 +19,7 @@ report; this module does not measure them.
 """
 import json
 import threading
+import warnings
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -78,6 +79,13 @@ def predict_shortlist(
     ``<= k`` is forwarded unchanged and does not call ``embed_fn``. The caller's
     ``questions`` dict is not mutated.
 
+    A narrowed choice that carried an ``option_order`` has it dropped, with one
+    ``RuntimeWarning`` naming the question: the order has one slot per option, so an
+    order that fitted the caller's label set no longer fits the kept labels and the
+    agent refuses the question. Remapping the order onto the kept labels would
+    silently move options between slots, so it is dropped instead. A passthrough
+    choice and non-choice questions keep theirs.
+
     The returned dict is the model result plus a ``shortlist`` entry. Probabilities
     on a shortlisted choice are over the kept labels only. ``shortlist[qid]`` holds
     ``labels``, ``scores``, ``k``, ``n``, and ``passthrough``. ``labels`` is the rank
@@ -94,6 +102,7 @@ def predict_shortlist(
     checked = _check_k(k)
     reduced: Dict[str, Any] = {}
     meta: Dict[str, Dict[str, Any]] = {}
+    warned: set = set()
     for qid, qdef in questions.items():
         if not isinstance(qdef, dict) or qdef.get("type") != "choice":
             reduced[qid] = qdef
@@ -115,7 +124,7 @@ def predict_shortlist(
             continue
         updated = dict(qdef)
         updated["criteria"] = _subset_criteria(qdef["criteria"], labels)
-        reduced[qid] = updated
+        reduced[qid] = _drop_stale_order(qid, updated, len(labels), warned)
 
     result = _call_predict(agent, state, reduced, **predict_kwargs)
     if not isinstance(result, dict):
@@ -149,6 +158,12 @@ def predict_tournament(
     labels go to it unchanged, so when nothing needs a round it is the only call. The
     caller's ``questions`` dict is not mutated.
 
+    A choice that went through a round loses an ``option_order`` it carried, with one
+    ``RuntimeWarning`` naming the question: the group and finalist questions hold fewer
+    labels than the caller's, and an order no longer fits the kept labels. Remapping it
+    onto them would silently move options between slots, so it is dropped instead. A
+    choice that needed no round keeps its order.
+
     The returned dict is the final call's result plus a ``tournament`` entry.
     ``tournament[qid]`` holds ``labels`` (the finalists, in criteria order), ``n`` (the
     label count) and ``rounds`` for each choice question. Probabilities, confidences and
@@ -162,6 +177,7 @@ def predict_tournament(
     if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size < 2:
         raise ValueError("group_size must be an integer of at least 2, got %r" % (group_size,))
     meta: Dict[str, Dict[str, Any]] = {}
+    warned: set = set()
     for qid, qdef in questions.items():
         if isinstance(qdef, dict) and qdef.get("type") == "choice":
             if "criteria" not in qdef:
@@ -170,7 +186,8 @@ def predict_tournament(
             meta[qid] = {"labels": labels, "n": len(labels), "rounds": 0}
 
     def cut(qid, labels):
-        return dict(questions[qid], criteria=_subset_criteria(questions[qid]["criteria"], labels))
+        narrowed = dict(questions[qid], criteria=_subset_criteria(questions[qid]["criteria"], labels))
+        return _drop_stale_order(qid, narrowed, len(labels), warned)
 
     while True:
         groups = []
@@ -389,6 +406,32 @@ def _check_k(k: int) -> int:
     if isinstance(k, bool) or not isinstance(k, int) or k < 1:
         raise ValueError("k must be a positive integer, got %r" % (k,))
     return k
+
+
+def _drop_stale_order(qid: str, question: Dict[str, Any], n_options: int, warned: set) -> Dict[str, Any]:
+    """Return ``question`` without an ``option_order`` that no longer fits it.
+
+    ``option_order`` holds one slot per option, so an order that fitted the caller's
+    label set does not fit a narrowed one and the agent refuses the question.
+    Remapping the order onto the kept labels would silently move options between
+    slots, so the order is dropped instead, once per question per call, with a
+    ``RuntimeWarning``. This is the remedy Nandha asked for on #958.
+    """
+    if "option_order" not in question:
+        return question
+    order = question.pop("option_order")
+    if qid not in warned:
+        warned.add(qid)
+        try:
+            had = "%d slots" % len(order)
+        except TypeError:
+            had = repr(order)
+        warnings.warn(
+            "laya.shortlist: question %r: 'option_order' (%s) was dropped because the label "
+            "set was narrowed to %d; the order no longer fits the kept options and remapping "
+            "it onto them would move options between slots." % (qid, had, n_options),
+            RuntimeWarning, stacklevel=2)
+    return question
 
 
 def _criteria_items(criteria):

@@ -29,9 +29,9 @@ banner("31", "Structured criteria", """
 
 # --- three structured questions over one phishing-looking email -----------------------------
 STATE = {
-    "from": "security@acme-support.co",
+    "from": "security@acme-support.example",
     "subject": "Verify your account within 24 hours",
-    "body": "We detected unusual activity. Confirm your password at http://acme-support.co/login "
+    "body": "We detected unusual activity. Confirm your password at http://acme-support.example/login "
             "or your account will be suspended today.",
 }
 

@@ -29,6 +29,7 @@ from laya.serve import (  # noqa: E402
     DEFAULT_MAX_TOKEN_BUDGET,
     MAX_BODY_BYTES,
     MAX_STATE_CHARS,
+    _add_jev_confidence,
     _apply_thread_limit,
     _check_request_limits,
     _env_bool,
@@ -252,6 +253,39 @@ def test_jev_strict_leaves_an_unknown_answer_shape_unchanged(monkeypatch):
     body = client.post("/v1/systemone", json=REQ).json()
     assert body["answers"]["odd"] == {"type": "weird", "payload": 1}
     assert "routing" not in body
+
+
+def test_choice_and_score_answers_carry_jev_confidence(monkeypatch):
+    """Each choice and score answer reports Jev's `confidence` beside Laya's own (#302)."""
+    client, _ = _strict_client(monkeypatch, None)
+    answers = client.post("/v1/systemone", json=REQ).json()["answers"]
+    # choice: (max(p) - 1/n) / (1 - 1/n) over billing 0.9519 / tech 0.0327 / other 0.0154
+    assert answers["queue"]["x_jev_confidence"] == 0.9278
+    # score: 1 - sum(p_i * |i - mode|) / D with mode 1 and D = 2/3, so 1 - 0.35 / (2/3)
+    assert answers["urgency"]["x_jev_confidence"] == 0.475
+    # Laya's own numbers are untouched, and a noul answer has no Jev confidence to report
+    assert answers["queue"]["confidence"] == 0.797
+    assert answers["urgency"]["confidence"] == 0.1925
+    assert "x_jev_confidence" not in answers["threat"]
+    # the router's own answer dicts are not edited, so a reused result cannot leak the field
+    assert "x_jev_confidence" not in FULL_ANSWERS["queue"]
+
+
+def test_batch_answers_carry_jev_confidence(monkeypatch):
+    client, _ = _strict_client(monkeypatch, None)
+    data = client.post("/v1/systemone/batch", json={"states": ["one", "two"],
+                                                    "questions": REQ["questions"]}).json()
+    assert [item["answers"]["queue"]["x_jev_confidence"] for item in data["results"]] == [0.9278, 0.9278]
+
+
+def test_jev_strict_leaves_out_jev_confidence(monkeypatch):
+    """Strict mode serves only the contracted keys, so the `x_` addition is not among them."""
+    client, _ = _strict_client(monkeypatch, "1")
+    single = client.post("/v1/systemone", json=REQ).json()
+    batch = client.post("/v1/systemone/batch", json={"states": ["one"],
+                                                     "questions": REQ["questions"]}).json()
+    for answers in (single["answers"], batch["results"][0]["answers"]):
+        assert all("x_jev_confidence" not in answer for answer in answers.values())
 
 
 def test_known_model_is_honoured(monkeypatch):
@@ -662,23 +696,29 @@ class _StubAgent:
     def system_one(self, state, questions):
         return {"model": self.name, "answers": {}, "usage": {}}
 
+    def predict_batch(self, states, questions, batch_size=None, **kwargs):
+        return [self.system_one(state, questions) for state in states]
+
 
 def _server_router(monkeypatch, **env):
     """The Router `laya-serve` builds for `env`, with loads recorded instead of performed."""
-    from laya.router import normalise_name
     from laya.serve import build_router
 
     monkeypatch.setenv("LAYA_PRELOAD", "0")       # nothing may download
     monkeypatch.setenv("LAYA_AUTO_TASK", "1")     # the config that puts three checkpoints in play
     monkeypatch.delenv("LAYA_MAX_LOADED", raising=False)
     monkeypatch.delenv("LAYA_DEFAULT_MODEL", raising=False)
+    monkeypatch.delenv("LAYA_EXTRA_MODELS", raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     router = build_router()
     built = []
 
     def load(name):
-        key = normalise_name(name)
+        # `router.resolve`, not `normalise_name`: `predict` hands `load` the
+        # decision's key, which can be a LAYA_EXTRA_MODELS registration that the
+        # built-in table does not know.
+        key = router.resolve(name)
         if key in router._agents:
             router._touch(key)
             return router._agents[key]
@@ -3100,6 +3140,19 @@ def _gate_written_keys():
     return sorted(written)
 
 
+def _serve_added_keys():
+    """Every key the server adds onto an answer the agent built, by answer type (#302).
+
+    Read off the server's own `_add_jev_confidence` run on one answer of each type, rather than
+    transcribed, so a key it starts or stops adding moves this list with it.
+    """
+    probe = {"choice": {"type": "choice", "probabilities": {"a": 0.6, "b": 0.4}},
+             "score": {"type": "score", "probabilities": {"0": 0.6, "1": 0.4}},
+             "noul": {"type": "noul", "noul": 0.6}}
+    served = _add_jev_confidence({"answers": probe})["answers"]
+    return {qtype: sorted(set(served[qtype]) - set(probe[qtype])) for qtype in probe}
+
+
 def _md_answer_table(section):
     """The `| answer type | keys |` table as rows: which keys the page says an answer carries.
 
@@ -3138,9 +3191,10 @@ def test_http_api_page_documents_the_gate_report_on_an_answer():
     read a response page that said the answer had been "marked" without saying what the mark is called,
     what state the answer is in, or what threshold produced it.
 
-    So the table is compared against both writers: the `answers[qid] = {...}` literals of each agent,
-    and the `a[...] = ...` assignments of the gate. Both directions, and against the printed sample too
-    -- which must carry no gate report, because the request the page prints sets no threshold.
+    So the table is compared against every writer: the `answers[qid] = {...}` literals of each agent,
+    the `a[...] = ...` assignments of the gate, and the keys the server adds (#302). Both directions,
+    and against the printed sample too -- which must carry no gate report, because the request the
+    page prints sets no threshold.
     """
     page = open(os.path.join(ROOT, "docs", "http-api.md"), encoding="utf-8").read()
     section = page[page.index("### Response"):page.index("### Confidence")]
@@ -3161,11 +3215,12 @@ def test_http_api_page_documents_the_gate_report_on_an_answer():
     # The row's first column is the discriminator every answer stamps, so it is documented by the row
     # that documents the type rather than as a key inside the cell.
     discriminator = {"type"}
+    served = _serve_added_keys()
     for qtype, built in torch_site.items():
         documented = rows[qtype] | rows["all"] | rows["gate"] | discriminator
-        assert documented == set(built) | set(gate), (
-            "the %s rows say an answer carries %s, the agents build %s and the gate adds %s" % (
-                qtype, sorted(documented), built, gate))
+        assert documented == set(built) | set(gate) | set(served[qtype]), (
+            "the %s rows say an answer carries %s, the agents build %s, the gate adds %s and the "
+            "server adds %s" % (qtype, sorted(documented), built, gate, served[qtype]))
 
     # And the sample is one answer to the request the page itself prints, which sends no threshold:
     # so its answers show the always-on keys and no gate report at all.
@@ -3344,6 +3399,74 @@ def test_idle_unload_retries_failure_and_stops_at_shutdown(monkeypatch):
     assert not router.unloaded.wait(0.15)
 
 
+# -------------------------------- an app can be started again after its lifespan stops
+# The lifespan shuts the inference pool down (#319), and a host can run one app's lifespan more
+# than once: a TestClient per test module, an embedding server that restarts it. The pool was made
+# once in create_app, so after a second startup every request was a 500 "inference failed" from
+# "cannot schedule new futures after shutdown", and the idle reaper logged the same each tick.
+@pytest.mark.parametrize("batch", [False, True])
+def test_an_app_serves_again_after_its_lifespan_restarts(monkeypatch, batch):
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    monkeypatch.delenv("LAYA_IDLE_UNLOAD_SECONDS", raising=False)
+    app = create_app(FakeRouter())
+    path = "/v1/systemone/batch" if batch else "/v1/systemone"
+    body = {"states": [REQ["state"]], "questions": REQ["questions"]} if batch else REQ
+    statuses = []
+    for _ in range(2):
+        with TestClient(app) as client:
+            statuses.append(client.post(path, json=body).status_code)
+    assert statuses == [200, 200]
+
+
+def test_idle_unload_runs_again_after_a_restart(monkeypatch):
+    monkeypatch.setenv("LAYA_IDLE_UNLOAD_SECONDS", "0.05")
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    router = IdleRouter()
+    app = create_app(router)
+    with TestClient(app):
+        assert router.unloaded.wait(2.0)
+    router.loaded = ["english"]
+    router.unloaded.clear()
+    with TestClient(app):
+        assert router.unloaded.wait(2.0)
+
+
+def test_a_restarted_app_still_queues_concurrent_requests(monkeypatch):
+    # The inference gate binds to the event loop the first time a request has to wait on it, and
+    # a restarted lifespan runs on a new loop. A gate carried over from the first run made the
+    # second run's queued request fail with "is bound to a different event loop".
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    monkeypatch.delenv("LAYA_IDLE_UNLOAD_SECONDS", raising=False)
+
+    class SlowRouter(FakeRouter):
+        def __init__(self):
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def predict(self, *args, **kwargs):
+            self.entered.set()
+            assert self.release.wait(3.0)
+            return super().predict(*args, **kwargs)
+
+    router = SlowRouter()
+    app = create_app(router)
+    for _ in range(2):
+        router.entered.clear()
+        router.release.clear()
+        with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as callers:
+            first = callers.submit(client.post, "/v1/systemone", json=REQ)
+            assert router.entered.wait(2.0)
+            second = callers.submit(client.post, "/v1/systemone", json=REQ)
+            time.sleep(0.2)  # the second request is now waiting on the gate
+            router.release.set()
+            assert [first.result(timeout=5).status_code, second.result(timeout=5).status_code] == [200, 200]
+
+
 # -------------------------------- docs/typescript-sdk.md must list the keys the /health handler returns
 # The SDK page's contract sentence used to say "public `/health` returns `status`, `loaded`,
 # and `device`" while `laya/serve.py`'s authorized branch returns seven keys -- `status`,
@@ -3505,3 +3628,131 @@ def test_jev_strict_projection_page_names_the_projected_keys():
 
     # The noul bullet must not shrink the discriminator away.
     assert "noul only" not in page, "pre-fix 'noul only' wording is still on the page"
+
+# Serving a fine-tune today means rebuilding the package: `Router` has grown
+# `register` / `models=`, but `laya-serve` reads its whole configuration from the
+# environment, so an operator with a local checkpoint had no way to reach either.
+# LAYA_EXTRA_MODELS is the JSON-object form of `Router(models=...)`, parsed once
+# at startup; the request handlers then resolve `model` against the Router's own
+# registry rather than the built-in table, so a registered name pins its
+# checkpoint the same way `english` does.
+def test_extra_models_option_parses_the_json_object(monkeypatch):
+    from laya.serve import _extra_models_option
+
+    # Unset and blank are "not asked for", like every other option here.
+    monkeypatch.delenv("LAYA_EXTRA_MODELS", raising=False)
+    assert _extra_models_option() == {}
+    for blank in ("", "   ", "\n"):
+        monkeypatch.setenv("LAYA_EXTRA_MODELS", blank)
+        assert _extra_models_option() == {}, repr(blank)
+
+    # The two source shapes Router.register accepts: a plain string (Hub repo id
+    # or local directory) and a [repo, subfolder] pair, which arrives as a tuple
+    # because JSON has no tuple.
+    monkeypatch.setenv("LAYA_EXTRA_MODELS", json.dumps({
+        "my-ckpt": "/tmp/ckpt",
+        "nested": ["org/repo", "folder"],
+        "hub-only": "org/repo",
+    }))
+    parsed = _extra_models_option()
+    assert parsed == {
+        "my-ckpt": "/tmp/ckpt",
+        "nested": ("org/repo", "folder"),
+        "hub-only": "org/repo",
+    }, parsed
+
+
+def test_extra_models_option_refuses_a_malformed_value(monkeypatch):
+    from laya.serve import _extra_models_option
+
+    # The fail-closed rule is `_default_model_option`'s: a checkpoint silently
+    # absent from the registry would auto-route its traffic to a different one,
+    # which is the wrong answer -- so the server refuses to start and the
+    # message names the variable and the offending shape.
+    for raw in ("{", "not json", '"english"', '["english"]', "42", "null"):
+        monkeypatch.setenv("LAYA_EXTRA_MODELS", raw)
+        with pytest.raises(SystemExit) as raised:
+            _extra_models_option()
+        assert "invalid LAYA_EXTRA_MODELS" in str(raised.value), raw
+
+    # A source that is not a string or a pair fails the same way, naming the
+    # checkpoint it was meant to register.
+    monkeypatch.setenv("LAYA_EXTRA_MODELS", json.dumps({"my-ckpt": 7}))
+    with pytest.raises(SystemExit) as raised:
+        _extra_models_option()
+    message = str(raised.value)
+    assert "invalid LAYA_EXTRA_MODELS" in message
+    assert "'my-ckpt'" in message, message
+
+
+def test_extra_models_reach_the_router_the_server_builds(monkeypatch):
+    # Registration happens before preload, so the names resolve on the Router
+    # itself and `registered` reports them beside the bundled checkpoints.
+    router, built = _server_router(monkeypatch, LAYA_EXTRA_MODELS=json.dumps({
+        "my-ckpt": "/tmp/ckpt",
+        "nested": ["org/repo", "folder"],
+    }))
+    assert router.resolve("my-ckpt") == "my-ckpt"
+    assert router.resolve("nested") == "nested"
+    assert router.registered["my-ckpt"]["source"] == "/tmp/ckpt"
+    assert built == []  # registering is lazy: nothing loads until a request names it
+
+    # The built-ins are untouched, and an extra name is accepted as
+    # LAYA_DEFAULT_MODEL now that the Router knows it.
+    assert set(router.registered) == {"my-ckpt", "nested"}
+    defaulted, _ = _server_router(
+        monkeypatch,
+        LAYA_EXTRA_MODELS='{"my-ckpt": "/tmp/ckpt"}',
+        LAYA_DEFAULT_MODEL="my-ckpt",
+    )
+    assert defaulted.default == "my-ckpt"
+
+
+def test_extra_models_refuse_the_names_router_refuses(monkeypatch):
+    # Validation is Router._add's: the env var is only the delivery mechanism,
+    # so a name that cannot be a checkpoint is fatal with core's own message.
+    for name in ("auto", "Bad Name", "not/a/checkpoint"):
+        with pytest.raises(SystemExit) as raised:
+            _server_router(monkeypatch, LAYA_EXTRA_MODELS=json.dumps({name: "/tmp/ckpt"}))
+        assert "checkpoint name" in str(raised.value), name
+
+    # And a default that names nothing registered is still fatal, unchanged.
+    from laya.serve import build_router
+
+    monkeypatch.setenv("LAYA_PRELOAD", "0")
+    monkeypatch.setenv("LAYA_EXTRA_MODELS", '{"my-ckpt": "/tmp/ckpt"}')
+    monkeypatch.setenv("LAYA_DEFAULT_MODEL", "other-ckpt")
+    with pytest.raises(SystemExit) as raised:
+        build_router()
+    assert "invalid LAYA_DEFAULT_MODEL" in str(raised.value)
+
+
+def test_extra_models_pin_over_http_and_do_not_leak_into_routing(monkeypatch):
+    # The end-to-end contract: `model=my-ckpt` reaches `predict` as the pin, a
+    # Jev id still means "let the router choose", and a path is still a 422.
+    router, built = _server_router(monkeypatch, LAYA_EXTRA_MODELS='{"my-ckpt": "/tmp/ckpt"}')
+    client = TestClient(create_app(router=router))
+
+    pinned = client.post("/v1/systemone", json={**REQ, "model": "my-ckpt"})
+    assert pinned.status_code == 200, pinned.text
+    assert built == ["my-ckpt"], built
+    assert pinned.json()["routing"]["model"] == "my-ckpt", pinned.json()
+
+    batch = client.post("/v1/systemone/batch", json={
+        "states": ["one"], "questions": REQ["questions"], "model": "my-ckpt"})
+    assert batch.status_code == 200, batch.text
+
+    unrouted = client.post("/v1/systemone", json={**REQ, "model": "jev-1"})
+    assert unrouted.status_code == 200, unrouted.text
+    assert unrouted.json()["routing"]["model"] in ("english", "multilingual"), unrouted.json()
+
+    refused = client.post("/v1/systemone", json={**REQ, "model": "/path/to/other"})
+    assert refused.status_code == 422, refused.text
+    assert "unknown model" in refused.json()["detail"]
+
+    # A registered name is a pin, not a routing target: the extra checkpoint is
+    # never picked for a state that did not name it.
+    plain = client.post("/v1/systemone", json=REQ)
+    assert plain.status_code == 200, plain.text
+    assert plain.json()["routing"]["model"] in ("english", "multilingual", "typed-decisions")
+    assert "my-ckpt" not in built[1:] or built[1:] == [], built

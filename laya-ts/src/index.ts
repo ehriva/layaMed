@@ -82,6 +82,8 @@ export type {
   OptionStats,
   MinConfidence,
   MinConfidenceMap,
+  MinConfidenceBucket,
+  MinConfidenceKey,
   BinningEntry,
   BinningMap,
 } from "./common.js";

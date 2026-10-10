@@ -137,6 +137,8 @@ export interface AgentOptions {
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
   hooksRaise?: boolean;
+  /** Timeout for each hook call in seconds (null = no limit). */
+  hooksTimeout?: number | null;
 }
 
 /** Per-call options shared by Agent.systemOne/predict and Router.predict. */
@@ -151,6 +153,8 @@ export interface PredictOptions {
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
   hooksRaise?: boolean;
+  /** Timeout for each hook call in seconds (null = no limit). */
+  hooksTimeout?: number | null;
   /** Per-call token-budget overrides; null = agent config. A start hook may also set them. */
   maxLen?: number | null;
   headMaxLen?: number | null;
@@ -381,6 +385,7 @@ const r4 = (v: number): number => Math.round(v * 1e4) / 1e4;
 
 export class Agent extends HookRegistry {
   hooksRaise: boolean;
+  hooksTimeout?: number | null;
   cfg: AgentCfg;
   provider: SessionProvider;
   revision: string | null;
@@ -405,6 +410,7 @@ export class Agent extends HookRegistry {
     // Hooks are opt-in; an unset hook list is a no-op. See hooks.ts.
     this.hooks = normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     this.hooksRaise = opts.hooksRaise ?? true;
+    this.hooksTimeout = opts.hooksTimeout ?? null;
     const cfg = { ...(opts.cfg ?? {}) } as AgentCfg;
     if (opts.max_len !== undefined) cfg.max_len = opts.max_len;
     if (opts.head_max_len !== undefined) cfg.head_max_len = opts.head_max_len;
@@ -510,6 +516,8 @@ export class Agent extends HookRegistry {
       ? [...this.hooks, ...normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd)]
       : composeHooks(this.hooks, opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     const raiseErrors = opts.hooksRaise ?? this.hooksRaise;
+    const hooksTimeout = opts.hooksTimeout ?? this.hooksTimeout;
+    const timeoutMs = typeof hooksTimeout === "number" ? hooksTimeout * 1000 : null;
     const ctx = new PredictContext({
       states,
       questions: questions as Record<string, unknown>,
@@ -518,7 +526,7 @@ export class Agent extends HookRegistry {
       headMaxLen: opts.headMaxLen ?? null,
     });
     try {
-      await dispatchAsync(active, "onPredictStart", ctx, { raiseErrors });
+      await dispatchAsync(active, "onPredictStart", ctx, { raiseErrors, timeoutMs });
       if (ctx.results === null) {
         if (!Array.isArray(ctx.states)) {
           throw new TypeError(
@@ -569,7 +577,7 @@ export class Agent extends HookRegistry {
         }
       }
       try {
-        await dispatchAsync(active, "onPredictEnd", ctx, { raiseErrors });
+        await dispatchAsync(active, "onPredictEnd", ctx, { raiseErrors, timeoutMs });
       } catch (hookErr) {
         // End hooks run on the failure path too; do not let one mask the real error.
         if (ctx.error === null) throw hookErr;

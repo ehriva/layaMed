@@ -1,0 +1,4 @@
+# Auto-registered for every test class in this module; see the class javadoc. One entry only --
+# this file is what `junit.jupiter.extensions.autodetection.enabled` in build.gradle.kts turns on,
+# so anything added here applies everywhere without an @ExtendWith to find it by.
+com.convaiinnovations.laya.DefaultHooksIsolation

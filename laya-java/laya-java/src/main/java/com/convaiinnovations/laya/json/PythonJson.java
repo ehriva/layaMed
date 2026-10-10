@@ -284,15 +284,29 @@ public final class PythonJson {
             return "nan";
         }
         if (Double.isInfinite(scaled)) {
-            // CPython's %-formatting spells these in lower case, which is NOT how `repr` spells
-            // them: `'%.0f' % float('nan')` is "nan" where `repr` gives "NaN". Latent today --
-            // both call sites are finite by construction -- and wrong the moment one is not.
+            // CPython's %-formatting spells these in lower case, and so does `repr`:
+            // `'%.0f' % float('nan')` and `repr(float('nan'))` are both "nan". It is
+            // `json.dumps` that writes "NaN"/"Infinity", which is the spelling `repr(double)`
+            // below reproduces because that is the method `dumps` is built on -- so the two
+            // disagree here on purpose. Latent today -- both call sites are finite by
+            // construction -- and wrong the moment one is not.
             return scaled > 0 ? "inf" : "-inf";
         }
         // Math.rint is IEEE ties-to-even, which is the rule; a long keeps a share above 2^31.
         return Long.toString((long) Math.rint(scaled));
     }
 
+    /**
+     * A double the way CPython's {@code json.dumps} writes it.
+     *
+     * <p>For every finite value that is also {@code repr}: {@code dumps} uses {@code repr} under
+     * the hood. The non-finite three are where the two part company -- {@code dumps} writes
+     * {@code NaN}, {@code Infinity} and {@code -Infinity} (which is not legal JSON, and is what
+     * CPython emits anyway), where {@code repr} writes {@code nan}, {@code inf} and {@code -inf}.
+     * This method is the {@code dumps} spelling, because {@code dumps} is what it serves. A
+     * caller interpolating a float into a {@code %r} or {@code str} message needs the other
+     * spelling and has to say so.
+     */
     public static String repr(double value) {
         if (Double.isNaN(value)) {
             return "NaN";

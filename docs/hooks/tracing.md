@@ -1,7 +1,8 @@
 # Tracing
 
-Every hook of one call receives the same `PredictContext.run_id`, so a tracer can correlate the
-start, end and error events (and any spans it opens) without keeping its own bookkeeping.
+Every predict-event hook of one call receives the same `PredictContext.run_id`, so a tracer can
+correlate the start, end and error events (and any spans it opens) without keeping its own
+bookkeeping.
 
 - [run_id](#run_id)
 - [A minimal tracer](#a-minimal-tracer)
@@ -16,7 +17,12 @@ start, end and error events (and any spans it opens) without keeping its own boo
 - A `uuid4().hex` string, created once per public call (`predict_batch`, `system_one`,
   `Router.predict`, `ONNXAgent.system_one`). `Router.predict_batch` creates one per request
   instead, the `run_id` a `Router.predict` call for that request would have had.
-- Shared by every hook of that call, including `on_error` and `on_predict_end`.
+- Shared by every predict-event hook of that call: `on_predict_start`, `on_predict_end` and
+  `on_error` see one `PredictContext`, so one `run_id`.
+- **Not** shared with `on_route`, `on_load` or `on_evict`. Each is dispatched with a context of
+  its own, so a single `Router.predict` hands out three different `run_id`s. Correlate a routing
+  decision with its prediction through `ctx.decision`, which `on_predict_start` also carries, not
+  through `run_id`.
 - Not global and not persisted: it identifies a call within the process. Put it in your logs and
   outbound payloads to correlate across systems.
 - Distinct per call, so two calls never collide.

@@ -7,6 +7,9 @@
 # torch is not listed: it needs the CPU-only index, so install it first with
 #   pip install "torch==2.14.0" --index-url https://download.pytorch.org/whl/cpu
 transformers==5.17.0
+# Java's generated pre-tokenizer tables record this version as well as its Unicode classes.
+# Keep the shared regeneration toolchain aligned with that committed reference.
+tokenizers==0.23.2
 safetensors==0.8.0
 huggingface_hub==1.33.0
 numpy==2.5.3

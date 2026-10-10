@@ -604,6 +604,34 @@ def save_checkpoint(model, tok, cfg: Dict[str, Any], path: str) -> None:
 
 # ------------------------------------------------------------------------------------ train
 
+def optimizer_updates(n_items: int, micro_batch: int, grad_accum: int, epochs: int) -> int:
+    """Optimizer steps for `n_items` training items.
+
+    `train_model` calls this, so the count a pre-run diagnostic prints is the number of
+    `optimizer.step()` calls the run performs: one per full accumulation window
+    (`grad_accum` micro-batches), plus one for the final partial window of every epoch, which
+    still steps once even when it holds fewer micro-batches.
+    """
+    if n_items < 1:
+        raise ValueError("n_items must be a positive integer, got %r" % (n_items,))
+    steps_per_epoch = math.ceil(n_items / micro_batch)
+    updates_per_epoch = math.ceil(steps_per_epoch / grad_accum)
+    return updates_per_epoch * epochs
+
+
+def update_budget_message(n_train: int, config: TrainConfig) -> str:
+    """The pre-run optimizer-update budget line, shared by `finetune` startup and `--dry-run`.
+
+    Says "effective batch up to" because the last window of an epoch is often partial, so not
+    every update sees a full `micro_batch x grad_accum` batch.
+    """
+    updates = optimizer_updates(n_train, config.micro_batch, config.grad_accum, config.epochs)
+    return ("optimizer budget: %d train item(s), effective batch up to %d "
+            "(micro_batch %d x grad_accum %d), %d optimizer updates over %d epoch(s)"
+            % (n_train, config.micro_batch * config.grad_accum,
+               config.micro_batch, config.grad_accum, updates, config.epochs))
+
+
 def _forward(model, batch, device, amp: bool, detach_encoder: bool):
     args = (batch["input_ids"].to(device), batch["attention_mask"].to(device),
             batch["marker_pos"].to(device), batch["marker_mask"].to(device), batch["qtype"].to(device))
@@ -647,8 +675,10 @@ def train_model(model, tok, items: Sequence[Dict[str, Any]], config: TrainConfig
                                      if n.startswith("encoder.") and p.requires_grad], "lr": config.encoder_lr})
     optimizer = torch.optim.AdamW(groups, weight_decay=config.weight_decay)
     steps_per_epoch = math.ceil(len(items) / config.micro_batch)
-    updates = max(1, math.ceil(steps_per_epoch / config.grad_accum) * config.epochs)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=updates, eta_min=config.min_lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=optimizer_updates(len(items), config.micro_batch, config.grad_accum, config.epochs),
+        eta_min=config.min_lr)
     scaler = torch.amp.GradScaler("cuda") if amp and device.type == "cuda" else None
 
     torch.manual_seed(config.seed)
@@ -969,6 +999,9 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
     config.validate()
     dev = resolve_device(device)
     model, tok, cfg = load_checkpoint(model_dir)
+    # The base checkpoint is scored on eval_items before train_model runs, and calibration_records
+    # sends its inputs to `dev`, so the weights have to be there first (CUDA and MPS crash otherwise).
+    model.to(dev)
     max_len = config.max_len or cfg.get("max_len", 512)
     head_max_len = config.head_max_len or cfg.get("head_max_len", 192)
     if config.option_layout is not None:
@@ -1079,6 +1112,7 @@ def finetune(data: str, model_dir: str, output_dir: str, config: Optional[TrainC
     print("train items %d, calibration items %d, eval items %d%s, skipped %r, device %s"
           % (len(train_items), len(calib_items), len(eval_items),
              (" (" + str(eval_source) + ")") if eval_source else "", skipped, dev), flush=True)
+    print(update_budget_message(len(train_items), config), flush=True)
 
     # Evaluate base checkpoint on eval items prior to training
     before_eval = None
@@ -1264,10 +1298,18 @@ def dry_run(data: str, model_dir: str, config: Optional[TrainConfig] = None) -> 
                      question_id=config.question_id, instructions=config.instructions)
     items, skipped = items_from_rows(tok, rows, max_len, head_max_len,
                                      label_smoothing=config.label_smoothing)
+    # The training budget is set by the post-calibration item count, so split the same way
+    # finetune does rather than report on the raw valid-item count.
+    train_items, calib_items = split_calibration(items, config.calib_max, config.calib_frac, config.calib_seed)
     summary = {
         "data": data,
         "rows_read": len(rows),
         "valid_items": len(items),
+        "train_items": len(train_items),
+        "calibration_items": len(calib_items),
+        "effective_batch": config.micro_batch * config.grad_accum,
+        "optimizer_updates": optimizer_updates(len(train_items), config.micro_batch,
+                                               config.grad_accum, config.epochs),
         "skipped": skipped,
         "max_len": max_len,
         "head_max_len": head_max_len,
@@ -1285,4 +1327,5 @@ def dry_run(data: str, model_dir: str, config: Optional[TrainConfig] = None) -> 
 
     print("dry-run: %d rows read, %d valid items, skipped: %r"
           % (len(rows), len(items), skipped), flush=True)
+    print("dry-run: " + update_budget_message(len(train_items), config), flush=True)
     return summary

@@ -1,0 +1,2924 @@
+{
+  "checkpoint": "typed-decisions",
+  "graph": "laya.onnx",
+  "revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+  "config": {
+    "model_name": "laya-typed-decisions",
+    "encoder": "answerdotai/ModernBERT-large",
+    "max_len": 1024,
+    "head_max_len": 256,
+    "temperature": [
+      1.0148024559020996,
+      1.0374259948730469,
+      1.0575125217437744
+    ],
+    "temperature_by_options": {
+      "choice:3-5": 1.7601518630981445,
+      "choice:6-10": 1.0000158548355103,
+      "score:3-5": 1.2514300346374512,
+      "noul:2": 1.983399510383606,
+      "choice:11+": 0.5,
+      "choice:2": 1.9063563346862793
+    },
+    "temperature_raw": [
+      1.0148024559020996,
+      1.0374259948730469,
+      1.0575125217437744
+    ],
+    "temperature_by_options_raw": {
+      "choice:3-5": 1.7601518630981445,
+      "choice:6-10": 1.0000158548355103,
+      "score:3-5": 1.2514300346374512,
+      "noul:2": 1.983399510383606,
+      "choice:11+": 0.10058280825614929,
+      "choice:2": 1.9063563346862793
+    }
+  },
+  "workflows": {
+    "agent_trace_observability": [
+      "action",
+      "needs_review",
+      "outcome",
+      "risk",
+      "urgency"
+    ],
+    "customer_service": [
+      "action",
+      "category",
+      "churn_risk",
+      "needs_human",
+      "urgency"
+    ],
+    "invoice_processing": [
+      "discrepancy_severity",
+      "disposition",
+      "duplicate",
+      "matches_order",
+      "urgency"
+    ],
+    "security_incidents": [
+      "credential_compromise",
+      "disposition",
+      "severity",
+      "true_positive",
+      "urgency"
+    ]
+  },
+  "single": {
+    "invoice-variance": {
+      "state": {
+        "invoice": {
+          "id": "INV-2026-8842",
+          "vendor": "Northwind Castings",
+          "currency": "USD",
+          "total_usd": 300020.0,
+          "lines": [
+            {
+              "sku": "SKU-940",
+              "qty": 1000,
+              "unit_usd": 300.02,
+              "total_usd": 300020.0
+            }
+          ]
+        },
+        "purchase_order": {
+          "id": "PO-3392",
+          "total_usd": 214300.0,
+          "lines": [
+            {
+              "qty": 1000,
+              "unit_usd": 214.3
+            }
+          ],
+          "freight_terms": "freight prepaid by vendor, not separately billable"
+        },
+        "delivery": {
+          "date": "2026-03-18",
+          "received_qty": 1000,
+          "condition": "accepted with exceptions"
+        },
+        "payment": {
+          "terms": "net 45",
+          "status": "overdue",
+          "days_until_due": -3
+        },
+        "vendor_history": {
+          "invoices_12m": 40,
+          "disputes_12m": 0,
+          "prior_invoice_ids": [
+            "INV-2026-6633",
+            "INV-2026-9563",
+            "INV-2026-7939"
+          ]
+        }
+      },
+      "lang": null,
+      "workflow": "invoice_processing",
+      "questions": {
+        "disposition": {
+          "type": "choice",
+          "instructions": "How should this vendor invoice be dispositioned?",
+          "criteria": {
+            "approve": "Matches the order and delivery; approve for payment.",
+            "hold": "Something needs confirming before payment; hold pending clarification.",
+            "manual_review": "A human in finance must review the discrepancy.",
+            "reject": "Should not be paid: duplicate, unauthorised or materially wrong."
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "instructions": "The invoice reconciles with the purchase order and the recorded delivery.",
+          "criteria": {
+            "false": "There is a discrepancy against the order or the delivery.",
+            "true": "Line items, quantities and amounts reconcile."
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "instructions": "This invoice appears to duplicate an invoice already submitted."
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "instructions": "How material is any discrepancy between the invoice, the order and the delivery?",
+          "criteria": [
+            "None: everything reconciles.",
+            "Trivial: rounding or a cosmetic difference.",
+            "Moderate: a real difference worth confirming.",
+            "Material: a large or unexplained difference."
+          ]
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How time-sensitive is processing this invoice?",
+          "criteria": [
+            "No time pressure; can wait indefinitely.",
+            "Routine; handle within the normal queue.",
+            "Elevated; should be handled within the same week.",
+            "Critical; requires action within the same day."
+          ]
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "disposition": {
+          "type": "choice",
+          "choice": "manual_review",
+          "probabilities": {
+            "approve": 0.0908,
+            "hold": 0.3301,
+            "manual_review": 0.4534,
+            "reject": 0.1257
+          },
+          "confidence": 0.1322,
+          "answer_confidence": 0.4534,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "noul": 0.2063,
+          "confidence": 0.7937,
+          "answer_confidence": 0.7937,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "noul": 0.1399,
+          "confidence": 0.8601,
+          "answer_confidence": 0.8601,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "score": 2.3799,
+          "legend": {
+            "0": "None: everything reconciles.",
+            "1": "Trivial: rounding or a cosmetic difference.",
+            "2": "Moderate: a real difference worth confirming.",
+            "3": "Material: a large or unexplained difference."
+          },
+          "probabilities": {
+            "0": 0.0405,
+            "1": 0.0602,
+            "2": 0.378,
+            "3": 0.5212
+          },
+          "confidence": 0.2739,
+          "answer_confidence": 0.5212,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "score": 2.1864,
+          "legend": {
+            "0": "No time pressure; can wait indefinitely.",
+            "1": "Routine; handle within the normal queue.",
+            "2": "Elevated; should be handled within the same week.",
+            "3": "Critical; requires action within the same day."
+          },
+          "probabilities": {
+            "0": 0.0226,
+            "1": 0.1418,
+            "2": 0.4621,
+            "3": 0.3735
+          },
+          "confidence": 0.2157,
+          "answer_confidence": 0.4621,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 1666,
+        "output_tokens": 0,
+        "state_tokens": 274,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    },
+    "invoice-clean": {
+      "state": {
+        "invoice": {
+          "id": "INV-2026-9107",
+          "vendor": "Cedar Freight",
+          "currency": "USD",
+          "total_usd": 18450.0,
+          "lines": [
+            {
+              "sku": "SKU-221",
+              "qty": 300,
+              "unit_usd": 61.5,
+              "total_usd": 18450.0
+            }
+          ]
+        },
+        "purchase_order": {
+          "id": "PO-3477",
+          "total_usd": 18450.0,
+          "lines": [
+            {
+              "qty": 300,
+              "unit_usd": 61.5
+            }
+          ],
+          "freight_terms": "freight prepaid by vendor, not separately billable"
+        },
+        "delivery": {
+          "date": "2026-03-20",
+          "received_qty": 300,
+          "condition": "accepted in full"
+        },
+        "payment": {
+          "terms": "net 30",
+          "status": "current",
+          "days_until_due": 18
+        },
+        "vendor_history": {
+          "invoices_12m": 12,
+          "disputes_12m": 0,
+          "prior_invoice_ids": [
+            "INV-2026-7781"
+          ]
+        }
+      },
+      "lang": null,
+      "workflow": "invoice_processing",
+      "questions": {
+        "disposition": {
+          "type": "choice",
+          "instructions": "How should this vendor invoice be dispositioned?",
+          "criteria": {
+            "approve": "Matches the order and delivery; approve for payment.",
+            "hold": "Something needs confirming before payment; hold pending clarification.",
+            "manual_review": "A human in finance must review the discrepancy.",
+            "reject": "Should not be paid: duplicate, unauthorised or materially wrong."
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "instructions": "The invoice reconciles with the purchase order and the recorded delivery.",
+          "criteria": {
+            "false": "There is a discrepancy against the order or the delivery.",
+            "true": "Line items, quantities and amounts reconcile."
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "instructions": "This invoice appears to duplicate an invoice already submitted."
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "instructions": "How material is any discrepancy between the invoice, the order and the delivery?",
+          "criteria": [
+            "None: everything reconciles.",
+            "Trivial: rounding or a cosmetic difference.",
+            "Moderate: a real difference worth confirming.",
+            "Material: a large or unexplained difference."
+          ]
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How time-sensitive is processing this invoice?",
+          "criteria": [
+            "No time pressure; can wait indefinitely.",
+            "Routine; handle within the normal queue.",
+            "Elevated; should be handled within the same week.",
+            "Critical; requires action within the same day."
+          ]
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "disposition": {
+          "type": "choice",
+          "choice": "approve",
+          "probabilities": {
+            "approve": 0.4076,
+            "hold": 0.2312,
+            "manual_review": 0.2092,
+            "reject": 0.152
+          },
+          "confidence": 0.0492,
+          "answer_confidence": 0.4076,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "noul": 0.6562,
+          "confidence": 0.6562,
+          "answer_confidence": 0.6562,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "noul": 0.1452,
+          "confidence": 0.8548,
+          "answer_confidence": 0.8548,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "score": 1.0056,
+          "legend": {
+            "0": "None: everything reconciles.",
+            "1": "Trivial: rounding or a cosmetic difference.",
+            "2": "Moderate: a real difference worth confirming.",
+            "3": "Material: a large or unexplained difference."
+          },
+          "probabilities": {
+            "0": 0.4979,
+            "1": 0.1355,
+            "2": 0.2296,
+            "3": 0.1369
+          },
+          "confidence": 0.1141,
+          "answer_confidence": 0.4979,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "score": 1.5989,
+          "legend": {
+            "0": "No time pressure; can wait indefinitely.",
+            "1": "Routine; handle within the normal queue.",
+            "2": "Elevated; should be handled within the same week.",
+            "3": "Critical; requires action within the same day."
+          },
+          "probabilities": {
+            "0": 0.0413,
+            "1": 0.441,
+            "2": 0.3952,
+            "3": 0.1225
+          },
+          "confidence": 0.1945,
+          "answer_confidence": 0.441,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 1556,
+        "output_tokens": 0,
+        "state_tokens": 252,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    },
+    "customer-service": {
+      "state": "We were billed twice for March. Third time this year -- refund it today or we are moving to a competitor.",
+      "lang": null,
+      "workflow": "customer_service",
+      "questions": {
+        "action": {
+          "type": "choice",
+          "instructions": "What should the support team do next?",
+          "criteria": {
+            "refund": "Return the money and close the ticket.",
+            "replace": "Ship a replacement unit.",
+            "explain": "Answer the question; nothing to send.",
+            "escalate": "Hand to a senior agent."
+          }
+        },
+        "category": {
+          "type": "choice",
+          "instructions": "Which queue does this ticket belong in?",
+          "criteria": {
+            "billing": "Charges, invoices and refunds.",
+            "shipping": "Delivery, tracking and damage in transit.",
+            "account": "Login, access and account settings."
+          }
+        },
+        "churn_risk": {
+          "type": "score",
+          "instructions": "How likely is this customer to leave over this?",
+          "criteria": [
+            "Not at risk; routine contact.",
+            "Mildly annoyed.",
+            "Considering alternatives.",
+            "Explicitly threatening to cancel."
+          ]
+        },
+        "needs_human": {
+          "type": "noul",
+          "instructions": "This ticket needs a human agent rather than an automated reply."
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How quickly must this be answered?",
+          "criteria": [
+            "No time pressure.",
+            "Within the normal queue.",
+            "Same week.",
+            "Same day."
+          ]
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "action": {
+          "type": "choice",
+          "choice": "refund",
+          "probabilities": {
+            "refund": 0.6664,
+            "replace": 0.0648,
+            "explain": 0.0534,
+            "escalate": 0.2154
+          },
+          "confidence": 0.3256,
+          "answer_confidence": 0.6664,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "category": {
+          "type": "choice",
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.8789,
+            "shipping": 0.0432,
+            "account": 0.0779
+          },
+          "confidence": 0.5922,
+          "answer_confidence": 0.8789,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "churn_risk": {
+          "type": "score",
+          "score": 2.4863,
+          "legend": {
+            "0": "Not at risk; routine contact.",
+            "1": "Mildly annoyed.",
+            "2": "Considering alternatives.",
+            "3": "Explicitly threatening to cancel."
+          },
+          "probabilities": {
+            "0": 0.0101,
+            "1": 0.0936,
+            "2": 0.2962,
+            "3": 0.6001
+          },
+          "confidence": 0.3256,
+          "answer_confidence": 0.6001,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "needs_human": {
+          "type": "noul",
+          "noul": 0.6657,
+          "confidence": 0.6657,
+          "answer_confidence": 0.6657,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "score": 2.6585,
+          "legend": {
+            "0": "No time pressure.",
+            "1": "Within the normal queue.",
+            "2": "Same week.",
+            "3": "Same day."
+          },
+          "probabilities": {
+            "0": 0.0112,
+            "1": 0.0364,
+            "2": 0.2353,
+            "3": 0.7172
+          },
+          "confidence": 0.4593,
+          "answer_confidence": 0.7172,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 355,
+        "output_tokens": 0,
+        "state_tokens": 23,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    },
+    "security-incident": {
+      "state": {
+        "alert": "impossible travel",
+        "user": "ana@example.com",
+        "signins": [
+          {
+            "city": "Lagos",
+            "at": "2026-03-18T09:02Z"
+          },
+          {
+            "city": "Vilnius",
+            "at": "2026-03-18T09:41Z"
+          }
+        ],
+        "mfa": "satisfied by push, approved on the second prompt",
+        "prior_alerts_30d": 0
+      },
+      "lang": null,
+      "workflow": "security_incidents",
+      "questions": {
+        "credential_compromise": {
+          "type": "noul",
+          "instructions": "Credentials belonging to this account were exposed or reused.",
+          "criteria": {
+            "false": "No sign that a secret left the organisation.",
+            "true": "A password, token or key is in the wrong hands."
+          }
+        },
+        "disposition": {
+          "type": "choice",
+          "instructions": "How should this alert be dispositioned?",
+          "criteria": {
+            "close": "Benign; close with no action.",
+            "monitor": "Watch for a repeat before acting.",
+            "contain": "Isolate the host or revoke the credential now.",
+            "escalate": "Wake an incident responder."
+          }
+        },
+        "severity": {
+          "type": "score",
+          "instructions": "How severe is the impact if this is real?",
+          "criteria": [
+            "Informational.",
+            "Low: one account, no data.",
+            "High: production data or lateral movement.",
+            "Critical: active, spreading, or customer data."
+          ]
+        },
+        "true_positive": {
+          "type": "noul",
+          "instructions": "This alert describes genuine malicious activity rather than noise."
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How quickly must someone respond?",
+          "criteria": [
+            "No time pressure.",
+            "Next business day.",
+            "Within the hour.",
+            "Immediately."
+          ]
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "credential_compromise": {
+          "type": "noul",
+          "noul": 0.2801,
+          "confidence": 0.7199,
+          "answer_confidence": 0.7199,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "disposition": {
+          "type": "choice",
+          "choice": "close",
+          "probabilities": {
+            "close": 0.3521,
+            "monitor": 0.2603,
+            "contain": 0.1785,
+            "escalate": 0.2091
+          },
+          "confidence": 0.0242,
+          "answer_confidence": 0.3521,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "severity": {
+          "type": "score",
+          "score": 1.1706,
+          "legend": {
+            "0": "Informational.",
+            "1": "Low: one account, no data.",
+            "2": "High: production data or lateral movement.",
+            "3": "Critical: active, spreading, or customer data."
+          },
+          "probabilities": {
+            "0": 0.3117,
+            "1": 0.3074,
+            "2": 0.2794,
+            "3": 0.1015
+          },
+          "confidence": 0.0518,
+          "answer_confidence": 0.3117,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "true_positive": {
+          "type": "noul",
+          "noul": 0.1774,
+          "confidence": 0.8226,
+          "answer_confidence": 0.8226,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "score": 1.7277,
+          "legend": {
+            "0": "No time pressure.",
+            "1": "Next business day.",
+            "2": "Within the hour.",
+            "3": "Immediately."
+          },
+          "probabilities": {
+            "0": 0.1175,
+            "1": 0.2869,
+            "2": 0.3459,
+            "3": 0.2496
+          },
+          "confidence": 0.0453,
+          "answer_confidence": 0.3459,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 745,
+        "output_tokens": 0,
+        "state_tokens": 99,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    },
+    "agent-trace": {
+      "state": {
+        "run": "agt-7741",
+        "tool_calls": 14,
+        "wrote": [
+          "s3://prod-reports/q1.csv"
+        ],
+        "errors": [
+          "RateLimit on call 9, retried"
+        ],
+        "final": "uploaded the report, but the row count is 0"
+      },
+      "lang": null,
+      "workflow": "agent_trace_observability",
+      "questions": {
+        "action": {
+          "type": "choice",
+          "instructions": "What should be done with this agent run?",
+          "criteria": {
+            "accept": "The run did what was asked; accept it.",
+            "retry": "Transient failure; run it again.",
+            "rollback": "Undo what it changed.",
+            "escalate": "A person must look at this."
+          }
+        },
+        "needs_review": {
+          "type": "noul",
+          "instructions": "A human should read this trace before the result is used."
+        },
+        "outcome": {
+          "type": "choice",
+          "instructions": "How did the run end?",
+          "criteria": {
+            "success": "Completed the task.",
+            "partial": "Completed some of it.",
+            "failure": "Did not complete the task."
+          }
+        },
+        "risk": {
+          "type": "score",
+          "instructions": "How much damage could this run's actions have caused?",
+          "criteria": [
+            "Read-only; no effect.",
+            "Reversible writes.",
+            "Irreversible writes to internal systems.",
+            "Irreversible, customer-visible, or spending money."
+          ]
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How quickly must this be looked at?",
+          "criteria": [
+            "No time pressure.",
+            "Next business day.",
+            "Within the hour.",
+            "Immediately."
+          ]
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "action": {
+          "type": "choice",
+          "choice": "retry",
+          "probabilities": {
+            "accept": 0.1787,
+            "retry": 0.367,
+            "rollback": 0.1785,
+            "escalate": 0.2758
+          },
+          "confidence": 0.0345,
+          "answer_confidence": 0.367,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "needs_review": {
+          "type": "noul",
+          "noul": 0.3861,
+          "confidence": 0.6139,
+          "answer_confidence": 0.6139,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "outcome": {
+          "type": "choice",
+          "choice": "failure",
+          "probabilities": {
+            "success": 0.1267,
+            "partial": 0.3769,
+            "failure": 0.4964
+          },
+          "confidence": 0.1106,
+          "answer_confidence": 0.4964,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "risk": {
+          "type": "score",
+          "score": 1.4808,
+          "legend": {
+            "0": "Read-only; no effect.",
+            "1": "Reversible writes.",
+            "2": "Irreversible writes to internal systems.",
+            "3": "Irreversible, customer-visible, or spending money."
+          },
+          "probabilities": {
+            "0": 0.1546,
+            "1": 0.3994,
+            "2": 0.2565,
+            "3": 0.1894
+          },
+          "confidence": 0.0483,
+          "answer_confidence": 0.3994,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "score": 1.8262,
+          "legend": {
+            "0": "No time pressure.",
+            "1": "Next business day.",
+            "2": "Within the hour.",
+            "3": "Immediately."
+          },
+          "probabilities": {
+            "0": 0.0736,
+            "1": 0.3121,
+            "2": 0.3286,
+            "3": 0.2856
+          },
+          "confidence": 0.0773,
+          "answer_confidence": 0.3286,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 558,
+        "output_tokens": 0,
+        "state_tokens": 62,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    },
+    "many-options": {
+      "state": "The invoice totals 300,020 USD against a 214,300 USD order.",
+      "lang": null,
+      "workflow": null,
+      "questions": {
+        "band": {
+          "type": "choice",
+          "instructions": "Which spend band does this invoice fall in?",
+          "criteria": {
+            "band00": "tier number 0",
+            "band01": "tier number 1",
+            "band02": "tier number 2",
+            "band03": "tier number 3",
+            "band04": "tier number 4",
+            "band05": "tier number 5",
+            "band06": "tier number 6",
+            "band07": "tier number 7",
+            "band08": "tier number 8",
+            "band09": "tier number 9",
+            "band10": "tier number 10",
+            "band11": "tier number 11",
+            "band12": "tier number 12",
+            "band13": "tier number 13"
+          }
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "band": {
+          "type": "choice",
+          "choice": "band01",
+          "probabilities": {
+            "band00": 0.1393,
+            "band01": 0.3035,
+            "band02": 0.1856,
+            "band03": 0.0873,
+            "band04": 0.0365,
+            "band05": 0.0311,
+            "band06": 0.0313,
+            "band07": 0.0304,
+            "band08": 0.0349,
+            "band09": 0.043,
+            "band10": 0.0163,
+            "band11": 0.0132,
+            "band12": 0.0218,
+            "band13": 0.0257
+          },
+          "confidence": 0.1817,
+          "answer_confidence": 0.3035,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 130,
+        "output_tokens": 0,
+        "state_tokens": 16,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    },
+    "over-budget": {
+      "state": "line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. line item number one, unit price 300.02 against a purchase order at 214.30, delivery accepted with exceptions. ",
+      "lang": null,
+      "workflow": "invoice_processing",
+      "questions": {
+        "disposition": {
+          "type": "choice",
+          "instructions": "How should this vendor invoice be dispositioned?",
+          "criteria": {
+            "approve": "Matches the order and delivery; approve for payment.",
+            "hold": "Something needs confirming before payment; hold pending clarification.",
+            "manual_review": "A human in finance must review the discrepancy.",
+            "reject": "Should not be paid: duplicate, unauthorised or materially wrong."
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "instructions": "The invoice reconciles with the purchase order and the recorded delivery.",
+          "criteria": {
+            "false": "There is a discrepancy against the order or the delivery.",
+            "true": "Line items, quantities and amounts reconcile."
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "instructions": "This invoice appears to duplicate an invoice already submitted."
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "instructions": "How material is any discrepancy between the invoice, the order and the delivery?",
+          "criteria": [
+            "None: everything reconciles.",
+            "Trivial: rounding or a cosmetic difference.",
+            "Moderate: a real difference worth confirming.",
+            "Material: a large or unexplained difference."
+          ]
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How time-sensitive is processing this invoice?",
+          "criteria": [
+            "No time pressure; can wait indefinitely.",
+            "Routine; handle within the normal queue.",
+            "Elevated; should be handled within the same week.",
+            "Critical; requires action within the same day."
+          ]
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "disposition": {
+          "type": "choice",
+          "choice": "manual_review",
+          "probabilities": {
+            "approve": 0.2397,
+            "hold": 0.2893,
+            "manual_review": 0.3046,
+            "reject": 0.1664
+          },
+          "confidence": 0.0177,
+          "answer_confidence": 0.3046,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "noul": 0.4998,
+          "confidence": 0.5002,
+          "answer_confidence": 0.5002,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "noul": 0.2023,
+          "confidence": 0.7977,
+          "answer_confidence": 0.7977,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "score": 1.7091,
+          "legend": {
+            "0": "None: everything reconciles.",
+            "1": "Trivial: rounding or a cosmetic difference.",
+            "2": "Moderate: a real difference worth confirming.",
+            "3": "Material: a large or unexplained difference."
+          },
+          "probabilities": {
+            "0": 0.2096,
+            "1": 0.1382,
+            "2": 0.3856,
+            "3": 0.2666
+          },
+          "confidence": 0.0472,
+          "answer_confidence": 0.3856,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "score": 1.4485,
+          "legend": {
+            "0": "No time pressure; can wait indefinitely.",
+            "1": "Routine; handle within the normal queue.",
+            "2": "Elevated; should be handled within the same week.",
+            "3": "Critical; requires action within the same day."
+          },
+          "probabilities": {
+            "0": 0.0834,
+            "1": 0.4863,
+            "2": 0.3288,
+            "3": 0.1015
+          },
+          "confidence": 0.1663,
+          "answer_confidence": 0.4863,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 5120,
+        "output_tokens": 0,
+        "state_tokens": 2161,
+        "state_tokens_dropped": 1211,
+        "truncated": true,
+        "truncated_questions": [
+          "disposition",
+          "matches_order",
+          "duplicate",
+          "discrepancy_severity",
+          "urgency"
+        ]
+      }
+    },
+    "off-workflow": {
+      "state": "We were billed twice for March and want a refund today.",
+      "lang": "en",
+      "workflow": null,
+      "questions": {
+        "department": {
+          "type": "choice",
+          "instructions": "Which team owns this?",
+          "criteria": {
+            "billing": "charges and refunds",
+            "other": "anything else"
+          }
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "department": {
+          "type": "choice",
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.8967,
+            "other": 0.1033
+          },
+          "confidence": 0.5207,
+          "answer_confidence": 0.8967,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 36,
+        "output_tokens": 0,
+        "state_tokens": 12,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    },
+    "unbucketed-score": {
+      "state": "Invoice INV-2026-8842 for 300,020 USD is three days overdue and the vendor has put the next casting run on hold until it clears.",
+      "lang": null,
+      "workflow": null,
+      "questions": {
+        "payment_priority": {
+          "type": "score",
+          "instructions": "How high a priority is settling this invoice this week?",
+          "criteria": [
+            "No priority; it can wait a quarter.",
+            "Low: settle within the month.",
+            "Normal: settle on the agreed terms.",
+            "Elevated: settle this week.",
+            "High: the vendor has threatened to stop shipping.",
+            "Critical: the line stops without it."
+          ]
+        }
+      },
+      "model": "laya-rl-agent-onnx",
+      "answers": {
+        "payment_priority": {
+          "type": "score",
+          "score": 3.0829,
+          "legend": {
+            "0": "No priority; it can wait a quarter.",
+            "1": "Low: settle within the month.",
+            "2": "Normal: settle on the agreed terms.",
+            "3": "Elevated: settle this week.",
+            "4": "High: the vendor has threatened to stop shipping.",
+            "5": "Critical: the line stops without it."
+          },
+          "probabilities": {
+            "0": 0.0086,
+            "1": 0.107,
+            "2": 0.1279,
+            "3": 0.3645,
+            "4": 0.3335,
+            "5": 0.0585
+          },
+          "confidence": 0.1946,
+          "answer_confidence": 0.3645,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 128,
+        "output_tokens": 0,
+        "state_tokens": 36,
+        "state_tokens_dropped": 0,
+        "truncated": false,
+        "truncated_questions": []
+      }
+    }
+  },
+  "batch": [
+    {
+      "batch_size": null,
+      "sort_by_length": false,
+      "states": [
+        {
+          "invoice": {
+            "id": "INV-2026-8842",
+            "vendor": "Northwind Castings",
+            "currency": "USD",
+            "total_usd": 300020.0,
+            "lines": [
+              {
+                "sku": "SKU-940",
+                "qty": 1000,
+                "unit_usd": 300.02,
+                "total_usd": 300020.0
+              }
+            ]
+          },
+          "purchase_order": {
+            "id": "PO-3392",
+            "total_usd": 214300.0,
+            "lines": [
+              {
+                "qty": 1000,
+                "unit_usd": 214.3
+              }
+            ],
+            "freight_terms": "freight prepaid by vendor, not separately billable"
+          },
+          "delivery": {
+            "date": "2026-03-18",
+            "received_qty": 1000,
+            "condition": "accepted with exceptions"
+          },
+          "payment": {
+            "terms": "net 45",
+            "status": "overdue",
+            "days_until_due": -3
+          },
+          "vendor_history": {
+            "invoices_12m": 40,
+            "disputes_12m": 0,
+            "prior_invoice_ids": [
+              "INV-2026-6633",
+              "INV-2026-9563",
+              "INV-2026-7939"
+            ]
+          }
+        },
+        {
+          "invoice": {
+            "id": "INV-2026-9107",
+            "vendor": "Cedar Freight",
+            "currency": "USD",
+            "total_usd": 18450.0,
+            "lines": [
+              {
+                "sku": "SKU-221",
+                "qty": 300,
+                "unit_usd": 61.5,
+                "total_usd": 18450.0
+              }
+            ]
+          },
+          "purchase_order": {
+            "id": "PO-3477",
+            "total_usd": 18450.0,
+            "lines": [
+              {
+                "qty": 300,
+                "unit_usd": 61.5
+              }
+            ],
+            "freight_terms": "freight prepaid by vendor, not separately billable"
+          },
+          "delivery": {
+            "date": "2026-03-20",
+            "received_qty": 300,
+            "condition": "accepted in full"
+          },
+          "payment": {
+            "terms": "net 30",
+            "status": "current",
+            "days_until_due": 18
+          },
+          "vendor_history": {
+            "invoices_12m": 12,
+            "disputes_12m": 0,
+            "prior_invoice_ids": [
+              "INV-2026-7781"
+            ]
+          }
+        },
+        "INV-2026-1004, 980 USD, matches PO-3100 and delivery.",
+        "duplicate of INV-2026-1004",
+        ""
+      ],
+      "questions": {
+        "disposition": {
+          "type": "choice",
+          "instructions": "How should this vendor invoice be dispositioned?",
+          "criteria": {
+            "approve": "Matches the order and delivery; approve for payment.",
+            "hold": "Something needs confirming before payment; hold pending clarification.",
+            "manual_review": "A human in finance must review the discrepancy.",
+            "reject": "Should not be paid: duplicate, unauthorised or materially wrong."
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "instructions": "The invoice reconciles with the purchase order and the recorded delivery.",
+          "criteria": {
+            "false": "There is a discrepancy against the order or the delivery.",
+            "true": "Line items, quantities and amounts reconcile."
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "instructions": "This invoice appears to duplicate an invoice already submitted."
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "instructions": "How material is any discrepancy between the invoice, the order and the delivery?",
+          "criteria": [
+            "None: everything reconciles.",
+            "Trivial: rounding or a cosmetic difference.",
+            "Moderate: a real difference worth confirming.",
+            "Material: a large or unexplained difference."
+          ]
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How time-sensitive is processing this invoice?",
+          "criteria": [
+            "No time pressure; can wait indefinitely.",
+            "Routine; handle within the normal queue.",
+            "Elevated; should be handled within the same week.",
+            "Critical; requires action within the same day."
+          ]
+        }
+      },
+      "results": [
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.0908,
+                "hold": 0.3301,
+                "manual_review": 0.4534,
+                "reject": 0.1257
+              },
+              "confidence": 0.1322,
+              "answer_confidence": 0.4534,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.2063,
+              "confidence": 0.7937,
+              "answer_confidence": 0.7937,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.1399,
+              "confidence": 0.8601,
+              "answer_confidence": 0.8601,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 2.3799,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.0405,
+                "1": 0.0602,
+                "2": 0.378,
+                "3": 0.5212
+              },
+              "confidence": 0.2739,
+              "answer_confidence": 0.5212,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 2.1864,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0226,
+                "1": 0.1418,
+                "2": 0.4621,
+                "3": 0.3735
+              },
+              "confidence": 0.2157,
+              "answer_confidence": 0.4621,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 1666,
+            "output_tokens": 0,
+            "state_tokens": 274,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "approve",
+              "probabilities": {
+                "approve": 0.4076,
+                "hold": 0.2312,
+                "manual_review": 0.2092,
+                "reject": 0.152
+              },
+              "confidence": 0.0492,
+              "answer_confidence": 0.4076,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.6562,
+              "confidence": 0.6562,
+              "answer_confidence": 0.6562,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.1452,
+              "confidence": 0.8548,
+              "answer_confidence": 0.8548,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.0056,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.4979,
+                "1": 0.1355,
+                "2": 0.2296,
+                "3": 0.1369
+              },
+              "confidence": 0.1141,
+              "answer_confidence": 0.4979,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5989,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0413,
+                "1": 0.441,
+                "2": 0.3952,
+                "3": 0.1225
+              },
+              "confidence": 0.1945,
+              "answer_confidence": 0.441,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 1556,
+            "output_tokens": 0,
+            "state_tokens": 252,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "approve",
+              "probabilities": {
+                "approve": 0.5173,
+                "hold": 0.1756,
+                "manual_review": 0.1803,
+                "reject": 0.1267
+              },
+              "confidence": 0.122,
+              "answer_confidence": 0.5173,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.7186,
+              "confidence": 0.7186,
+              "answer_confidence": 0.7186,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.2763,
+              "confidence": 0.7237,
+              "answer_confidence": 0.7237,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 0.6375,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.6903,
+                "1": 0.0668,
+                "2": 0.158,
+                "3": 0.0849
+              },
+              "confidence": 0.3236,
+              "answer_confidence": 0.6903,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5688,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0407,
+                "1": 0.47,
+                "2": 0.369,
+                "3": 0.1203
+              },
+              "confidence": 0.2008,
+              "answer_confidence": 0.47,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 396,
+            "output_tokens": 0,
+            "state_tokens": 20,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.1746,
+                "hold": 0.2887,
+                "manual_review": 0.3221,
+                "reject": 0.2145
+              },
+              "confidence": 0.02,
+              "answer_confidence": 0.3221,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.6206,
+              "confidence": 0.6206,
+              "answer_confidence": 0.6206,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.4192,
+              "confidence": 0.5808,
+              "answer_confidence": 0.5808,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.823,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.1938,
+                "1": 0.1166,
+                "2": 0.3623,
+                "3": 0.3273
+              },
+              "confidence": 0.0608,
+              "answer_confidence": 0.3623,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.603,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0369,
+                "1": 0.4401,
+                "2": 0.4062,
+                "3": 0.1169
+              },
+              "confidence": 0.2067,
+              "answer_confidence": 0.4401,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 346,
+            "output_tokens": 0,
+            "state_tokens": 10,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.2066,
+                "hold": 0.3032,
+                "manual_review": 0.335,
+                "reject": 0.1552
+              },
+              "confidence": 0.0311,
+              "answer_confidence": 0.335,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.5773,
+              "confidence": 0.5773,
+              "answer_confidence": 0.5773,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.15,
+              "confidence": 0.85,
+              "answer_confidence": 0.85,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.5307,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.3219,
+                "1": 0.1028,
+                "2": 0.2982,
+                "3": 0.2772
+              },
+              "confidence": 0.0513,
+              "answer_confidence": 0.3219,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5328,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0409,
+                "1": 0.4738,
+                "2": 0.397,
+                "3": 0.0883
+              },
+              "confidence": 0.2313,
+              "answer_confidence": 0.4738,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 296,
+            "output_tokens": 0,
+            "state_tokens": 0,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        }
+      ]
+    },
+    {
+      "batch_size": 2,
+      "sort_by_length": false,
+      "states": [
+        {
+          "invoice": {
+            "id": "INV-2026-8842",
+            "vendor": "Northwind Castings",
+            "currency": "USD",
+            "total_usd": 300020.0,
+            "lines": [
+              {
+                "sku": "SKU-940",
+                "qty": 1000,
+                "unit_usd": 300.02,
+                "total_usd": 300020.0
+              }
+            ]
+          },
+          "purchase_order": {
+            "id": "PO-3392",
+            "total_usd": 214300.0,
+            "lines": [
+              {
+                "qty": 1000,
+                "unit_usd": 214.3
+              }
+            ],
+            "freight_terms": "freight prepaid by vendor, not separately billable"
+          },
+          "delivery": {
+            "date": "2026-03-18",
+            "received_qty": 1000,
+            "condition": "accepted with exceptions"
+          },
+          "payment": {
+            "terms": "net 45",
+            "status": "overdue",
+            "days_until_due": -3
+          },
+          "vendor_history": {
+            "invoices_12m": 40,
+            "disputes_12m": 0,
+            "prior_invoice_ids": [
+              "INV-2026-6633",
+              "INV-2026-9563",
+              "INV-2026-7939"
+            ]
+          }
+        },
+        {
+          "invoice": {
+            "id": "INV-2026-9107",
+            "vendor": "Cedar Freight",
+            "currency": "USD",
+            "total_usd": 18450.0,
+            "lines": [
+              {
+                "sku": "SKU-221",
+                "qty": 300,
+                "unit_usd": 61.5,
+                "total_usd": 18450.0
+              }
+            ]
+          },
+          "purchase_order": {
+            "id": "PO-3477",
+            "total_usd": 18450.0,
+            "lines": [
+              {
+                "qty": 300,
+                "unit_usd": 61.5
+              }
+            ],
+            "freight_terms": "freight prepaid by vendor, not separately billable"
+          },
+          "delivery": {
+            "date": "2026-03-20",
+            "received_qty": 300,
+            "condition": "accepted in full"
+          },
+          "payment": {
+            "terms": "net 30",
+            "status": "current",
+            "days_until_due": 18
+          },
+          "vendor_history": {
+            "invoices_12m": 12,
+            "disputes_12m": 0,
+            "prior_invoice_ids": [
+              "INV-2026-7781"
+            ]
+          }
+        },
+        "INV-2026-1004, 980 USD, matches PO-3100 and delivery.",
+        "duplicate of INV-2026-1004",
+        ""
+      ],
+      "questions": {
+        "disposition": {
+          "type": "choice",
+          "instructions": "How should this vendor invoice be dispositioned?",
+          "criteria": {
+            "approve": "Matches the order and delivery; approve for payment.",
+            "hold": "Something needs confirming before payment; hold pending clarification.",
+            "manual_review": "A human in finance must review the discrepancy.",
+            "reject": "Should not be paid: duplicate, unauthorised or materially wrong."
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "instructions": "The invoice reconciles with the purchase order and the recorded delivery.",
+          "criteria": {
+            "false": "There is a discrepancy against the order or the delivery.",
+            "true": "Line items, quantities and amounts reconcile."
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "instructions": "This invoice appears to duplicate an invoice already submitted."
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "instructions": "How material is any discrepancy between the invoice, the order and the delivery?",
+          "criteria": [
+            "None: everything reconciles.",
+            "Trivial: rounding or a cosmetic difference.",
+            "Moderate: a real difference worth confirming.",
+            "Material: a large or unexplained difference."
+          ]
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How time-sensitive is processing this invoice?",
+          "criteria": [
+            "No time pressure; can wait indefinitely.",
+            "Routine; handle within the normal queue.",
+            "Elevated; should be handled within the same week.",
+            "Critical; requires action within the same day."
+          ]
+        }
+      },
+      "results": [
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.0908,
+                "hold": 0.3301,
+                "manual_review": 0.4534,
+                "reject": 0.1257
+              },
+              "confidence": 0.1322,
+              "answer_confidence": 0.4534,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.2063,
+              "confidence": 0.7937,
+              "answer_confidence": 0.7937,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.1399,
+              "confidence": 0.8601,
+              "answer_confidence": 0.8601,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 2.3799,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.0405,
+                "1": 0.0602,
+                "2": 0.378,
+                "3": 0.5212
+              },
+              "confidence": 0.2739,
+              "answer_confidence": 0.5212,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 2.1864,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0226,
+                "1": 0.1418,
+                "2": 0.4621,
+                "3": 0.3735
+              },
+              "confidence": 0.2157,
+              "answer_confidence": 0.4621,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 1666,
+            "output_tokens": 0,
+            "state_tokens": 274,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "approve",
+              "probabilities": {
+                "approve": 0.4076,
+                "hold": 0.2312,
+                "manual_review": 0.2092,
+                "reject": 0.152
+              },
+              "confidence": 0.0492,
+              "answer_confidence": 0.4076,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.6562,
+              "confidence": 0.6562,
+              "answer_confidence": 0.6562,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.1452,
+              "confidence": 0.8548,
+              "answer_confidence": 0.8548,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.0056,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.4979,
+                "1": 0.1355,
+                "2": 0.2296,
+                "3": 0.1369
+              },
+              "confidence": 0.1141,
+              "answer_confidence": 0.4979,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5989,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0413,
+                "1": 0.441,
+                "2": 0.3952,
+                "3": 0.1225
+              },
+              "confidence": 0.1945,
+              "answer_confidence": 0.441,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 1556,
+            "output_tokens": 0,
+            "state_tokens": 252,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "approve",
+              "probabilities": {
+                "approve": 0.5173,
+                "hold": 0.1756,
+                "manual_review": 0.1803,
+                "reject": 0.1267
+              },
+              "confidence": 0.122,
+              "answer_confidence": 0.5173,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.7186,
+              "confidence": 0.7186,
+              "answer_confidence": 0.7186,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.2763,
+              "confidence": 0.7237,
+              "answer_confidence": 0.7237,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 0.6375,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.6903,
+                "1": 0.0668,
+                "2": 0.158,
+                "3": 0.0849
+              },
+              "confidence": 0.3236,
+              "answer_confidence": 0.6903,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5688,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0407,
+                "1": 0.47,
+                "2": 0.369,
+                "3": 0.1203
+              },
+              "confidence": 0.2008,
+              "answer_confidence": 0.47,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 396,
+            "output_tokens": 0,
+            "state_tokens": 20,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.1746,
+                "hold": 0.2887,
+                "manual_review": 0.3221,
+                "reject": 0.2145
+              },
+              "confidence": 0.02,
+              "answer_confidence": 0.3221,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.6206,
+              "confidence": 0.6206,
+              "answer_confidence": 0.6206,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.4192,
+              "confidence": 0.5808,
+              "answer_confidence": 0.5808,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.823,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.1938,
+                "1": 0.1166,
+                "2": 0.3623,
+                "3": 0.3273
+              },
+              "confidence": 0.0608,
+              "answer_confidence": 0.3623,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.603,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0369,
+                "1": 0.4401,
+                "2": 0.4062,
+                "3": 0.1169
+              },
+              "confidence": 0.2067,
+              "answer_confidence": 0.4401,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 346,
+            "output_tokens": 0,
+            "state_tokens": 10,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.2066,
+                "hold": 0.3032,
+                "manual_review": 0.335,
+                "reject": 0.1552
+              },
+              "confidence": 0.0311,
+              "answer_confidence": 0.335,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.5773,
+              "confidence": 0.5773,
+              "answer_confidence": 0.5773,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.15,
+              "confidence": 0.85,
+              "answer_confidence": 0.85,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.5307,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.3219,
+                "1": 0.1028,
+                "2": 0.2982,
+                "3": 0.2772
+              },
+              "confidence": 0.0513,
+              "answer_confidence": 0.3219,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5328,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0409,
+                "1": 0.4738,
+                "2": 0.397,
+                "3": 0.0883
+              },
+              "confidence": 0.2313,
+              "answer_confidence": 0.4738,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 296,
+            "output_tokens": 0,
+            "state_tokens": 0,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        }
+      ]
+    },
+    {
+      "batch_size": 3,
+      "sort_by_length": true,
+      "states": [
+        {
+          "invoice": {
+            "id": "INV-2026-8842",
+            "vendor": "Northwind Castings",
+            "currency": "USD",
+            "total_usd": 300020.0,
+            "lines": [
+              {
+                "sku": "SKU-940",
+                "qty": 1000,
+                "unit_usd": 300.02,
+                "total_usd": 300020.0
+              }
+            ]
+          },
+          "purchase_order": {
+            "id": "PO-3392",
+            "total_usd": 214300.0,
+            "lines": [
+              {
+                "qty": 1000,
+                "unit_usd": 214.3
+              }
+            ],
+            "freight_terms": "freight prepaid by vendor, not separately billable"
+          },
+          "delivery": {
+            "date": "2026-03-18",
+            "received_qty": 1000,
+            "condition": "accepted with exceptions"
+          },
+          "payment": {
+            "terms": "net 45",
+            "status": "overdue",
+            "days_until_due": -3
+          },
+          "vendor_history": {
+            "invoices_12m": 40,
+            "disputes_12m": 0,
+            "prior_invoice_ids": [
+              "INV-2026-6633",
+              "INV-2026-9563",
+              "INV-2026-7939"
+            ]
+          }
+        },
+        {
+          "invoice": {
+            "id": "INV-2026-9107",
+            "vendor": "Cedar Freight",
+            "currency": "USD",
+            "total_usd": 18450.0,
+            "lines": [
+              {
+                "sku": "SKU-221",
+                "qty": 300,
+                "unit_usd": 61.5,
+                "total_usd": 18450.0
+              }
+            ]
+          },
+          "purchase_order": {
+            "id": "PO-3477",
+            "total_usd": 18450.0,
+            "lines": [
+              {
+                "qty": 300,
+                "unit_usd": 61.5
+              }
+            ],
+            "freight_terms": "freight prepaid by vendor, not separately billable"
+          },
+          "delivery": {
+            "date": "2026-03-20",
+            "received_qty": 300,
+            "condition": "accepted in full"
+          },
+          "payment": {
+            "terms": "net 30",
+            "status": "current",
+            "days_until_due": 18
+          },
+          "vendor_history": {
+            "invoices_12m": 12,
+            "disputes_12m": 0,
+            "prior_invoice_ids": [
+              "INV-2026-7781"
+            ]
+          }
+        },
+        "INV-2026-1004, 980 USD, matches PO-3100 and delivery.",
+        "duplicate of INV-2026-1004",
+        ""
+      ],
+      "questions": {
+        "disposition": {
+          "type": "choice",
+          "instructions": "How should this vendor invoice be dispositioned?",
+          "criteria": {
+            "approve": "Matches the order and delivery; approve for payment.",
+            "hold": "Something needs confirming before payment; hold pending clarification.",
+            "manual_review": "A human in finance must review the discrepancy.",
+            "reject": "Should not be paid: duplicate, unauthorised or materially wrong."
+          }
+        },
+        "matches_order": {
+          "type": "noul",
+          "instructions": "The invoice reconciles with the purchase order and the recorded delivery.",
+          "criteria": {
+            "false": "There is a discrepancy against the order or the delivery.",
+            "true": "Line items, quantities and amounts reconcile."
+          }
+        },
+        "duplicate": {
+          "type": "noul",
+          "instructions": "This invoice appears to duplicate an invoice already submitted."
+        },
+        "discrepancy_severity": {
+          "type": "score",
+          "instructions": "How material is any discrepancy between the invoice, the order and the delivery?",
+          "criteria": [
+            "None: everything reconciles.",
+            "Trivial: rounding or a cosmetic difference.",
+            "Moderate: a real difference worth confirming.",
+            "Material: a large or unexplained difference."
+          ]
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How time-sensitive is processing this invoice?",
+          "criteria": [
+            "No time pressure; can wait indefinitely.",
+            "Routine; handle within the normal queue.",
+            "Elevated; should be handled within the same week.",
+            "Critical; requires action within the same day."
+          ]
+        }
+      },
+      "results": [
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.0908,
+                "hold": 0.3301,
+                "manual_review": 0.4534,
+                "reject": 0.1257
+              },
+              "confidence": 0.1322,
+              "answer_confidence": 0.4534,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.2063,
+              "confidence": 0.7937,
+              "answer_confidence": 0.7937,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.1399,
+              "confidence": 0.8601,
+              "answer_confidence": 0.8601,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 2.3799,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.0405,
+                "1": 0.0602,
+                "2": 0.378,
+                "3": 0.5212
+              },
+              "confidence": 0.2739,
+              "answer_confidence": 0.5212,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 2.1864,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0226,
+                "1": 0.1418,
+                "2": 0.4621,
+                "3": 0.3735
+              },
+              "confidence": 0.2157,
+              "answer_confidence": 0.4621,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 1666,
+            "output_tokens": 0,
+            "state_tokens": 274,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "approve",
+              "probabilities": {
+                "approve": 0.4076,
+                "hold": 0.2312,
+                "manual_review": 0.2092,
+                "reject": 0.152
+              },
+              "confidence": 0.0492,
+              "answer_confidence": 0.4076,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.6562,
+              "confidence": 0.6562,
+              "answer_confidence": 0.6562,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.1452,
+              "confidence": 0.8548,
+              "answer_confidence": 0.8548,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.0056,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.4979,
+                "1": 0.1355,
+                "2": 0.2296,
+                "3": 0.1369
+              },
+              "confidence": 0.1141,
+              "answer_confidence": 0.4979,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5989,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0413,
+                "1": 0.441,
+                "2": 0.3952,
+                "3": 0.1225
+              },
+              "confidence": 0.1945,
+              "answer_confidence": 0.441,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 1556,
+            "output_tokens": 0,
+            "state_tokens": 252,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "approve",
+              "probabilities": {
+                "approve": 0.5173,
+                "hold": 0.1756,
+                "manual_review": 0.1803,
+                "reject": 0.1267
+              },
+              "confidence": 0.122,
+              "answer_confidence": 0.5173,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.7186,
+              "confidence": 0.7186,
+              "answer_confidence": 0.7186,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.2763,
+              "confidence": 0.7237,
+              "answer_confidence": 0.7237,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 0.6375,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.6903,
+                "1": 0.0668,
+                "2": 0.158,
+                "3": 0.0849
+              },
+              "confidence": 0.3236,
+              "answer_confidence": 0.6903,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5688,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0407,
+                "1": 0.47,
+                "2": 0.369,
+                "3": 0.1203
+              },
+              "confidence": 0.2008,
+              "answer_confidence": 0.47,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 396,
+            "output_tokens": 0,
+            "state_tokens": 20,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.1746,
+                "hold": 0.2887,
+                "manual_review": 0.3221,
+                "reject": 0.2145
+              },
+              "confidence": 0.02,
+              "answer_confidence": 0.3221,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.6206,
+              "confidence": 0.6206,
+              "answer_confidence": 0.6206,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.4192,
+              "confidence": 0.5808,
+              "answer_confidence": 0.5808,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.823,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.1938,
+                "1": 0.1166,
+                "2": 0.3623,
+                "3": 0.3273
+              },
+              "confidence": 0.0608,
+              "answer_confidence": 0.3623,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.603,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0369,
+                "1": 0.4401,
+                "2": 0.4062,
+                "3": 0.1169
+              },
+              "confidence": 0.2067,
+              "answer_confidence": 0.4401,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 346,
+            "output_tokens": 0,
+            "state_tokens": 10,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        },
+        {
+          "model": "laya-rl-agent-onnx",
+          "answers": {
+            "disposition": {
+              "type": "choice",
+              "choice": "manual_review",
+              "probabilities": {
+                "approve": 0.2066,
+                "hold": 0.3032,
+                "manual_review": 0.335,
+                "reject": 0.1552
+              },
+              "confidence": 0.0311,
+              "answer_confidence": 0.335,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "matches_order": {
+              "type": "noul",
+              "noul": 0.5773,
+              "confidence": 0.5773,
+              "answer_confidence": 0.5773,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "duplicate": {
+              "type": "noul",
+              "noul": 0.15,
+              "confidence": 0.85,
+              "answer_confidence": 0.85,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "discrepancy_severity": {
+              "type": "score",
+              "score": 1.5307,
+              "legend": {
+                "0": "None: everything reconciles.",
+                "1": "Trivial: rounding or a cosmetic difference.",
+                "2": "Moderate: a real difference worth confirming.",
+                "3": "Material: a large or unexplained difference."
+              },
+              "probabilities": {
+                "0": 0.3219,
+                "1": 0.1028,
+                "2": 0.2982,
+                "3": 0.2772
+              },
+              "confidence": 0.0513,
+              "answer_confidence": 0.3219,
+              "action": {
+                "act_probability": 1.0
+              }
+            },
+            "urgency": {
+              "type": "score",
+              "score": 1.5328,
+              "legend": {
+                "0": "No time pressure; can wait indefinitely.",
+                "1": "Routine; handle within the normal queue.",
+                "2": "Elevated; should be handled within the same week.",
+                "3": "Critical; requires action within the same day."
+              },
+              "probabilities": {
+                "0": 0.0409,
+                "1": 0.4738,
+                "2": 0.397,
+                "3": 0.0883
+              },
+              "confidence": 0.2313,
+              "answer_confidence": 0.4738,
+              "action": {
+                "act_probability": 1.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 296,
+            "output_tokens": 0,
+            "state_tokens": 0,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        }
+      ]
+    }
+  ]
+}

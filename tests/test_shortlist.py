@@ -6,6 +6,7 @@ decision model is never constructed.
 import inspect
 import os
 import sys
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -845,6 +846,121 @@ for bad in (1, 0, -3, True, 2.5, "16"):
 check_raises("tournament/questions must be a dict", lambda: predict_tournament(Ranker([]), "s", []), TypeError)
 check_raises("tournament/choice without criteria",
              lambda: predict_tournament(Ranker([]), "s", {"q": {"type": "choice", "instructions": "pick"}}))
+
+
+# ------------------------------------------------- narrowing drops a stale option_order
+# Nandha on #958: narrowing `criteria` while forwarding a full-length `option_order`
+# "is a core contract question"; his preferred remedy drops the order with a warning,
+# because remapping it onto the kept labels changes the request silently.
+
+
+def _run_catching_warnings(fn):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = fn()
+    return result, [w for w in caught if issubclass(w.category, RuntimeWarning)]
+
+
+def _check_validates(name, qid, qdef):
+    try:
+        Agent._check_question(qid, qdef)
+        check_true(name, True)
+    except ValueError as e:
+        check_true(name, False, str(e))
+
+
+# --- shortlist: a narrowed choice loses its order, once, and says so
+order_q = {
+    "type": "choice",
+    "instructions": "Which desk?",
+    "criteria": dict(full),
+    "option_order": [3, 2, 1, 0],
+}
+order_agent = Recorder()
+out_order, order_warns = _run_catching_warnings(
+    lambda: predict_shortlist(order_agent, state, {"intent": order_q}, TableEmbed(full_vectors), k=2)
+)
+narrowed = order_agent.calls[0][1]["intent"]
+check_true("order/narrowed question carries no option_order", "option_order" not in narrowed)
+check("order/narrowed criteria stay the top 2", list(narrowed["criteria"]), ["tech", "sales"])
+check("order/exactly one RuntimeWarning", len(order_warns), 1)
+check_true(
+    "order/warning names the question and the key",
+    bool(order_warns) and "intent" in str(order_warns[0].message) and "option_order" in str(order_warns[0].message),
+)
+_check_validates("order/narrowed question passes Agent._check_question", "intent", narrowed)
+plain_agent = Recorder()
+out_plain = predict_shortlist(
+    plain_agent, state,
+    {"intent": {k: v for k, v in order_q.items() if k != "option_order"}},
+    TableEmbed(full_vectors), k=2,
+)
+check("order/result equals the call without an order", out_order, out_plain)
+check_true("order/caller question keeps its option_order", "option_order" in order_q)
+
+# --- shortlist: passthrough and non-choice questions are untouched
+passthrough_order = {"type": "choice", "instructions": "pick", "criteria": ["x", "y"], "option_order": [1, 0]}
+pt_agent = Recorder()
+_out, pt_warns = _run_catching_warnings(
+    lambda: predict_shortlist(pt_agent, "s", {"pick": passthrough_order}, TableEmbed({}), k=2)
+)
+check_true("order/passthrough keeps its order", pt_agent.calls[0][1]["pick"] is passthrough_order)
+check("order/passthrough emits no warning", len(pt_warns), 0)
+_check_validates("order/passthrough order still validates", "pick", passthrough_order)
+score_order = dict(score_q, option_order=[3, 2, 1, 0])
+nc_agent = Recorder()
+_out, nc_warns = _run_catching_warnings(
+    lambda: predict_shortlist(nc_agent, "s", {"urgency": score_order}, TableEmbed({}), k=2)
+)
+check_true("order/non-choice keeps its order", nc_agent.calls[0][1]["urgency"] is score_order)
+check("order/non-choice emits no warning", len(nc_warns), 0)
+
+# --- shortlist with list criteria behaves the same way
+list_order = {"type": "choice", "instructions": "pick", "criteria": ["a", "b", "c", "d"],
+              "option_order": [3, 2, 1, 0]}
+list_agent = Recorder()
+_out, list_warns = _run_catching_warnings(
+    lambda: predict_shortlist(
+        list_agent, "a", {"pick": list_order},
+        TableEmbed({"pick\na": [1.0, 0.0], "a": [1.0, 0.0], "b": [0.9, 0.1], "c": [0.1, 0.9], "d": [0.0, 1.0]}),
+        k=2,
+    )
+)
+list_narrowed = list_agent.calls[0][1]["pick"]
+check_true("order/list-criteria narrowed carries no option_order", "option_order" not in list_narrowed)
+check("order/list-criteria one warning", len(list_warns), 1)
+_check_validates("order/list-criteria narrowed validates", "pick", list_narrowed)
+
+# --- tournament: groups and finalists lose the order, once per question
+t_labels = ["l%02d" % i for i in range(8)]
+t_big = {"type": "choice", "instructions": "pick",
+         "criteria": {label: "about " + label for label in t_labels},
+         "option_order": [7, 6, 5, 4, 3, 2, 1, 0]}
+t_small = {"type": "choice", "instructions": "pick", "criteria": ["x", "y"], "option_order": [1, 0]}
+t_ranker = Ranker(t_labels[::-1] + ["y", "x"])
+out_t, t_warns = _run_catching_warnings(
+    lambda: predict_tournament(t_ranker, "s", {"big": t_big, "small": t_small}, group_size=4)
+)
+_bad = []
+for _call_questions, _kwargs in t_ranker.calls:
+    for _qid, _qdef in _call_questions.items():
+        if _qdef.get("type") != "choice":
+            continue
+        if "option_order" in _qdef and _qid == "big":
+            _bad.append("%s kept its order" % _qid)
+        try:
+            Agent._check_question(_qid, _qdef)
+        except ValueError as e:
+            _bad.append("%s: %s" % (_qid, e))
+check_true("order/tournament questions all validate without the order", not _bad, "; ".join(_bad))
+check("order/tournament warns once for the narrowed choice", len(t_warns), 1)
+check_true("order/tournament warning names the question", bool(t_warns) and "big" in str(t_warns[0].message))
+final_t = t_ranker.calls[-1][0]
+check_true("order/tournament passthrough keeps its order", final_t["small"] is t_small)
+check_true(
+    "order/tournament caller keeps its order",
+    t_big["option_order"] == [7, 6, 5, 4, 3, 2, 1, 0],
+)
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))

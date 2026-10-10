@@ -34,7 +34,10 @@ Everything is environment variables, so one image serves a laptop dev run and a 
 | `LAYA_THREADS` | cap torch intra-op threads on CPU; keep it <= physical cores -- oversubscribing logical cores is a large regression | torch default |
 | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint | `0` |
 | `LAYA_IDLE_UNLOAD_SECONDS` | unload resident checkpoints after this many idle seconds; the next request loads its checkpoint again. Zero disables unloading | `0` |
+| `LAYA_MAX_LOADED` | checkpoints kept resident at once; a cap below what routing chooses rebuilds one per switch, and `preload()` raises it to hold whatever it builds | `2` |
+| `LAYA_MAX_TOKEN_BUDGET` | server-side ceiling on the per-request `max_len` and `head_max_len` overrides; a larger value is a `422`. Unparseable or non-positive input logs a warning and falls back | `8192` |
 | `LAYA_DEFAULT_MODEL` | checkpoint a state with no language evidence falls back to; aliases such as `ml` resolve the way core resolves them, and an unresolvable name stops the server at startup | `english` |
+| `LAYA_EXTRA_MODELS` | JSON object `{name: source}` registering extra checkpoints beside the bundled ones: a Hub repo id or local checkpoint directory as a string, or a `["repo", "subfolder"]` pair. Names get the same `model=` pin a built-in does; a malformed value or bad name stops the server at startup | none |
 | `LAYA_API_KEY` | if set, require `Authorization: Bearer <key>` | none |
 | `LAYA_LOG_LEVEL` | uvicorn log level | `info` |
 | `LAYA_MAX_CONCURRENT` | requests admitted past auth at once; excess gets `503` | `16` |
@@ -127,7 +130,7 @@ curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
 | `lang_guess` | no | a language code from the client's own identifier, consulted after `lang` and before detection; any non-English code routes to the multilingual checkpoint |
 | `max_len` | no | total token window for this request, capped by `LAYA_MAX_TOKEN_BUDGET` |
 | `head_max_len` | no | token window the option prompt shares, same cap; see [Widening the Token Budget](langchain.md) for when a question needs it |
-| `min_confidence` | no | abstention threshold in `[0.0, 1.0]`; an answer whose `answer_confidence` falls below it comes back marked `low_confidence`, and the answer itself is kept |
+| `min_confidence` | no | abstention threshold: a number in `[0.0, 1.0]`, or a per-bucket map keyed by option-count bucket (`{"choice:3-5": 0.9, "default": 0.4}`) so the threshold can differ by option count; an answer whose `answer_confidence` falls below its own threshold comes back marked `low_confidence`, and the answer itself is kept |
 
 `model`, `task`, `lang`, `lang_guess`, `max_len`, `head_max_len` and `min_confidence` are the
 arguments `Router.predict` takes that a JSON body can state; each is forwarded only when the request
@@ -141,7 +144,9 @@ now get the same answer.
 
 `model` is accepted so a Jev client can keep sending one. The public Hugging Face ids
 (`convaiinnovations/laya-multilingual`, `convaiinnovations/laya-typed-decisions`), the checkpoint
-names (`english`, `multilingual`, `typed-decisions`) and their aliases select a checkpoint.
+names (`english`, `multilingual`, `typed-decisions`) and their aliases select a checkpoint, and so
+does every name `LAYA_EXTRA_MODELS` registered on this server's Router -- including a name that
+re-points a built-in, which is how a fine-tune is served under `english` without a code change.
 `convaiinnovations/laya`, and any other value that is not a path or a Hub repo id -- including a
 Jev id like `jev-1` -- means "let the router choose", and the response's `routing` block records
 what was chosen and why. A value that looks like a filesystem path or an unpublished Hub id
@@ -159,12 +164,12 @@ hide that. The detail is the same `unknown model` text core raises, plus the rem
     "queue": {"type": "choice", "choice": "billing",
               "probabilities": {"billing": 0.9519, "tech": 0.0327, "other": 0.0154},
               "confidence": 0.797, "answer_confidence": 0.9519,
-              "action": {"act_probability": 1.0}},
+              "action": {"act_probability": 1.0}, "x_jev_confidence": 0.9278},
     "urgency": {"type": "score", "score": 1.6994,
                 "legend": {"0": "calm", "1": "firm", "2": "angry", "3": "furious"},
                 "probabilities": {"0": 0.0249, "1": 0.4136, "2": 0.3985, "3": 0.1629},
                 "confidence": 0.1925, "answer_confidence": 0.4136,
-                "action": {"act_probability": 1.0}}
+                "action": {"act_probability": 1.0}, "x_jev_confidence": 0.2507}
   },
   "usage": {"input_tokens": 83, "output_tokens": 0, "state_tokens": 12,
             "state_tokens_dropped": 0, "truncated": false, "truncated_questions": []},
@@ -182,10 +187,10 @@ name of the decision head, and the checkpoint that answered is in `routing`.
 
 | answer type | keys |
 |---|---|
-| `choice` | `choice` (the argmax option), `probabilities` per option |
-| `score` | `score` (expected level index, may fall between levels), `probabilities` keyed `"0".. "k-1"`, `legend` mapping index to the level text |
+| `choice` | `choice` (the argmax option), `probabilities` per option, `x_jev_confidence` |
+| `score` | `score` (expected level index, may fall between levels), `probabilities` keyed `"0".. "k-1"`, `legend` mapping index to the level text, `x_jev_confidence` |
 | `noul` | `noul`, the probability of the yes option |
-| all | `confidence`, `answer_confidence`, and `action.act_probability` |
+| all | `type` (the discriminator, echoing the question's own type), `confidence`, `answer_confidence`, and `action.act_probability` |
 | gate | `abstention`, `abstention_threshold` and `low_confidence`, written by the abstention gate -- see below |
 
 The gate row is the abstention report (#361), and it is the only way a caller can see that the gate
@@ -224,7 +229,7 @@ caller sizing states by character count cannot see the cut anywhere else in the 
 | `routing` key | meaning |
 |---|---|
 | `model` | the checkpoint that answered: `english`, `multilingual` or `typed-decisions` |
-| `repo` | its public Hugging Face id |
+| `repo` | where it was loaded from, as `repo` or `repo/subfolder`. The default server loads all three from the `convaiinnovations/laya` bundle, so `multilingual` and `typed-decisions` report `convaiinnovations/laya/multilingual` and `convaiinnovations/laya/typed-decisions` -- a readable id, not a Hub repo id to fetch with |
 | `reason` | the sentence for the choice, naming the evidence it acted on |
 | `detection` | `laya.lang.analyse()` on the state -- `script`, `script_profile`, `language`, `is_english`, `language_undecided`, `diacritic_rate`, `non_latin_fraction`, `mixed_segment` -- or `null` when the route decided before reading the text |
 | `workflow` | the typed-decisions workflow the question ids match, or `null` |
@@ -235,7 +240,7 @@ the question ids. A `lang_guess` leaves no key of its own -- the hint it acted o
 `reason`. The `model` and `task` branches report `workflow` as `null` too, because they answer
 before the question ids are read.
 
-### Confidence: two numbers, not interchangeable
+### Confidence: three numbers, not interchangeable
 
 - `answer_confidence` is the probability mass on the reported answer (`max(p)`). It is the
   quantity temperature scaling fits and the one this repo's ECE figures are computed on, so it
@@ -243,10 +248,14 @@ before the question ids are read.
   but only for a checkpoint whose temperature fit has been validated on your traffic.
 - `confidence` means something different per type: normalized entropy `1 - H(p)/log(k)` on
   `choice` and `score`, and `max(p_yes, p_no)` on `noul` (where it equals `answer_confidence`).
+- `x_jev_confidence` is the `confidence` Jev would report for the same probabilities, on `choice`
+  and `score` answers only (a Jev `noul` answer has no confidence). It uses TypeSafe's own
+  formulas: `(p_max - 1/n)/(1 - 1/n)` for `choice`, and for `score` one minus the probability-weighted
+  distance from the most likely level, scaled by the same distance for a uniform distribution.
 
-Never compare the two against one threshold. Also note the difference when porting from Jev:
-TypeSafe defines confidence as `(n*p_max - 1)/(n - 1)`, so a threshold carried over from a Jev
-deployment gates differently on Laya's entropy value.
+Never compare them against one threshold. When porting from Jev, a threshold carried over from a
+Jev deployment gates differently on Laya's entropy `confidence` (#302); read it against
+`x_jev_confidence` instead. The `x_` prefix keeps the field clear of any name Jev adds later.
 
 ### Strict Jev contract: `LAYA_JEV_STRICT`
 
@@ -262,7 +271,8 @@ answering, on both `/v1/systemone` and `/v1/systemone/batch`:
 - a `score` answer keeps `type`, `score`, `probabilities`, `confidence` and `legend`;
 - a `noul` answer keeps `type` and `noul`;
 - `usage` keeps `input_tokens` and `output_tokens`; the truncation facts and the collapsed-
-  options ceiling are not sent.
+  options ceiling are not sent;
+- `x_jev_confidence` is not sent, like the other additions.
 
 The projection keeps only the contracted keys and recomputes nothing: every value is the one the
 result already carries, so the probabilities and scores a strict client reads are identical to
@@ -278,7 +288,9 @@ Successful responses also carry `Server-Timing: inference;dur=<ms>` and `X-Infer
 ## Limits
 
 Request guardrails are checked before tokenization, so an oversized request costs the server
-nothing but the bytes it read. Every one of them is a `413`; the `detail` says which limit was hit.
+nothing but the bytes it read. Every size limit below is a `413`; the `detail` says which limit was
+hit. The last row is the exception: the concurrency cap is an admission limit, not a size one, and
+it answers `503` with `Retry-After: 1`.
 
 | limit | value |
 |---|---|
@@ -289,7 +301,7 @@ nothing but the bytes it read. Every one of them is a `413`; the `detail` says w
 | options per `choice` question | 100 |
 | levels per `score` question | 32 |
 | options across all questions | 512 |
-| concurrent admitted requests | `LAYA_MAX_CONCURRENT` (16) |
+| concurrent admitted requests (`503`, not `413`) | `LAYA_MAX_CONCURRENT` (16) |
 
 `/v1/systemone/batch` is bounded differently, and not by a refusal. It tokenizes each state once per
 question and collates every row into a single tensor, so the field caps multiply: 64 states of 64

@@ -364,6 +364,11 @@ def decide(runner, state: Any, schema: Any = None, *, questions: Optional[Dict[s
     return values
 
 
+# The keys `Router.predict_batch` reads off each request (`route_batch` and the token-budget
+# overrides) rather than accepting as keywords; laya-serve's BATCH_BODY_ITEM_CONTROLS plus `model`.
+_ROUTER_REQUEST_KEYS = ("model", "task", "lang", "lang_guess", "max_len", "head_max_len")
+
+
 def decide_batch(runner, states: Sequence[Any], schema: Any = None, *,
                  questions: Optional[Dict[str, Any]] = None,
                  return_details: bool = False, min_confidence: Optional[float] = None,
@@ -409,8 +414,12 @@ def decide_batch(runner, states: Sequence[Any], schema: Any = None, *,
 
     if hasattr(runner, "route_batch"):
         # Router convention: one request dict per state, each carrying the shared
-        # questions, so it routes, groups by checkpoint and restores input order.
-        results = predict_batch([{"state": s, "questions": questions} for s in states],
+        # questions, so it routes, groups by checkpoint and restores input order. The routing
+        # pins and the token budget are read off each request there, not taken as keywords of
+        # predict_batch, so they ride on every request; the rest (batch_size, hooks, ...) is
+        # call-level.
+        per_request = {key: predict_kwargs.pop(key) for key in _ROUTER_REQUEST_KEYS if key in predict_kwargs}
+        results = predict_batch([dict({"state": s, "questions": questions}, **per_request) for s in states],
                                 **predict_kwargs)
     else:
         # Agent convention: a list of states evaluated against one question set.

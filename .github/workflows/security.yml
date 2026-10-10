@@ -129,20 +129,52 @@ jobs:
             echo "::warning::advisories in optional-integration dependencies: ${ids% } -- visible here, not blocking PRs (see #645)"
           fi
 
+  # Java as well as Python. This job named `python` only, so `laya-java` -- ~35,000 lines that
+  # compile to a jar and publish to Maven Central -- had no taint analysis over it at all.
+  # CodeQL is the only free engine within reach that does real interprocedural dataflow, which is
+  # what finds a sink several calls away from its source; the pattern scanners in `java.yml`
+  # cannot see that.
+  #
+  # A matrix rather than `languages: python, java-kotlin` in one cell: the Java cell needs a JDK
+  # and a build, and keeping them separate means a Java build failure cannot take the Python
+  # analysis down with it.
   codeql:
-    name: CodeQL
+    name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       security-events: write
       actions: read
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # `javascript-typescript` needs no build step, so adding the TypeScript SDK costs one
+        # matrix cell and no build risk. `csharp` is NOT here: CodeQL would have to run
+        # `dotnet build` for it, and a build this change cannot verify locally would turn a
+        # scanner into a broken required check. laya-dotnet is covered by gitleaks only today;
+        # adding it needs whoever owns that build to confirm autobuild works.
+        language: [python, java-kotlin, javascript-typescript]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Only the Java cell compiles anything, so only it needs a JDK -- and the wrapper jar it
+      # would execute is validated first, for the reason `java.yml` gives: it is a binary that
+      # runs at build time and is the one file here a reviewer cannot read.
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        if: ${{ matrix.language == 'java-kotlin' }}
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+        if: ${{ matrix.language == 'java-kotlin' }}
       - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          languages: python
+          languages: ${{ matrix.language }}
           queries: security-extended
+      # Python needs no build step; Java does, and autobuild finds the Gradle build itself.
+      - uses: github/codeql-action/autobuild@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        if: ${{ matrix.language == 'java-kotlin' }}
       - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
 
   supply_chain:

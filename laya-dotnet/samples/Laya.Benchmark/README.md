@@ -83,7 +83,7 @@ Exit codes:
 
 ```jsonc
 {
-  "checkpoint": "english",            // TypedDecisions is written as "typeddecisions"
+  "checkpoint": "english",            // the flag spelling: "multilingual", "english", "typed-decisions"
   "runtime": "DotNet + ONNX Runtime",
   "threads": "ORT default",
   "cold_ms": 0.0,
@@ -118,6 +118,6 @@ Python runs the PyTorch model directly on the CPU. .NET runs the exported ONNX g
 
 ## Notes
 
-- **Where the project sits:** it isn't part of `Laya.slnx`, so `dotnet build` / `dotnet test` on the solution skip it. It's a measurement tool, not a shipped sample.
+- **Where the project sits:** it is in `Laya.slnx` under `/samples/`, so `dotnet build Laya.slnx` compiles it and a solution build breaks on a compile error here. It holds no tests, so `dotnet test --solution Laya.slnx` runs nothing from it. It's a measurement tool, not a shipped sample.
 - **Running more than one:** run one checkpoint at a time. The ModernBERT-large checkpoints (english, typed-decisions) are about 1.7 GB each on disk.
 - **When to measure:** cold latency depends on disk and OS file cache. Run twice and report the second cold number if you want warm file-cache timings.

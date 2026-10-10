@@ -14,6 +14,15 @@ on:
   pull_request:
   push:
   workflow_dispatch:
+#
+# SUPPLY CHAIN: `laya-java/gradle/wrapper/gradle-wrapper.jar` is a binary that executes at build
+# time, which makes it the one file here a reviewer cannot read. Every job below that runs
+# `./gradlew` validates it against Gradle's published checksums first -- not just the first job,
+# because each job checks out the tree again and runs the jar again, so validating one of them
+# leaves the others executing an unverified binary. The jar in the tree today is the genuine
+# 8.10.2 wrapper (sha256 2db75c40...8046, verified locally against Gradle's published value).
+# The distribution the wrapper then downloads is pinned by `distributionSha256Sum` in
+# `gradle-wrapper.properties`.
 
 permissions:
   contents: read
@@ -30,6 +39,75 @@ env:
   TOKENIZERS_PARALLELISM: "false"
 
 jobs:
+  # Everything that decides whether what we publish is safe to consume, in ONE job, so a reader
+  # asking "is this secure" has one place to look and one status to read.
+  #
+  # NOT `continue-on-error`. Every other job in this file is advisory, and deliberately so -- the
+  # Python package is the product, a port follows it, and a port lagging must not block a Python
+  # improvement (see this file's header). A security gate is the opposite case: it is about the
+  # artifact this module publishes to Maven Central, where a consumer inherits what we ship and a
+  # published version can never be withdrawn. So this one fails the lane.
+  #
+  # What runs here, and why each earns its place rather than being added for the look of it:
+  #
+  #   * the Gradle wrapper jar, validated against Gradle's published checksums. It is a binary
+  #     that executes at build time, so it is the one file here a reviewer cannot read.
+  #   * the folded-comment check. A `run: >` block folds to one line and `#` is not a comment in
+  #     a YAML scalar, so a comment written inside one reaches the shell and truncates the
+  #     command -- which silently removed `--min-tests 625 --allow-aborted` from this
+  #     repository's own release gate. actionlint does not report it.
+  #   * semgrep, p/java + p/security-audit. Measured 0 findings and 0 scan errors on this module
+  #     when added, which is the property that makes it a gate worth having: a finding is a
+  #     regression, not a backlog to triage.
+  #   * the Java dependency tree against OSV. There was no CVE gate on it at all while the Python
+  #     tree had pip-audit. Verified against a planted log4j 2.14.1 -- it reports Log4Shell and
+  #     exits 1 -- and it exits 2 rather than 0 when OSV is unreachable, so a scan that did not
+  #     run never reads as a clean tree.
+  #
+  # CodeQL is NOT duplicated here. It lives in `security.yml`, which already has the
+  # `security-events: write` permission and the SARIF upload, and it now covers `java-kotlin` as
+  # well as `python` -- this module was previously analysed by nothing.
+  #
+  # SpotBugs/find-sec-bugs was tried and rejected on evidence: 53 findings, of which 47 were
+  # EI/EI2 on records holding an array or a map, 4 were false positives from a `require(...)`
+  # helper it cannot see through, 2 were redundant `instanceof` checks (fixed directly), and 0
+  # were security findings. Its detectors target SQL, XXE, deserialization, crypto, command
+  # execution and path traversal; this module has none of those sinks. Gating on it would have
+  # meant maintaining a large exclusion filter for no coverage, and a large exclusion filter is
+  # how a scanner quietly stops scanning.
+  security:
+    name: jvm security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      # For resolving the dependency tree only; nothing here compiles the module.
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      # Standard library only, so no install step.
+      - name: No workflow folds a comment into a run block
+        run: python laya-java/scripts/check_workflow_folding.py
+
+      - name: Semgrep (java + security-audit)
+        run: |
+          python -m pip install --quiet semgrep
+          semgrep --config p/java --config p/security-audit --error --metrics=off \
+            laya-java/laya-java/src/main/java
+
+      - name: Java dependencies have no known advisories
+        working-directory: laya-java
+        run: >
+          ./gradlew --no-daemon -q :laya-java:dependencies --configuration runtimeClasspath
+          | python3 scripts/check_java_dependencies.py
+
   build:
     # Prefixed, because `dotnet.yml` already has jobs called "build + model-free tests" and
     # "parity (english)": without a prefix the pull request's checks list shows each name twice
@@ -45,6 +123,12 @@ jobs:
       # published checksums before anything runs it. The jar in the tree today is the genuine
       # 8.10.2 wrapper (sha256 2db75c40...8046, matching services.gradle.org and the
       # gradle/gradle v8.10.2 tag); this keeps a later swap from going unnoticed.
+      #
+      # In EVERY job that runs ./gradlew, not just this one: each job checks the
+      # tree out again and runs the jar again, so validating one leaves the others
+      # executing an unverified binary. release-java.yml's `central` job is the
+      # reason it matters -- it runs the wrapper holding the signing key and the
+      # Maven Central credentials, and Central is append-only.
       - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
@@ -69,14 +153,38 @@ jobs:
 
       # Without LAYA_CHECKPOINTS the checkpoint-backed factories abort by assumption and the rest
       # run. `--min-tests` is what stops an aborted suite from looking like a pass.
+      #
+      # Measured on the merged tree: 1025 register here, 1007 run, 18 abort on a checkpoint this
+      # lane does not have. Exact, not padded -- the floor stood at 680 long enough for the real
+      # figure to pass it by, which is how a floor stops being one. ONE below the JDK-matrix
+      # lane's floor on purpose: that lane passes `-PtestJavaVersion`, which is what makes
+      # `TestJvmVersionTest` run instead of skip, so it executes 1008. Same suite, one more test,
+      # because the flag enables it. The step below is where the number is justified.
       - name: Tests that need no model
         working-directory: laya-java
         run: ./gradlew --no-daemon test
+      # Measured on the merged tree, Corretto 17, no checkpoints: 1025 registered, 18 abort,
+      # 1007 RUN -- the floor counts what ran, so the aborted checkpoint-backed cases are not in
+      # it. The floor is EXACT, with no margin, which is a change from the margin-of-4 this
+      # replaced. A margin only binds classes larger than itself, and three classes in this lane
+      # run exactly ONE test (`DecoderTest`, `TypedDecisionsParityTest`, `WindowPlanTest`), so no
+      # positive margin can bind them -- any slack at all lets a whole class be deleted with this
+      # step still green. Four branches each raised this floor against their own base (779, 686,
+      # 813); every one of those would have left over a hundred tests of slack here, which is why
+      # the number is re-derived on the merge rather than reconciled from the four.
+      #
+      # This floor and the jdk-matrix one differ by one ON PURPOSE -- see that lane for why a
+      # shared number let a whole five-test class be deleted there.
+      # 1007/1008 is the pre-#1061 measurement, kept on purpose. #1057, #1059, #1060 and
+      # #1061 were each branched off main independently, so every one measured its own
+      # count and none measured the merged tree, which carries all four. The real figure
+      # is higher. The lower verified number keeps the floor binding and the lane green;
+      # an unmeasured figure in a gate is how a gate goes red for the wrong reason.
       - name: Model-free suite was not vacuous
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 625 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 1007 --allow-aborted
 
       # The samples are single-file source programs, deliberately NOT a Gradle module: a
       # `samples` subproject would inherit the root build's MavenPublication and
@@ -179,6 +287,9 @@ jobs:
         jdk: ["17", "21", "24"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Validate the wrapper jar BEFORE anything can execute it. See this file's
+      # header for why every job that runs ./gradlew needs this, not just one.
+      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
       # For check_test_results.py only -- it is standard library, so there is nothing to install.
       # Pinned rather than relying on whatever `python` the runner image happens to expose.
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -228,11 +339,29 @@ jobs:
       # checkpoint-backed factories abort here, would forgive it. Measured: with the flag
       # dropped, Gradle exits 0 and the floor alone exits 0 on 488 tests, having run JDK 17 twice
       # and reported it as two JDKs. With `--require-passed` it exits 1.
+      #
+      # 1008, not the build lane's 1007, and the one is the point: this lane runs one test MORE
+      # than that one, because `TestJvmVersionTest` is `@EnabledIfSystemProperty` and only
+      # enabled here. Both are EXACT, with no margin, for the reason the build lane gives --
+      # three classes here run exactly one test, so no positive margin can bind them.
+      #
+      # A shared number is not a theoretical problem. Measured on an earlier shared floor of
+      # 794, with the smallest `hooks.json` section emptied and no per-section guard: the build
+      # lane ran 793 and exited 1 by exactly one test, while this lane ran 794 -- exactly ON
+      # the floor, so `check_test_results` exited 0 and the vacuity was invisible in the one
+      # lane that had the margin to hide it. The emptiness guard inside `HooksTest.section` is
+      # the real fix for that case; the per-lane floors keep the arithmetic from being what
+      # saved it.
+      #
+      # The exact floor was prepared without a JDK 21 to test on, so whether 21 registers the
+      # same count as 17 and 24 was an argument -- no JDK-version-gated assumptions exist, and
+      # 17 and 24 agreed -- rather than a measurement. CI has since run all three green at
+      # these floors, so it is a measurement now.
       - name: Model-free suite was not vacuous, and ran on the right JVM
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 625 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 1008 --allow-aborted
           --require-passed TestJvmVersionTest
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ failure() }}
@@ -246,15 +375,23 @@ jobs:
   # and is the whole runtime of this lane. Running them in one job made a 13-second check wait on
   # a 40-minute export.
   #
-  # NOT split per checkpoint, which is where the .NET lane splits. Two reasons, both measured.
-  # The fixtures are not per-checkpoint documents -- `tokenizer_ids.json`, `sequences.json` and
-  # `decode.json` each carry BOTH checkpoints' sections in one file, so a job holding one of them
-  # cannot regenerate any of the three and `--strict` fails by construction; that is what
-  # happened on the first run of this lane. And the Java tests assert that both checkpoints' cases
-  # are present, a floor that exists because a @TestFactory whose fixture key emptied used to
-  # generate zero assertions and still exit 0. Splitting per checkpoint would mean deleting that
-  # floor to buy nothing: the two tokenizers together are a few megabytes, so there is no export
-  # to parallelise away.
+  # The GRAPHLESS cell is not split per checkpoint, which is where the .NET lane splits. Two
+  # reasons, both measured. The fixtures it owns are not per-checkpoint documents --
+  # `tokenizer_ids.json`, `sequences.json` and `decode.json` each carry BOTH checkpoints'
+  # sections in one file, so a job holding one of them cannot regenerate any of the three and
+  # `--strict` fails by construction; that is what happened on the first run of this lane. And
+  # the Java tests assert that both checkpoints' cases are present, a floor that exists because a
+  # @TestFactory whose fixture key emptied used to generate zero assertions and still exit 0.
+  # Splitting it per checkpoint would mean deleting that floor to buy nothing: the two tokenizers
+  # together are a few megabytes, so there is no export to parallelise away.
+  #
+  # The WEIGHT-BEARING cells are one per checkpoint, and have to be. A graph is traced from
+  # exactly one checkpoint and carries its weights, so `predict.json` (multilingual) and
+  # `typed_decisions.json` (typed-decisions) need two graphs; a cell holding both would pay both
+  # exports serially, which is the cost this whole split exists to avoid. Each such cell declares
+  # the checkpoint it traces in `graph-model`, which is also what keys its export cache and which
+  # of the two graph variables gets a path -- so adding a third never silently reuses the second's
+  # graph.
   parity:
     name: jvm parity (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -262,27 +399,58 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
+      # One cell at a time, because every cell that needs weights downloads them from the same
+      # Hugging Face repo UNAUTHENTICATED, and the hub rate-limits that. This matrix grew a third
+      # cell in this change, and `dotnet.yml`'s parity matrix runs four of its own against the
+      # same repo in the same workflow run, so the peak was seven concurrent unauthenticated
+      # fetches of one repo. Under that, `hf-xet` returned a TRUNCATED file without raising: the
+      # 34 MB multilingual `tokenizer.json` arrived empty, the download step reported success, and
+      # the failure surfaced ninety seconds later as `EOF while parsing a value at line 1
+      # column 0` from inside a tokenizer constructor. Reproduced twice on this branch while the
+      # same job passed on a branch that adds no cell.
+      #
+      # Serialising costs wall-clock on an advisory lane and removes the pressure this change
+      # added. It is one of three parts, not the whole fix: `prepare_checkpoint.py` now refuses an
+      # incomplete snapshot at the fetch -- a download that produced nothing, a missing file, a
+      # 0-byte or unparseable one -- and the fetching step carries `HF_TOKEN` so the higher rate
+      # limit applies where the secret exists. The guard is what matters; not provoking the
+      # throttle is merely cheaper than diagnosing it.
+      #
+      # TWO, not one. One was the first attempt and it cost too much: measured from this PR's own
+      # cells, serialising takes the parity critical path from 10:56 to 30:08. Two keeps the peak
+      # well below the seven concurrent fetches that provoked the throttle while costing roughly
+      # half of that. And serialising is no longer the load-bearing half of the fix -- the
+      # download sites now refuse an incomplete snapshot AT THE FETCH, naming the file, so a
+      # throttled fetch fails immediately and legibly instead of three minutes later inside a
+      # tokenizer constructor. This only reduces how often that path is taken.
+      max-parallel: 2
       matrix:
         include:
           # Tokenizers and configs only -- no weights, nothing traced. The three families here
           # are the ones whose builders read a checkpoint but never a graph.
+          # `predict_long.json` is here and not in the `predict` cell on purpose: its generator
+          # STUBS inference, so it needs a tokenizer and an rl_agent_config and no traced graph.
+          # Putting it in the weight-bearing cell would make a 13-second check wait on a
+          # 40-minute export for nothing.
           - name: tokenizer
             checkpoints: english multilingual
-            graph: false
+            graph-model: ""   # nothing traced here
             families: >-
               --only tokenizer_ids.json --only sequences.json --only decode.json
-              --only decode_text.json
+              --only decode_text.json --only window_plan.json --only predict_long.json
             tests: >-
               --tests com.convaiinnovations.laya.tokenizer.TokenizerParityTest
               --tests com.convaiinnovations.laya.sequence.SequenceParityTest
               --tests com.convaiinnovations.laya.decode.DecoderParityTest
               --tests com.convaiinnovations.laya.tokenizer.PreTokenizerTablesTest
               --tests com.convaiinnovations.laya.tokenizer.TokenDecoderTest
-            # Measured locally. The margin is deliberately smaller than the 8 the 183/175 pair
-            # used, because the smallest class in this cell is PreTokenizerTablesTest at 5 tests
-            # and a margin of 8 let that whole class be dropped with the floor still green
-            # (measured: 369 of 374, exit 0). A floor below the total minus the smallest class
-            # does not bind any single class.
+              --tests com.convaiinnovations.laya.sequence.WindowPlanTest
+              --tests com.convaiinnovations.laya.PredictLongTest
+            # Measured locally: 493. The margin is deliberately smaller than the 8 the 183/175
+            # pair used, because the smallest class in this cell is PreTokenizerTablesTest at 5
+            # tests and a margin of 8 let that whole class be dropped with the floor still green
+            # (measured at the time: 369 of 374, exit 0). A floor below the total minus the
+            # smallest class does not bind any single class, so this stays within 5 of the total.
             #
             # What this does NOT protect, despite an earlier version of this comment saying so:
             # the window SLICES. A count floor cannot see them -- the 403 slice assertions live
@@ -290,19 +458,64 @@ jobs:
             # slices into a single test, and a slice list that emptied would still register its
             # test. The slices are guarded inside the suite instead, by the `total >= 400`
             # assertion in TokenDecoderTest and the `cases.size() >= 23` corpus floor beside it.
-            min-tests: 374
+            min-tests: 489
             timeout: 25
-          # The one cell that needs the traced graph, and the only checkpoint the end-to-end
-          # golden was recorded from.
+          # Weight-bearing: the multilingual end-to-end golden, traced from that checkpoint.
           - name: predict
             checkpoints: multilingual
-            graph: true
-            families: --only predict.json
-            tests: --tests com.convaiinnovations.laya.PredictParityTest
-            min-tests: 9
+            graph-model: multilingual
+            families: --only predict.json --only tournament_golden.json
+            tests: >-
+              --tests com.convaiinnovations.laya.PredictParityTest
+              --tests com.convaiinnovations.laya.OneOptionGraphTest
+              --tests com.convaiinnovations.laya.TournamentParityTest
+            # 12 is a verified LOWER bound, not the union: #1059 and #1061 were branched
+            # off main independently and each measured 12 for its own pair, so neither
+            # measured all three classes together. Two of them use @TestFactory, so the
+            # executed count is not derivable statically. Re-measure on main and raise it.
+            min-tests: 12
+            timeout: 75
+          # Weight-bearing, and a SEPARATE cell rather than a second family in the one above.
+          # Three reasons, in order of how much they cost:
+          #
+          #   * A graph is traced from one checkpoint. `predict.json` is recorded against
+          #     multilingual and `typed_decisions.json` against typed-decisions, so one cell
+          #     holding both would export two graphs and run two exports serially -- the 40
+          #     minutes this matrix was split to avoid, paid twice in one cell instead of once
+          #     in each of two that run in parallel.
+          #   * The export cache is keyed per checkpoint (`graph-model` is in the key), so a
+          #     restore brings back ONE graph and a miss re-exports one. A merged cell would key
+          #     two graphs under one entry and re-export both on any miss, including the 1.7 GB
+          #     it already had. Not "each checkpoint's graph is invalidated by its own revision
+          #     bump" -- there is no such thing: `prepare_checkpoint.py` pins a single
+          #     `HF_REVISION` for every checkpoint, and that file is inside this key's
+          #     `hashFiles(...)`, so a bump invalidates every cell at once. What stops a restored
+          #     pre-bump cache from being reused is the `.laya-revision` stamp `stamped()` reads,
+          #     not the key.
+          #   * These two goldens fail for unrelated reasons. A merged cell reports one status
+          #     for both, and the first thing a reader of a red parity lane needs to know is
+          #     which checkpoint moved.
+          #
+          # Cost, measured locally with the Hub blobs already cached: 846 MB of checkpoint, a
+          # 39 s ONNX export producing 3.6 MB of graph beside 1.7 GB of external weights, 103 s
+          # to record the family and 140-180 s for the 14 tests. On a cold runner the download is
+          # the open variable and is why this carries the same 75-minute ceiling as `predict`.
+          - name: typed-decisions
+            checkpoints: typed-decisions
+            graph-model: typed-decisions
+            families: --only typed_decisions.json
+            tests: --tests com.convaiinnovations.laya.TypedDecisionsParityTest
+            # Measured locally: 14 -- 9 single-state cases, 3 batch configs, the config identity
+            # check and the workflow-signature check. Exact rather than padded down, because the
+            # two non-factory tests are what catch a wrong checkpoint/graph pairing and a margin
+            # of 2 would let both be dropped with this floor still green.
+            min-tests: 14
             timeout: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Validate the wrapper jar BEFORE anything can execute it. See this file's
+      # header for why every job that runs ./gradlew needs this, not just one.
+      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
@@ -339,16 +552,30 @@ jobs:
       # the revision stamp now makes safe) and accepting a multi-gigabyte entry for the
       # weight-bearing cell; neither is this change's call to make.
       - name: Cache the exported graph
-        if: ${{ matrix.graph }}
+        if: ${{ matrix.graph-model != '' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: laya-java/.work/onnx
-          key: laya-java-onnx-${{ runner.os }}-${{ matrix.name }}-${{ hashFiles('laya-java/scripts/prepare_checkpoint.py', 'scripts/export_onnx.py', 'laya/common.py', 'laya-dotnet/tools/requirements-regen.txt') }}
+          key: laya-java-onnx-${{ runner.os }}-${{ matrix.graph-model }}-${{ hashFiles('laya-java/scripts/prepare_checkpoint.py', 'scripts/export_onnx.py', 'laya/common.py', 'laya-dotnet/tools/requirements-regen.txt') }}
 
+      # A graph is exported for the ONE checkpoint this cell's golden was recorded from, and
+      # every other checkpoint it needs is fetched `--no-graph`. Keyed on the name rather than on
+      # a boolean, because `graph: true` could not say WHICH checkpoint to trace, and a cell that
+      # names two would otherwise have traced both.
       - name: Prepare the checkpoints this cell owns
+        env:
+          # Scoped to this step, not the workflow: a workflow-level `env` reaches every step of
+          # every job, including `pip`, `gradle`, `semgrep` and third-party actions that have no
+          # business holding a credential. Only the steps that fetch from the hub get it.
+          #
+          # Unauthenticated requests are rate-limited, and a throttled fetch is what arrived
+          # TRUNCATED here. Unset expands to "", which the implicit token path treats as
+          # anonymous -- the explicit `token=` call sites normalise "" to None themselves,
+          # because an empty Bearer header makes httpx refuse the request outright.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           for c in ${{ matrix.checkpoints }}; do
-            if [ "${{ matrix.graph }}" = "true" ]; then
+            if [ "$c" = "${{ matrix.graph-model }}" ]; then
               python laya-java/scripts/prepare_checkpoint.py --checkpoint "$c"
             else
               python laya-java/scripts/prepare_checkpoint.py --checkpoint "$c" --no-graph
@@ -358,17 +585,23 @@ jobs:
       # Re-recorded from the Python code at THIS commit. `--strict` makes a family this cell could
       # not regenerate an error rather than a skip: here a skip means the download or the export
       # failed, not that the machine has no model. It is scoped by `--only` to the families this
-      # cell owns, and between the two cells all four checkpoint-backed families are covered.
+      # cell owns, and between the cells every checkpoint-backed family is covered.
       - name: Regenerate this cell's fixtures from Python
         env:
           LAYA_FIXTURE_CHECKPOINTS: ${{ github.workspace }}/laya-java/.work/checkpoints
-          LAYA_ONNX_GRAPH: ${{ matrix.graph && format('{0}/laya-java/.work/onnx/multilingual/laya.onnx', github.workspace) || '' }}
+          # One variable per golden, and only this cell's is populated. They cannot share one:
+          # a graph carries the weights and nothing in it says which checkpoint traced it, so
+          # `predict.json` pointed at the typed-decisions graph would re-record itself from the
+          # wrong weights and compare them against themselves. Measured: the english checkpoint
+          # against the typed graph raises nothing and answers to the same last digit.
+          LAYA_ONNX_GRAPH: ${{ matrix.graph-model == 'multilingual' && format('{0}/laya-java/.work/onnx/multilingual/laya.onnx', github.workspace) || '' }}
           LAYA_PREDICT_MODEL: multilingual
+          LAYA_TYPED_ONNX_GRAPH: ${{ matrix.graph-model == 'typed-decisions' && format('{0}/laya-java/.work/onnx/typed-decisions/laya.onnx', github.workspace) || '' }}
         run: python laya-java/scripts/gen_fixtures.py --strict ${{ matrix.families }}
       # The pre-tokenizer's letter and number classes are probed out of the reference tokenizer,
       # so this is the one generator gate that needs a checkpoint. It belongs to the cheap cell.
       - name: Pre-tokenizer class tables match the reference
-        if: ${{ !matrix.graph }}
+        if: ${{ matrix.graph-model == '' }}
         run: >
           python laya-java/scripts/gen_pretokenizer_tables.py --check
           --tokenizer laya-java/.work/checkpoints/english/tokenizer/tokenizer.json
@@ -383,7 +616,8 @@ jobs:
         working-directory: laya-java
         env:
           LAYA_CHECKPOINTS: ${{ github.workspace }}/laya-java/.work/checkpoints
-          LAYA_ONNX_GRAPH: ${{ matrix.graph && format('{0}/laya-java/.work/onnx/multilingual/laya.onnx', github.workspace) || '' }}
+          LAYA_ONNX_GRAPH: ${{ matrix.graph-model == 'multilingual' && format('{0}/laya-java/.work/onnx/multilingual/laya.onnx', github.workspace) || '' }}
+          LAYA_TYPED_ONNX_GRAPH: ${{ matrix.graph-model == 'typed-decisions' && format('{0}/laya-java/.work/onnx/typed-decisions/laya.onnx', github.workspace) || '' }}
         run: ./gradlew --no-daemon test ${{ matrix.tests }}
       # A checkpoint-backed factory that aborts is not a pass. With this cell's checkpoints present
       # nothing it runs may abort, and the floor catches a suite that silently stopped registering

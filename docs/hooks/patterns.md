@@ -178,22 +178,25 @@ one ships every other low-confidence answer unannotated.
 
 ### Routing override
 
-`on_route` may replace `ctx.decision` to pin a checkpoint for a class of traffic.
+`on_route` may replace `ctx.decision` to pin a checkpoint for a class of traffic. It has to be a
+hook object: the convenience callables cover `on_predict_start` / `on_predict_end` only, so a bare
+function in `hooks=` is refused (see [plain callables in `hooks=`](#plain-callables-in-hooks)).
 
 ```python
 from laya.router import RouteDecision
 
-def pin(ctx):
-    if "refund" in str(ctx.states[0]).lower():
-        ctx.decision = RouteDecision(
-            model="typed-decisions",
-            repo="convaiinnovations/laya/typed-decisions",
-            reason="refund workflow",
-            detection=None,
-            workflow=None,
-        )
+class Pin:
+    def on_route(self, ctx):
+        if "refund" in str(ctx.states[0]).lower():
+            ctx.decision = RouteDecision(
+                model="typed-decisions",
+                repo="convaiinnovations/laya/typed-decisions",
+                reason="refund workflow",
+                detection=None,
+                workflow=None,
+            )
 
-Router(hooks=[pin])
+Router(hooks=[Pin()])
 ```
 
 ### Model lifecycle
@@ -248,7 +251,8 @@ earlier one.
 ### Scoped instrumentation
 
 Attach a tracer or debug hook only for the code that needs it, instead of reconstructing the
-agent. `hooks_installed` restores the previous list on exit, even if the block raises.
+agent. On exit -- even if the block raises -- `hooks_installed` removes one occurrence of each
+hook it installed, and nothing else: a hook added inside the block with `add_hook` outlives it.
 
 ```python
 with agent.hooks_installed(DebugDump()):
@@ -291,8 +295,14 @@ or quietly makes the call worse:
   `max(4, (head_max_len - 16) // k)` tokens. `16 + 4 * k` therefore lands exactly on that floor:
   every label is still cut down to the tokens it shares with the others, which is the collapse the
   hook was written to avoid. `16 + 8 * k` leaves them distinguishable.
-* The state gets `max_len - head_max_len - 8` tokens, so a widened head has to widen `max_len`
-  with it or the state loses its window.
+* The window defaults to `max(64, max_len - head_max_len - 8)`, floored at 64, and is then capped at
+  the room the questions actually leave for the state. So widening the head stops shaving the default
+  once it reaches the floor -- at `max_len=512` a `head_max_len=448` gives a 64-token window, not the
+  56 the unfloored subtraction gives -- while the room keeps shrinking underneath it, and a question
+  whose own head leaves less than 64 scans at that room. The floor does not rescue the state from its
+  options: widen `max_len` with the head, which is what the `need + 8 + 64` below does. And a head
+  that fills the whole sequence is refused outright -- `window_budget` raises rather than scanning at
+  the zero the subtraction would leave.
 
 ```python
 def widen_for_high_cardinality(ctx):

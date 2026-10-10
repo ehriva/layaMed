@@ -558,7 +558,14 @@ class RouterTest {
     @DisplayName("the default checkpoint is the only knob for unidentified Latin text")
     void defaultCheckpointDecidesUndecided() {
         String undecided = "Quero cancelar";
-        assertEquals(Router.Checkpoint.ENGLISH, Router.withDefaults().route(undecided).model());
+        // The shipped default is multilingual, as the reference's is: undecided Latin text is no
+        // evidence of English. Both directions are asserted so the knob stays the only thing
+        // deciding this.
+        assertEquals(Router.Checkpoint.MULTILINGUAL,
+                Router.withDefaults().route(undecided).model());
+        assertEquals(Router.Checkpoint.ENGLISH,
+                Router.builder().defaultCheckpoint(Router.Checkpoint.ENGLISH).build()
+                        .route(undecided).model());
         assertEquals(Router.Checkpoint.MULTILINGUAL,
                 Router.builder().defaultCheckpoint(Router.Checkpoint.MULTILINGUAL).build()
                         .route(undecided).model());

@@ -225,6 +225,17 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--json", dest="json_out", help="write the full report JSON here")
     run.add_argument("--markdown", dest="markdown_out", help="write a Markdown summary here")
 
+    agreement = sub.add_parser("agreement", help="compare saved teacher and student choice runs")
+    agreement.add_argument("reference", help="reference teacher run JSON")
+    agreement.add_argument("repeat", help="independent repeat teacher run JSON")
+    agreement.add_argument("student", help="student run JSON on the same cases")
+    agreement.add_argument("--bootstrap-samples", type=int, default=2000,
+                           help="case bootstrap replicates, 100–100000 (default '2000')")
+    agreement.add_argument("--seed", type=int, default=0,
+                           help="non-negative bootstrap seed (default '0')")
+    agreement.add_argument("--json", dest="json_out", metavar="PATH",
+                           help="write the agreement report to PATH instead of stdout")
+
     compare = sub.add_parser("compare", help="compare a report JSON against a baseline")
     compare.add_argument("report", help="a report JSON written by `laya-evals run --json`")
     compare.add_argument("--baseline", required=True,
@@ -488,9 +499,46 @@ def _cmd_compare(args) -> int:
     return 0 if ok and not failures else 1
 
 
+def _cmd_agreement(args) -> int:
+    def unique_object(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate JSON key %r" % key)
+            obj[key] = value
+        return obj
+
+    runs = []
+    for path in (args.reference, args.repeat, args.student):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                runs.append(json.load(handle, object_pairs_hook=unique_object))
+        except (OSError, ValueError, RecursionError) as exc:
+            raise EvalError("cannot read agreement run %r: %s" % (path, exc)) from exc
+    report = evals.compare_agreement(*runs, bootstrap_samples=args.bootstrap_samples, seed=args.seed)
+    encoded = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    if args.json_out:
+        try:
+            with open(args.json_out, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(encoded)
+        except OSError as exc:
+            raise EvalError("cannot write agreement report %r: %s" % (args.json_out, exc)) from exc
+    else:
+        print(encoded, end="")
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    # Same reason as `laya.cli.main`: redirected output is encoded with the locale's codec by
+    # default (cp1252 on Windows), which cannot hold a non-Latin question id, tag or language, so
+    # `laya-evals validate data.jsonl > out.txt` died with a traceback and exit 1 -- the code kept
+    # for a quality failure. `laya eval` lands here before `cli.main` reaches its own copy.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     try:
+        if args.command == "agreement":
+            return _cmd_agreement(args)
         if args.command == "validate":
             return _cmd_validate(args)
         if args.command == "run":

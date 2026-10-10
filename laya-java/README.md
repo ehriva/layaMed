@@ -13,12 +13,16 @@ four questions about a document cost one batched encode rather than four round t
 Implemented: tokenizer, sequence builder, config, ONNX inference (fused or split graph), answer
 decoding, `predict`, `predictBatch`, usage and truncation reporting, script and language detection
 (`lang.LanguageDetection`), the question presets (`Presets`), the checkpoint `Router` with its
-load-and-evict lifecycle, the embedding `Shortlist` with its LRU cache, and the email cleaner
-and state builder (`LayaEmail`).
+load-and-evict lifecycle, the embedding `Shortlist` with its LRU cache, the email cleaner and
+state builder (`LayaEmail`), the abstention gate (`ConfidenceGate`), scanning a state longer than
+the context window (`predictLong`), schema-driven decisions (`Decisions.decide` / `decideBatch`),
+and the prediction hooks (`hooks`).
 
-Not implemented yet: hooks, `predictLong`, structured `decide`, the
-`laya-java-client` HTTP module, Android. **Not published to Maven Central** — see
-[Installing](#installing).
+Not implemented yet: the `laya-java-client` HTTP module, Android. `predictLong` dispatches no hook:
+a scan is sized before a hook could rewrite what is asked, so it stays unhooked until the
+reference's start probe and budget check are ported — see
+[Watching and shaping a call](#watching-and-shaping-a-call) and [Router hooks](#router-hooks). **Not published to
+Maven Central** — see [Installing](#installing).
 
 ## Where to go next
 
@@ -52,6 +56,7 @@ import java.nio.file.Path;
 import java.util.*;
 
 // Options are POSITIONAL, so use a LinkedHashMap: two orders are two different questions.
+// A HashMap or Map.of is refused rather than silently reordered -- see Option order below.
 Map<String, Object> criteria = new LinkedHashMap<>();
 criteria.put("refund", "money back for a duplicate charge");
 criteria.put("escalate", "pass it to a human");
@@ -181,9 +186,29 @@ explicit language, a caller's hint, the built-in detection, then the configured 
 long as you hold it — `predict` leases internally, so the ordinary path needs no thought. An agent
 handed in with `attach` is never closed: the caller keeps ownership.
 
-A deployment whose traffic is mostly not English should set
-`defaultCheckpoint(Checkpoint.MULTILINGUAL)`: an unidentified Latin-script state is no evidence of
-English, and that is the only knob which says so.
+The default is multilingual, as in the reference: an unidentified Latin-script state is no
+evidence of English. A deployment whose traffic is known to be English can set
+`defaultCheckpoint(Checkpoint.ENGLISH)`. The *alias* `"default"` is a different thing and still names
+english, as the reference's alias table does: `load("default")` loads english whatever
+`defaultCheckpoint` is set to.
+
+`predictBatch` routes many requests and answers them with one load per checkpoint used:
+
+```java
+List<Prediction> out = router.predictBatch(states, questions);     // each state routed alone
+List<Prediction> mixed = router.predictBatch(List.of(
+        Router.Request.of(email, Presets.email()),
+        Router.Request.of(ticket, Presets.triage())
+                .options(Router.RouteOptions.none().model("multilingual"))
+                .maxLen(512)));
+```
+
+Requests are routed first, grouped by checkpoint in order of first appearance, and within a
+checkpoint those sharing a question schema and token budget share `Agent.predictBatch` calls.
+Results come back in request order and match per-request `predict` within 1e-4 (padding in a
+shared forward pass moves the last bits). `Router` is a
+`BatchPredictor`, so `Decisions.decideBatch(router, states, schema)` works; to pin it, pass
+`(s, q) -> router.predictBatch(s, q, options)` as the runner.
 
 ## Detection on its own
 
@@ -241,6 +266,17 @@ passthrough: the labels come back in order and **the embedder is never called**.
 
 Both `Agent` and `Router` implement `Predictor`, so shortlisting works identically against a fixed
 checkpoint or a routed one.
+
+Without an embedder, `Shortlist.predictTournament` lets the model narrow the set itself: labels are
+answered in near-equal groups of at most 16 (one prediction per round covers every group of every
+question), and the winners meet in one final prediction.
+
+```java
+Shortlist.Tournament out = Shortlist.predictTournament(agent, state, questions);
+
+out.prediction();                    // the final call's answers and usage, over the finalists
+out.tournament().get("intent");      // the finalists, the label count and the rounds played
+```
 
 ## Cleaning an email
 
@@ -301,6 +337,84 @@ String withSpecials = tok.decode(ids, false);     // ...kept
 AgentConfig cfg = AgentConfig.fromModelDirectory(Path.of("./checkpoint"));
 ```
 
+## Abstaining on a low-confidence answer
+
+```java
+var gated = ConfidenceGate.apply(prediction.answers(), 0.8);   // null = no gate at all
+gated.ifPresent(report -> report.forEach((id, v) -> {
+    if (v.abstention() == ConfidenceGate.Abstention.ABSTAINED) {
+        escalate(id, v.answer(), v.threshold());
+    }
+}));
+```
+
+Three states, not a boolean: `UNEVALUATED` is an answer the gate could not read, and calling
+that a pass is the same mistake as calling it a flag. An **ungated** call returns an empty
+`Optional`, so the presence of a report is what tells you a gate ran.
+
+A threshold is not a claim that the number is calibrated — "about c of the answers returned at
+c are correct" holds only after temperatures have been fitted and validated for that checkpoint
+and question shape. Pass a `Map` instead of a scalar to gate each option-count bucket
+(`choice:2`, `score:6-10`, …) at the level its calibration actually earns.
+
+## Deciding against a JSON schema
+
+```java
+import com.convaiinnovations.laya.json.Json;
+
+Map<String, Object> schema = (Map<String, Object>) Json.parse("""
+    {"type": "object", "properties": {
+       "department":  {"enum": ["billing", "support", "sales"]},
+       "urgency":     {"type": "integer", "minimum": 1, "maximum": 5},
+       "needs_human": {"type": "boolean"}}}""");
+
+Decisions.Decision d = Decisions.decide(agent, ticket, schema, null, 0.8);
+Map<String, Object> values = d.values();      // {"department": "billing", "urgency": 4, ...}
+```
+
+An `enum` or a `const` becomes a `choice`, a `boolean` becomes a `noul`, a bounded `integer` or
+`number` becomes a `score`, and the answers come back as **the schema's own values**: the choice's
+value and not the label it was shown under, so `enum: [10, 20, 30]` decides to the integer `20`.
+`anyOf` / `oneOf` with one non-null branch is unwrapped (pydantic's `Optional`), a one-item
+`allOf` is unwrapped with the outer keys on top, and a local `$ref` is inlined.
+
+Anything that cannot be answered from a fixed option set — a free string, an array, a nested
+object, a union of two real types — is refused with a `SchemaException` **naming the path**, which
+is the only part of the message a caller holding a 32-property schema can act on.
+
+`minConfidence` wires straight into `ConfidenceGate`: a field whose answer falls below the bar
+comes back as `null`, and a field that was never answered is **absent** rather than null, because
+"not believed" and "not asked" are different outcomes. The gate's full report is on
+`d.gate()`. `Decisions.decideBatch(agent, states, schema)` does the same for many states in one
+batched call, in input order.
+
+`Decisions.questions(schema)` and `Decisions.answersToJson(answers, schema)` are the two halves on
+their own, for a caller that runs the model itself.
+
+There is no pydantic on the JVM, so only the JSON-schema path is ported; mapping Java records
+would be a new design rather than a port.
+
+## A state longer than the context window
+
+```java
+LongPrediction scan = agent.predictLong(wholeDocument, questions);
+Answer intent = scan.answer("intent");
+scan.window("intent").ifPresent(w ->
+        System.out.printf("decided by window %d of %d, tokens [%d,%d)%n",
+                w.index(), w.count(), w.tokenStart(), w.tokenEnd()));
+```
+
+`predict` truncates a state that exceeds `max_len` to a single window and drops the rest without
+saying so. `predictLong` scans it instead: one tokenization, overlapping windows, shared graph
+calls, then one answer per question. A `noul` takes the **highest** P(true) across windows — the
+statement holds if any window supports it — while a choice or a score takes the **most confident**
+window, which stops a localized signal being out-voted by the neutral text that makes up most of a
+long document. Ties go to the earliest window.
+
+The probability on an answer is **the deciding window's**, not a calibrated number for the whole
+document, which is why `window(id)` exists: without it the number has no stated scope. The window
+is absent when the state fitted one window, because then nothing was decided between windows.
+
 `decode` follows the reference rather than tidying after it, and on the multilingual checkpoint
 that means it is **lossy**: `Metaspace` prepends its marker, so `decode(encode("Hello world"))` is
 `" Hello world"`. The English checkpoint happens to round-trip. Correcting the space would make
@@ -309,6 +423,197 @@ every window of a long document tokenize differently from the reference, so the 
 `Agent.using(tokenizer, config, session)` assembles an agent from parts — for a caller that already
 holds them, or to drive the batching and usage accounting through a stub
 `infer.InferenceSession` instead of a 1.2 GB graph.
+
+## Watching and shaping a call
+
+```java
+agent.hooks().addHook(new Hook() {
+    @Override public void onPredictEnd(PredictContext ctx) {
+        metrics.record(ctx.model(), ctx.usage().inputTokens(), ctx.elapsedMs());
+    }
+});
+
+// Per call: answer from a cache without the model running at all.
+agent.predictBatch(states, questions, null, 0, false,
+        HookCall.of(Hooks.onPredictStart(ctx -> cache.lookup(ctx.states())
+                .ifPresent(ctx::skip))));
+```
+
+A hook is the one place your code runs **inside** a prediction. Implement any of the six methods
+on `Hook` — the rest default to doing nothing — and install it on the agent, on a single call, or
+process-wide with `Hooks.setDefaultHooks`.
+
+`PredictContext` is the call, and it is mutable on purpose. A start hook may rewrite
+`ctx.states(...)` or `ctx.questions(...)`, move the token budget with `ctx.maxLen(...)` /
+`ctx.headMaxLen(...)`, or answer outright with `ctx.skip(results)` — which skips inference while
+still running the end hooks. An end hook may replace `ctx.results(...)`, and sees `ctx.usage()`
+totalled over the call plus `ctx.elapsedMs()`. Every hook of one call gets the **same** context,
+so `ctx.runId()` pairs a start with its end without state of your own.
+
+The order is a contract: **process-wide defaults, then installed, then per-call**, and within a
+per-call `HookCall`, hook objects before the `onStart`/`onEnd` callbacks. A tracer installed to
+watch what a per-call hook did only sees it if it runs after it.
+
+`agent.hooks()` also carries the policy. `raiseErrors(false)` reports a throwing hook and carries
+on, which is what a telemetry hook needs — it must not be able to fail a request. An `Error` is
+rethrown whatever it says, which is the reference's rule in Java terms: it catches `Exception` and
+deliberately not `BaseException`. `concurrent(false)` serialises hooks that are not re-entrant.
+A `HookCall` can override `raiseErrors` and `timeout` for one call without touching the others.
+
+`timeout(Duration)` bounds **the wait** for each hook call — not the hook, and not the request. An
+overrunning hook fails the call and **keeps running**, since neither runtime can interrupt a thread
+that will not cooperate, so a hook that blocks forever leaks a daemon thread per call. That much is
+the reference's behaviour.
+
+Where this port diverges, deliberately: the abandoned thread is then **cut off from the call**.
+Once its deadline has passed, every `ctx` mutator it calls throws `IllegalStateException` instead
+of rewriting a call that moved on without it. The reference has the identical hazard and no cheap
+way to close it. Measured here before the guard, over 60 calls whose start hook overran a 50 ms
+deadline by 30 ms and then assigned results: 60 of 60 late writes were accepted, and `ctx.usage`
+ended up describing a different answer from `ctx.results` in 60 of 60 — in some runs the *caller*
+got the abandoned hook's answer. With the guard: 0 of 60. It is a narrowing and not a proof — a
+write already past its check when the deadline expires still lands, which happened in 2 to 17 of
+60 once the overrun was cut to 1–5 ms, so the window is a few instructions wide rather than the
+whole remainder of the call.
+
+Both lines dispatch reports — the swallowed failure and the overrun — name the hook as
+`<class>.<event>` and spell a deadline in seconds exactly as the reference's `%g` does, so
+`exceeded 1s` and not `exceeded 1.0s`, and one grep works against either runtime's logs.
+`Hooks.onPredictStart`/`onPredictEnd` return the reference's own `_StartAdapter`/`_EndAdapter`
+classes for the same reason: the name is what appears in that line, and an anonymous Java class
+has none. `Hooks.hookName(hook)` and `Hooks.seconds(duration)` are public, so your own
+`onFailure` sink can produce the same text.
+
+Two smaller divergences, both for the same reason — a number or a name that differed between the
+runtimes where the port claims they do not. `Hooks.Totals` counts in `long`, because summing
+per-state `int` usage into an `int` wrapped silently (three results of a billion input tokens
+totalled `-1294967296`), and a Python `int` cannot. And a `PredictContext` refuses a null `states`
+or `questions` by name rather than letting the copy throw a bare `NullPointerException`; before
+hooks were wired in, `predictBatch(List.of(), null)` returned an empty list, which the reference
+does not do either.
+
+Scope hooks to a block with `try (var scope = agent.hooks().hooksInstalled(tracer)) { ... }`. It
+removes one copy of each hook it added — not every copy by identity, which would take one the
+application had installed before the block, and not a snapshot, which would undo an overlapping
+block and discard anything added inside this one.
+
+`predictLong` runs **no** hooks — not per-call, not installed, not process-wide. A scan is sized
+before any hook could run, and the reference only lets hooks into `predict_long` by way of a start
+probe, a post-chain budget check and two separate "a hook answered the document" paths. None of
+those are ported, and without them a hook that adds one option silently re-truncates every window.
+Window the state yourself and hand the windows to `predictBatch` if you need hooks over a long
+document.
+
+There is no `AsyncHook`. It exists in the reference to finish a coroutine from synchronous code,
+and a JVM method call is already synchronous: a hook that wants asynchronous work composes it and
+blocks on it — `ship(ctx.results()).toCompletableFuture().join()` — bounded however your runtime
+wants, or by `timeout(Duration)`.
+
+## Router hooks
+
+`Router.hooks()` is its own registry, separate from any agent's. A router-level hook sees three
+events no agent can:
+
+| event | when |
+|---|---|
+| `onRoute` | after a checkpoint is chosen, from every branch of `route` |
+| `onLoad` | after a checkpoint is built by `load`, `lease`, `predict` or `preload`, or attached while that build ran — not on a cache hit |
+| `onEvict` | after one is dropped, by `maxLoaded`, `unload` or `unloadAll` — before the `onLoad` that caused it, as in the reference |
+
+`Router.predict` also dispatches one `onPredictStart`/`onPredictEnd` pair for the answer. As in the
+reference, routing and loading run first, so the order is `onRoute`, any `onEvict`/`onLoad`, then
+the pair, and on success `elapsedMs` does not include a cold load. A routing or loading failure
+reaches `onError` and `onPredictEnd`, with no start event, and its `elapsedMs` covers the routing
+and the failed load. The agent's own pair still
+fires for the forward pass, so a router-level hook and an agent-level hook see different spans.
+Process-wide defaults (`Hooks.setDefaultHooks`) see only the router's pair: the forward pass runs
+without them, as the reference runs it under `_SKIP_DEFAULTS`, so they fire once per request on
+`predict` and `predictBatch` alike.
+
+`Router.predictBatch` dispatches one pair **per request**, as `predict` does, so a start hook can
+rewrite or `skip` a request before it joins a shared forward pass. The order is the reference's:
+every `onRoute`, then per checkpoint its `onEvict`/`onLoad`, its requests' starts in order and
+their ends in reverse. If a checkpoint's inference fails, each of its started requests gets
+`onError` and its end before the failure propagates. A routing failure reaches that request, and a
+loading failure every request of that checkpoint, as `onError` and `onPredictEnd` with no start —
+as on `predict`, where the reference's `predict_batch` reports neither. The agent's installed hooks fire once
+per forward pass, not per request. Unlike `predict`, the batch path honours `ctx.maxLen` / `ctx.headMaxLen`
+from a router-level start hook, since a request's own budget is seeded there.
+
+Hooks are dispatched outside the router's lock, so a hook may call back into the router —
+`loaded()`, `load`, `unload` — without deadlocking. Two consequences of that are yours to handle:
+`load()` can hand back an agent a hook unloaded while its `on_load` was being dispatched, and a
+router-level `on_predict_start` that calls `router.predict` recurses until the stack runs out,
+because that inner call dispatches the same hook again.
+
+`ctx.maxLen` / `ctx.headMaxLen` set by a router-level start hook are not honoured by
+`Router.predict`: `Agent.predict` takes no budget arguments. `predictBatch` honours them, and an
+agent-level hook can set them on either path.
+
+```java
+router.hooks().addHook(new Hook() {
+    @Override public void onRoute(PredictContext ctx) { log.info("routed to {}", ctx.model()); }
+    @Override public void onEvict(PredictContext ctx) { meter.increment("evictions"); }
+});
+```
+
+### What a router hook cannot do
+
+| | |
+|---|---|
+| a throwing `on_evict` hook fails `Router.close()` | and the remaining evictions are not dispatched. In try-with-resources that masks the body's own failure |
+| calling back into the router from `on_evict` **during `close()`** | throws `this Router is closed`: `close()` marks the router closed before unloading |
+| `concurrent(false)` with an `AsyncHook` whose callback dispatches a hook on the same registry | deadlocks with no deadline, and stalls until it with one. Serial dispatch holds a lock across the callback, and the callback is on another thread, so the inner dispatch cannot re-enter that lock. A callback that dispatches nothing — `loaded()`, a cached `load` — is fine |
+| `ctx.maxLen` / `ctx.headMaxLen`, and states past the first | ignored by `Router.predict`, which calls `Agent.predict` with no budget arguments; `predictBatch` honours the budgets. Both answer only the first state |
+
+`on_route` carries its own context, not the predict pair's, so `runId` differs between them. Correlate
+on the model name, not on `runId`. That context holds the chosen checkpoint in `ctx.model()` and no
+states, questions or decision: unlike the reference, a hook here observes the route but cannot
+replace it.
+
+`AsyncHook.of(hook, executor)` runs a hook on a particular thread — a framework request scope, an
+actor, a UI loop. It waits for the callback, so an exception still reaches the hook policy and the
+mutable `PredictContext` is never read after the call has moved on. Pass a `Duration` to fail a
+callback that overruns.
+
+## Option order
+
+A choice's options are positional: option N renders Nth and logit N is read back as the Nth label.
+So the criteria map's iteration order decides both what is asked and how the answer is labelled, and
+a map whose type does not define that order changes both silently. Measured on JDK 17:
+
+| written | `LinkedHashMap` | `HashMap` | `Map.of` |
+|---|---|---|---|
+| `refund, escalate, ignore` | `refund, escalate, ignore` | `ignore, escalate, refund` | varies per JVM |
+
+`HashMap` is exactly reversed here, so `probabilities().get("refund")` would have reported the logit
+that belonged to `ignore`. It is at least reproducible, because `String.hashCode` is specified.
+`Map.of` is worse: it salts its table per JVM, so three runs of one program gave three different
+orders -- the same question answering differently after a restart.
+
+`Question.choice` therefore refuses the unordered maps it can recognise -- `HashMap`,
+`Hashtable`, `WeakHashMap`, `IdentityHashMap`, `ConcurrentHashMap` **and their subclasses**, and
+`Map.of`/`Map.copyOf`/`Map.ofEntries` with two or more options -- and names the fix. A
+`LinkedHashMap`, a `SortedMap`, their subclasses, and any single-option map are accepted; one
+option cannot be out of order. `Shortlist.rank`/`choice` apply the same check.
+
+It cannot recognise all of them. `Collections.unmodifiableMap`, `synchronizedMap` and
+`checkedMap` are the same wrapper class whichever map they wrap, so a wrapped `HashMap` is
+accepted and its order is not the one you wrote; reaching the wrapped map needs `--add-opens`
+into `java.base`. Wrap a `LinkedHashMap`, or use `choiceOf`.
+
+When there is no map to hand, build the question from the options directly and the order cannot be
+lost at all:
+
+```java
+Question q = Question.choiceOf("What does the customer want?",
+        Map.entry("refund", "money back for a duplicate charge"),
+        Map.entry("escalate", "pass it to a human"),
+        Map.entry("ignore", "no action needed"));
+```
+
+Two options sharing a label are refused there too: a map would have kept only the last, asking a
+question with fewer options than were written.
 
 ## Threads
 

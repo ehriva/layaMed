@@ -1,5 +1,10 @@
 package com.convaiinnovations.laya;
 
+import com.convaiinnovations.laya.hooks.Hook;
+import com.convaiinnovations.laya.hooks.HookCall;
+import com.convaiinnovations.laya.hooks.HookRegistry;
+import com.convaiinnovations.laya.hooks.Hooks;
+import com.convaiinnovations.laya.hooks.PredictContext;
 import com.convaiinnovations.laya.json.PythonJson;
 import com.convaiinnovations.laya.lang.LanguageDetection;
 import com.convaiinnovations.laya.lang.UnicodeTables;
@@ -7,8 +12,10 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,6 +25,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 /**
  * Decides which laya checkpoint a request should go to. A port of {@code laya.router}.
@@ -40,7 +48,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>This class decides; it does not load. {@link #route} runs no model and touches no disk, so it
  * is safe to call on every request and to test without a checkpoint.
  */
-public final class Router implements AutoCloseable, Predictor {
+public final class Router implements AutoCloseable, Predictor, BatchPredictor {
 
     /** The hub repository that bundles all three checkpoints. */
     public static final String BUNDLE_REPO = "convaiinnovations/laya";
@@ -142,6 +150,45 @@ public final class Router implements AutoCloseable, Predictor {
         /** A hint consulted after an explicit language and before detection. */
         public RouteOptions langGuess(LanguageHint value) {
             return new RouteOptions(model, task, lang, value);
+        }
+    }
+
+    /**
+     * One request of a {@link #predictBatch(List)}: a state, its questions, and the routing and
+     * token-budget overrides the reference reads off each request dict.
+     *
+     * @param options    routing for this request alone; null means {@link RouteOptions#none()}
+     * @param maxLen     a token budget for this request alone, or null for the checkpoint's
+     * @param headMaxLen a head budget for this request alone, or null for the checkpoint's
+     */
+    public record Request(Object state, Map<String, Question> questions, RouteOptions options,
+                          Integer maxLen, Integer headMaxLen) {
+
+        /** @throws IllegalArgumentException for a null state or null questions */
+        public Request {
+            requireNonNull(state, "state");
+            requireNonNull(questions, "questions");
+            options = options == null ? RouteOptions.none() : options;
+        }
+
+        /** A request routed on its state and questions alone, at the checkpoint's budgets. */
+        public static Request of(Object state, Map<String, Question> questions) {
+            return new Request(state, questions, null, null, null);
+        }
+
+        /** This request with these routing options. */
+        public Request options(RouteOptions value) {
+            return new Request(state, questions, value, maxLen, headMaxLen);
+        }
+
+        /** This request with this token budget. */
+        public Request maxLen(Integer value) {
+            return new Request(state, questions, options, value, headMaxLen);
+        }
+
+        /** This request with this head budget. */
+        public Request headMaxLen(Integer value) {
+            return new Request(state, questions, options, maxLen, value);
         }
     }
 
@@ -367,10 +414,21 @@ public final class Router implements AutoCloseable, Predictor {
     private final LanguageHint langGuess;
     private final AgentFactory agents;
 
+    /**
+     * This router's hooks, separate from any agent's: these see {@code on_route}, {@code on_load}
+     * and {@code on_evict}, and one predict pair for the whole route-and-answer call.
+     */
+    private final HookRegistry hooks = new HookRegistry();
+
     private final ReentrantLock lock = new ReentrantLock();
     /** Serialises builds, so two cold loads do not hold two checkpoints in flight at once. */
     private final ReentrantLock buildLock = new ReentrantLock();
     private final Map<Checkpoint, Slot> slots = new LinkedHashMap<>();
+    /** This router's hooks: install, remove, and set the error, timeout and concurrency policy. */
+    public HookRegistry hooks() {
+        return hooks;
+    }
+
     /** Least recently used first, which is the end eviction takes from. */
     private final List<Checkpoint> order = new ArrayList<>();
     private final Map<Checkpoint, InFlight> loading = new LinkedHashMap<>();
@@ -389,7 +447,7 @@ public final class Router implements AutoCloseable, Predictor {
         this.maxLoaded = builder.maxLoaded;
     }
 
-    /** A router with the reference's defaults: the bundle, English as default, no auto-detection. */
+    /** A router with the reference's defaults: the bundle, multilingual as default, no auto-detection. */
     public static Router withDefaults() {
         return builder().build();
     }
@@ -403,7 +461,9 @@ public final class Router implements AutoCloseable, Predictor {
     public static final class Builder {
 
         private final Map<Checkpoint, ModelSpec> overrides = new LinkedHashMap<>();
-        private Checkpoint defaultCheckpoint = Checkpoint.ENGLISH;
+        // Follows the reference, which moved this to multilingual: undecided Latin text is no
+        // evidence of English, and multilingual leads on 50 of the 51 languages swept.
+        private Checkpoint defaultCheckpoint = Checkpoint.MULTILINGUAL;
         private boolean autoTaskDetection;
         private boolean standaloneRepos;
         private LanguageHint langGuess;
@@ -416,9 +476,9 @@ public final class Router implements AutoCloseable, Predictor {
         /**
          * Where to send a state nothing identifies.
          *
-         * <p>English by default, which is the reference's choice. A deployment whose traffic is
-         * mostly not English should set this to {@link Checkpoint#MULTILINGUAL}: an unidentified
-         * Latin-script state is no evidence of English, and this is the only knob that says so.
+         * <p>Multilingual by default, which is the reference's choice: an unidentified
+         * Latin-script state is no evidence of English. A deployment whose traffic is known to be
+         * English can set {@link Checkpoint#ENGLISH} here.
          */
         public Builder defaultCheckpoint(Checkpoint value) {
             this.defaultCheckpoint = requireNonNull(value, "defaultCheckpoint");
@@ -723,6 +783,16 @@ public final class Router implements AutoCloseable, Predictor {
      */
     public RouteDecision route(Object state, Map<String, Question> questions,
             RouteOptions options) {
+        RouteDecision decision = decide(state, questions, options);
+        // One dispatch point: `decide` returns from six branches, and a hook that fired from five
+        // of them would be worse than none.
+        dispatchLifecycle(Hooks.Event.ROUTE, decision.model());
+        return decision;
+    }
+
+    /** The routing itself, with no hooks, so {@link #route} has a single place to dispatch from. */
+    private RouteDecision decide(Object state, Map<String, Question> questions,
+            RouteOptions options) {
         RouteOptions settings = options == null ? RouteOptions.none() : options;
 
         if (settings.model() != null) {
@@ -849,7 +919,25 @@ public final class Router implements AutoCloseable, Predictor {
     /** Borrow the agent for a checkpoint. */
     public Lease lease(Checkpoint checkpoint) {
         requireNonNull(checkpoint, "checkpoint");
-        Slot slot = acquire(checkpoint);
+        Outcome outcome = new Outcome();
+        Slot slot;
+        try {
+            slot = acquire(checkpoint, outcome);
+        } catch (RuntimeException | Error failure) {
+            // A build that published and then failed to close the evicted agent still loaded and
+            // evicted, so both events are owed even though no lease is handed back.
+            dispatchOwed(checkpoint, outcome, failure);
+            throw failure;
+        }
+        // Before the Lease is handed over, so on_load precedes any use of the agent -- but the
+        // lease is this method's until the Lease exists, so a throwing hook must not strand it.
+        // `build` guards the same shape at the `release(built); throw` below.
+        try {
+            dispatchOutcome(checkpoint, outcome);
+        } catch (RuntimeException | Error failure) {
+            release(slot);
+            throw failure;
+        }
         return new Lease(checkpoint, slot);
     }
 
@@ -865,13 +953,82 @@ public final class Router implements AutoCloseable, Predictor {
      */
     public Agent load(String name) {
         Checkpoint checkpoint = normaliseName(name);
-        Slot slot = acquire(checkpoint);
-        release(slot);
+        Outcome outcome = new Outcome();
+        Slot slot;
+        try {
+            slot = acquire(checkpoint, outcome);
+            release(slot);
+        } catch (RuntimeException | Error failure) {
+            // A build that published and then threw while closing the evicted agent still loaded
+            // and still evicted, so both events are owed.
+            dispatchOwed(checkpoint, outcome, failure);
+            throw failure;
+        }
+        // After `release`, so a hook calling back in does not find this call holding a lease.
+        dispatchOutcome(checkpoint, outcome);
         return slot.agent;
+    }
+
+    /**
+     * What one {@link #acquire} did, so its hooks fire after the lock is released. Dispatching
+     * under {@code lock} would let a blocking hook park every other caller.
+     */
+    private static final class Outcome {
+
+        private boolean built;
+        private final List<Checkpoint> evicted = new ArrayList<>();
+    }
+
+    /**
+     * Dispatch one router lifecycle event. MUST be called with no router lock held -- see
+     * {@link Outcome}.
+     */
+    private void dispatchLifecycle(Hooks.Event event, Checkpoint checkpoint) {
+        List<Hook> composed = hooks.composeFor(HookCall.none());
+        if (composed.isEmpty()) {
+            return;                        // no hooks: build no context, resolve no policy
+        }
+        PredictContext ctx = new PredictContext(List.of(), Map.of(),
+                checkpoint == null ? null : checkpoint.wireName(), this);
+        Hooks.dispatch(composed, event, ctx, hooks.policyFor(HookCall.none()));
+    }
+
+    /** The evict and load events one acquire owes, evictions first, as the reference fires them. */
+    private void dispatchOutcome(Checkpoint checkpoint, Outcome outcome) {
+        for (Checkpoint evicted : outcome.evicted) {
+            dispatchLifecycle(Hooks.Event.EVICT, evicted);
+        }
+        if (outcome.built) {
+            dispatchLifecycle(Hooks.Event.LOAD, checkpoint);
+        }
+    }
+
+    /**
+     * {@code addSuppressed}, unless the hook rethrew {@code failure} itself: a throwable cannot
+     * suppress itself.
+     */
+    private static void attachHookFailure(Throwable failure, Throwable hookFailure) {
+        if (hookFailure != failure) {
+            failure.addSuppressed(hookFailure);
+        }
+    }
+
+    /** {@link #dispatchOutcome} on a failing path: a hook failure is attached, not substituted. */
+    private void dispatchOwed(Checkpoint checkpoint, Outcome outcome, Throwable failure) {
+        try {
+            dispatchOutcome(checkpoint, outcome);
+        } catch (RuntimeException | Error hookFailure) {
+            attachHookFailure(failure, hookFailure);
+        }
     }
 
     /** The slot for a checkpoint, with one lease taken. */
     private Slot acquire(Checkpoint checkpoint) {
+        return acquire(checkpoint, null);
+    }
+
+    /** The slot for a checkpoint, recording into {@code outcome} what it had to do to get it. */
+    private Slot acquire(Checkpoint checkpoint, Outcome outcome) {
         while (true) {
             InFlight waitFor = null;
             InFlight mine = null;
@@ -901,7 +1058,7 @@ public final class Router implements AutoCloseable, Predictor {
                 // This caller owns the build, and `mine` is the handle the others are waiting on.
                 // It has to be the one registered above: creating a second one here would leave
                 // every waiter blocked on a latch nobody ever counts down.
-                return build(checkpoint, mine);
+                return build(checkpoint, mine, outcome);
             }
             // Someone else is building this one. Wait for them rather than build a second copy.
             await(waitFor);
@@ -917,13 +1074,19 @@ public final class Router implements AutoCloseable, Predictor {
         }
     }
 
-    private Slot build(Checkpoint checkpoint, InFlight inflight) {
+    private Slot build(Checkpoint checkpoint, InFlight inflight, Outcome outcome) {
         List<Agent> toClose = new ArrayList<>();
         Slot built;
         try {
             // The build itself runs outside `lock`, so routing and eviction are not stalled for
             // the seconds a cold checkpoint takes, and serialised by `buildLock` so two cold
             // loads do not hold two checkpoints in flight at once.
+            //
+            // Acquired INSIDE the outer try deliberately, which reads like the anti-pattern and
+            // is not: the handler below is what records the failure on `inflight` and counts its
+            // latch down, so a throw from the acquisition itself must still reach it or every
+            // waiter on this checkpoint parks forever. `buildLock` is not held on that path, so
+            // the finally that releases it is never reached with nothing to release.
             buildLock.lock();
             try {
                 lock.lock();
@@ -951,20 +1114,39 @@ public final class Router implements AutoCloseable, Predictor {
                         attached.leases++;
                         built = attached;
                         duplicate = true;
+                        if (outcome != null) {
+                            outcome.built = true;   // the reference fires on_load here too
+                        }
                     } else {
                         built = new Slot(agent, true);
                         built.leases++;
                         slots.put(checkpoint, built);
                         order.add(checkpoint);
-                        evictLocked(toClose);
+                        List<Checkpoint> evicted = evictLocked(toClose);
+                        if (outcome != null) {
+                            outcome.built = true;
+                            outcome.evicted.addAll(evicted);
+                        }
                     }
                 } finally {
-                    // ALWAYS, even if eviction threw. Skipping it left the new slot published
-                    // with a lease that nothing could release -- so the agent could never be
-                    // retired or closed -- and left every waiter parked on a latch for a
-                    // checkpoint that had in fact loaded.
-                    finish(checkpoint, inflight);
-                    lock.unlock();
+                    // `finish` ALWAYS, even if eviction threw. Skipping it left the new slot
+                    // published with a lease that nothing could release -- so the agent could
+                    // never be retired or closed -- and left every waiter parked on a latch for
+                    // a checkpoint that had in fact loaded.
+                    //
+                    // And `lock.unlock()` in a finally OF ITS OWN, because the two statements in
+                    // sequence did not deliver what that paragraph claims: `finish` dereferences
+                    // `inflight` and counts down its latch, so a throw from it skipped the unlock
+                    // and left `lock` held with no owner able to release it. Every later
+                    // `lock.lock()` would then block forever -- including the handler below that
+                    // exists to record the failure, so the router would wedge rather than report.
+                    // Found by CodeQL's unreleased-lock query, which sees the control flow a
+                    // pattern scanner cannot.
+                    try {
+                        finish(checkpoint, inflight);
+                    } finally {
+                        lock.unlock();
+                    }
                 }
                 if (duplicate) {
                     toClose.add(agent);
@@ -1170,15 +1352,24 @@ public final class Router implements AutoCloseable, Predictor {
             lock.unlock();
         }
         for (Checkpoint checkpoint : wanted) {
-            lock.lock();
             boolean already;
+            lock.lock();
             try {
                 already = slots.containsKey(checkpoint);
             } finally {
                 lock.unlock();
             }
             if (!already) {
-                release(acquire(checkpoint));
+                Outcome preloaded = new Outcome();
+                try {
+                    release(acquire(checkpoint, preloaded));
+                } catch (RuntimeException | Error failure) {
+                    // maxLoaded was raised above, so only another load in flight -- another
+                    // thread's, or one an on_load hook starts -- can make this evict.
+                    dispatchOwed(checkpoint, preloaded, failure);
+                    throw failure;
+                }
+                dispatchOutcome(checkpoint, preloaded);
             }
         }
         return this;
@@ -1215,7 +1406,23 @@ public final class Router implements AutoCloseable, Predictor {
                 lock.unlock();
             }
             if (inflight == null) {
-                closeAll(toClose);
+                try {
+                    closeAll(toClose);
+                } catch (RuntimeException | Error failure) {
+                    // The evictions happened whether or not a close threw, so every event is
+                    // owed, and a hook failure is attached to the close failure, not swapped.
+                    for (Checkpoint evicted : freed) {
+                        try {
+                            dispatchLifecycle(Hooks.Event.EVICT, evicted);
+                        } catch (RuntimeException | Error hookFailure) {
+                            attachHookFailure(failure, hookFailure);
+                        }
+                    }
+                    throw failure;
+                }
+                for (Checkpoint evicted : freed) {
+                    dispatchLifecycle(Hooks.Event.EVICT, evicted);
+                }
                 return freed;
             }
             await(inflight);
@@ -1243,7 +1450,23 @@ public final class Router implements AutoCloseable, Predictor {
                 lock.unlock();
             }
             if (inflights.isEmpty()) {
-                closeAll(toClose);
+                try {
+                    closeAll(toClose);
+                } catch (RuntimeException | Error failure) {
+                    // The evictions happened whether or not a close threw, so every event is
+                    // owed, and a hook failure is attached to the close failure, not swapped.
+                    for (Checkpoint evicted : freed) {
+                        try {
+                            dispatchLifecycle(Hooks.Event.EVICT, evicted);
+                        } catch (RuntimeException | Error hookFailure) {
+                            attachHookFailure(failure, hookFailure);
+                        }
+                    }
+                    throw failure;
+                }
+                for (Checkpoint evicted : freed) {
+                    dispatchLifecycle(Hooks.Event.EVICT, evicted);
+                }
                 return freed;
             }
             for (InFlight inflight : inflights) {
@@ -1280,6 +1503,7 @@ public final class Router implements AutoCloseable, Predictor {
     }
 
     /** Route this state and answer its questions on whichever checkpoint wins. */
+    @Override
     public Prediction predict(Object state, Map<String, Question> questions) {
         return predict(state, questions, RouteOptions.none());
     }
@@ -1287,7 +1511,7 @@ public final class Router implements AutoCloseable, Predictor {
     /** Route this state and answer its questions, with per-call routing arguments. */
     public Prediction predict(Object state, Map<String, Question> questions,
             RouteOptions options) {
-        return predict(route(state, questions, options), state, questions,
+        return predictRouted(() -> route(state, questions, options), state, questions,
                 options == null ? null : options.lang());
     }
 
@@ -1299,21 +1523,269 @@ public final class Router implements AutoCloseable, Predictor {
      */
     public Prediction predict(RouteDecision decision, Object state,
             Map<String, Question> questions) {
-        return predict(decision, state, questions, null);
+        requireNonNull(decision, "decision");
+        return predictRouted(() -> decision, state, questions, null);
     }
 
-    private Prediction predict(RouteDecision decision, Object state,
+    /**
+     * Route, load, then answer -- in the reference's order: {@code on_route}, then any
+     * {@code on_evict}/{@code on_load}, then the predict pair, with {@code elapsedMs} starting
+     * after the load. A routing or loading failure reaches {@code on_error} and
+     * {@code on_predict_end}, as it does inside the reference's {@code try}.
+     */
+    private Prediction predictRouted(Supplier<RouteDecision> decide, Object state,
             Map<String, Question> questions, String lang) {
-        requireNonNull(decision, "decision");
-        // The language the checkpoint is told is the caller's if they gave one, else whatever
-        // routing detected -- which is the reference's rule, and it matters: the multilingual
-        // checkpoint takes a language and the detected one is the best available answer.
-        String language = lang;
-        if (language == null && decision.detection() != null) {
-            language = decision.detection().language();
+        // Before routing, as the reference does: a malformed call must not cold-load a
+        // checkpoint, fire on_load or evict a resident one before it is refused.
+        if (state == null) {
+            throw new IllegalArgumentException(
+                    "state must not be null; pass a string, a map or a list");
         }
-        try (Lease lease = lease(decision.model())) {
-            return lease.agent().predict(state, questions, language);
+        if (questions == null) {
+            throw new IllegalArgumentException("questions must not be null");
+        }
+        List<Hook> composed = hooks.composeFor(HookCall.none());
+        if (composed.isEmpty()) {
+            RouteDecision decision = decide.get();
+            try (Lease lease = lease(decision.model())) {          // unchanged fast path
+                return lease.agent().predict(state, questions, languageFor(decision, lang));
+            }
+        }
+        Hooks.Policy policy = hooks.policyFor(HookCall.none());
+        long startedAt = System.nanoTime();           // a failure's elapsedMs covers route + load
+        RouteDecision decision = null;
+        Lease lease;
+        try {
+            decision = decide.get();
+            lease = lease(decision.model());
+        } catch (RuntimeException | Error failure) {
+            PredictContext failed = new PredictContext(Collections.singletonList(state), questions,
+                    decision == null ? null : decision.model().wireName(), this);
+            Hooks.failedBeforeStart(composed, failed, policy, failure, startedAt);
+            throw failure;
+        }
+        // `Hooks.around` so ctx.skip, the error-before-end order, failure suppression and
+        // elapsed/usage all behave as they do on an Agent.
+        //
+        // ctx.maxLen/headMaxLen are NOT forwarded: Agent.predict takes no budget arguments, so a
+        // Router-level start hook that sets one is ignored here.
+        String resolved = languageFor(decision, lang);
+        List<Prediction> answered;
+        try (Lease held = lease) {
+            PredictContext ctx = new PredictContext(Collections.singletonList(state), questions,
+                    decision.model().wireName(), this);
+            answered = Hooks.around(composed, ctx, policy,
+                    (states, asked, maxLen, headMaxLen) -> withoutDefaultHooks(() ->
+                            List.of(held.agent().predict(states.get(0), asked, resolved))));
+        }
+        if (answered == null || answered.isEmpty()) {
+            // Only a hook can cause this, by skipping with no result. Inventing one would report
+            // a decision the model never made.
+            throw new IllegalStateException(
+                    "a hook left no prediction for this call; ctx.skip(...) needs one result");
+        }
+        return answered.get(0);
+    }
+
+    /**
+     * The agent's forward pass without the process-wide defaults, as the reference runs it under
+     * {@code _SKIP_DEFAULTS}: a default hook already sees this request's router-level pair.
+     */
+    @SuppressWarnings("try")
+    private static <T> T withoutDefaultHooks(Supplier<T> pass) {
+        try (Hooks.DefaultsScope ignored = Hooks.withoutDefaultHooks()) {
+            return pass.get();
+        }
+    }
+
+    /**
+     * The language the checkpoint is told: the caller's if they gave one, else whatever routing
+     * detected -- the reference's rule, and it matters, because the multilingual checkpoint takes
+     * a language and the detected one is the best available answer.
+     */
+    private static String languageFor(RouteDecision decision, String lang) {
+        if (lang == null && decision.detection() != null) {
+            return decision.detection().language();
+        }
+        return lang;
+    }
+
+    /**
+     * Route every state and answer the shared questions, sharing forward passes per checkpoint.
+     *
+     * <p>{@link BatchPredictor}'s form, so {@link Decisions#decideBatch} takes a router. To pin
+     * one, pass {@code (states, asked) -> router.predictBatch(states, asked, options)}.
+     */
+    @Override
+    public List<Prediction> predictBatch(List<?> states, Map<String, Question> questions) {
+        return predictBatch(states, questions, RouteOptions.none());
+    }
+
+    /** {@link #predictBatch(List, Map)} with the same routing options on every state. */
+    public List<Prediction> predictBatch(List<?> states, Map<String, Question> questions,
+            RouteOptions options) {
+        requireNonNull(states, "states");
+        List<Request> requests = new ArrayList<>(states.size());
+        for (Object state : states) {
+            requests.add(new Request(state, questions, options, null, null));
+        }
+        return predictBatch(requests);
+    }
+
+    /** {@link #predictBatch(List, int, boolean)} with every state at once and no sorting. */
+    public List<Prediction> predictBatch(List<Request> requests) {
+        return predictBatch(requests, 0, false);
+    }
+
+    /**
+     * Route each request and answer it, with one checkpoint load per checkpoint used.
+     *
+     * <p>Every request is routed first, then grouped by checkpoint in order of first appearance.
+     * Within a checkpoint, requests that share a question schema, a token budget and (when the
+     * checkpoint has per-language temperatures) a language share {@link Agent#predictBatch}
+     * calls. Each answer matches {@link #predict(Object, Map, RouteOptions)} within padding noise
+     * (1e-4 measured on real checkpoints).
+     *
+     * <p>Router hooks run per request, as {@link #predict} runs them, and in the reference's
+     * order: every {@code on_route} first, then per checkpoint any {@code on_evict}/{@code on_load},
+     * then that checkpoint's start events in request order, so a start hook can rewrite or skip a
+     * request before it joins a forward pass, then its end events in reverse. If its inference
+     * fails, every started request of that checkpoint gets the error and its end before the
+     * failure propagates; checkpoints already answered have ended normally. A routing failure
+     * reaches its own request, and a loading failure every request of that checkpoint, as
+     * {@code on_error} and {@code on_predict_end} with no start, as in {@link #predict}.
+     *
+     * @param batchSize    states per graph call, or 0 for each group at once
+     * @param sortByLength forwarded to {@link Agent#predictBatch}; changes no answer
+     * @return one prediction per request, in the order the requests were given
+     */
+    public List<Prediction> predictBatch(List<Request> requests, int batchSize,
+            boolean sortByLength) {
+        requireNonNull(requests, "requests");
+        if (batchSize < 0) {
+            throw new IllegalArgumentException("batchSize must be 0 or positive, got " + batchSize);
+        }
+        // Before any routing, as predict does: a malformed batch must not route, load or evict.
+        for (int i = 0; i < requests.size(); i++) {
+            if (requests.get(i) == null) {
+                throw new IllegalArgumentException("request " + i + " is null");
+            }
+        }
+        List<Hook> composed = hooks.composeFor(HookCall.none());
+        Hooks.Policy policy = hooks.policyFor(HookCall.none());
+        List<RouteDecision> decisions = new ArrayList<>(requests.size());
+        for (Request request : requests) {
+            long startedAt = System.nanoTime();
+            try {
+                decisions.add(route(request.state(), request.questions(), request.options()));
+            } catch (RuntimeException | Error failure) {
+                failedBeforeStart(composed, policy, request, null, failure, startedAt);
+                throw failure;
+            }
+        }
+        Map<Checkpoint, List<Integer>> groups = new LinkedHashMap<>();
+        for (int i = 0; i < decisions.size(); i++) {
+            groups.computeIfAbsent(decisions.get(i).model(), key -> new ArrayList<>()).add(i);
+        }
+
+        Prediction[] out = new Prediction[requests.size()];
+        for (Map.Entry<Checkpoint, List<Integer>> group : groups.entrySet()) {
+            Checkpoint checkpoint = group.getKey();
+            // Loaded before the starts, as the reference loads, so elapsedMs excludes a cold load.
+            long startedAt = System.nanoTime();
+            Lease lease;
+            try {
+                lease = lease(checkpoint);
+            } catch (RuntimeException | Error failure) {
+                for (int i : group.getValue()) {
+                    failedBeforeStart(composed, policy, requests.get(i), checkpoint, failure,
+                            startedAt);
+                }
+                throw failure;
+            }
+            List<PredictContext> contexts = new ArrayList<>(group.getValue().size());
+            Map<PredictContext, Integer> indexOf = new IdentityHashMap<>();
+            try (Lease held = lease) {
+                for (int i : group.getValue()) {
+                    Request request = requests.get(i);
+                    PredictContext ctx = new PredictContext(
+                            Collections.singletonList(request.state()), request.questions(),
+                            checkpoint.wireName(), this, request.maxLen(), request.headMaxLen());
+                    contexts.add(ctx);
+                    indexOf.put(ctx, i);
+                }
+                Hooks.aroundGroup(composed, contexts, policy, pending -> answer(held.agent(),
+                        pending, indexOf, requests, decisions, batchSize, sortByLength));
+            }
+            for (PredictContext ctx : contexts) {
+                int i = indexOf.get(ctx);
+                if (ctx.results() == null || ctx.results().isEmpty()) {
+                    // As in predict: only a hook can cause this, and inventing an answer would
+                    // report a decision the model never made.
+                    throw new IllegalStateException("a hook left no prediction for request " + i
+                            + "; ctx.skip(...) needs one result");
+                }
+                out[i] = ctx.results().get(0);
+            }
+        }
+        // Not List.of: an end hook may leave a null result, which predict returns as it is.
+        return Collections.unmodifiableList(Arrays.asList(out));
+    }
+
+    /** One request's {@link Hooks#failedBeforeStart}, skipped when no hook would see it. */
+    private void failedBeforeStart(List<Hook> composed, Hooks.Policy policy, Request request,
+            Checkpoint checkpoint, Throwable failure, long startedAt) {
+        if (composed.isEmpty()) {
+            return;
+        }
+        PredictContext failed = new PredictContext(Collections.singletonList(request.state()),
+                request.questions(), checkpoint == null ? null : checkpoint.wireName(), this,
+                request.maxLen(), request.headMaxLen());
+        Hooks.failedBeforeStart(composed, failed, policy, failure, startedAt);
+    }
+
+    /** Answers one checkpoint's pending requests, one agent call per compatible group. */
+    private static void answer(Agent agent, List<PredictContext> pending,
+            Map<PredictContext, Integer> indexOf, List<Request> requests,
+            List<RouteDecision> decisions, int batchSize, boolean sortByLength) {
+        // The language only selects a temperature, so it splits a group only when the
+        // checkpoint has per-language temperatures; otherwise it would cost forward passes.
+        boolean tempered = !agent.config().langTemperatures().isEmpty();
+        // Grouped on what the start hooks left, so a rewritten question set or budget applies to
+        // its own request only. The schema is order-sensitive, as option order is positional.
+        record Key(String schema, Integer maxLen, Integer headMaxLen, String language) {
+        }
+        Map<Key, List<PredictContext>> forwardPasses = new LinkedHashMap<>();
+        for (PredictContext ctx : pending) {
+            String language = null;
+            if (tempered) {
+                int i = indexOf.get(ctx);
+                language = requests.get(i).options().lang();
+                if (language == null && decisions.get(i).detection() != null) {
+                    language = decisions.get(i).detection().language();
+                }
+            }
+            Key key = new Key(questionSchema(ctx.questions()), ctx.maxLen(), ctx.headMaxLen(),
+                    language);
+            forwardPasses.computeIfAbsent(key, k -> new ArrayList<>()).add(ctx);
+        }
+        for (Map.Entry<Key, List<PredictContext>> pass : forwardPasses.entrySet()) {
+            List<PredictContext> members = pass.getValue();
+            List<Object> states = new ArrayList<>(members.size());
+            for (PredictContext ctx : members) {
+                states.add(ctx.states().get(0));
+            }
+            Key key = pass.getKey();
+            List<Prediction> answered = withoutDefaultHooks(() -> agent.predictBatch(states,
+                    members.get(0).questions(), key.language(), batchSize, sortByLength,
+                    HookCall.none(), key.maxLen(), key.headMaxLen()));
+            if (answered.size() != members.size()) {
+                throw new IllegalStateException("internal error: Agent.predictBatch returned "
+                        + answered.size() + " results for " + members.size() + " states");
+            }
+            for (int m = 0; m < members.size(); m++) {
+                members.get(m).results(List.of(answered.get(m)));
+            }
         }
     }
 
@@ -1349,7 +1821,7 @@ public final class Router implements AutoCloseable, Predictor {
             } catch (RuntimeException failure) {
                 if (first == null) {
                     first = failure;
-                } else {
+                } else if (failure != first) {
                     first.addSuppressed(failure);
                 }
             }

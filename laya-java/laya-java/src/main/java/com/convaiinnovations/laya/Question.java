@@ -3,9 +3,15 @@ package com.convaiinnovations.laya;
 import com.convaiinnovations.laya.json.PythonJson;
 import com.convaiinnovations.laya.lang.UnicodeTables;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Hashtable;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedMap;
+import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * One decision to put to the model: its type, its instruction, and the options it chooses between.
@@ -82,8 +88,89 @@ public final class Question {
     public static Question choice(String instructions, Map<String, ?> criteria) {
         requireInstructions(instructions);
         require(criteria != null && !criteria.isEmpty(), "a choice question needs criteria");
+        requireOrderedCriteria(criteria);
         return new Question(Type.CHOICE, instructions, new LinkedHashMap<>(criteria), null,
                 null, null);
+    }
+
+    /**
+     * A choice built from options in the order they are written, with no map to lose that order.
+     *
+     * <p>The counterpart of {@link #choice} for callers who would otherwise reach for
+     * {@code Map.of}: there is no intermediate collection whose type could reorder the options, so
+     * the Nth argument is the Nth option and index N of {@link #labels} is the label for logit N.
+     *
+     * @throws IllegalArgumentException if two options share a label. A map would have kept only the
+     *     last silently, asking a question with fewer options than were written.
+     */
+    @SafeVarargs
+    public static Question choiceOf(String instructions, Map.Entry<String, ?>... options) {
+        requireInstructions(instructions);
+        require(options != null && options.length > 0, "a choice question needs criteria");
+        Map<String, Object> ordered = new LinkedHashMap<>();
+        for (Map.Entry<String, ?> option : options) {
+            require(option != null, "a choice option must not be null");
+            String label = option.getKey();
+            require(label != null && !label.isEmpty(),
+                    "a choice option needs a label; give every option a name");
+            // containsKey, not the return of put: a legitimate criterion may be null, and then put
+            // returns null for a duplicate too, so the duplicate would go unreported.
+            require(!ordered.containsKey(label),
+                    "duplicate choice label " + PythonJson.repr(label) + "; two options cannot "
+                    + "share one label, and a map would have kept only the last");
+            ordered.put(label, option.getValue());
+        }
+        return new Question(Type.CHOICE, instructions, ordered, null, null, null);
+    }
+
+    /** Refuses a criteria map whose iteration order is not defined. For in-package callers. */
+    static void requireOrderedCriteria(Map<String, ?> criteria) {
+        require(!orderIsUnspecified(criteria),
+                "a choice's options are positional, so the criteria map's iteration order decides "
+                + "what is asked and how the answer is labelled, and "
+                + criteria.getClass().getName() + " does not specify one. Use a LinkedHashMap, or "
+                + "Question.choiceOf(instructions, Map.entry(label, description), ...)");
+    }
+
+    /**
+     * Whether this map's own contract leaves its iteration order unspecified.
+     *
+     * <p>Measured on JDK 17, with the options written {@code refund, escalate, ignore}: a
+     * {@code HashMap} iterates {@code ignore, escalate, refund} -- exactly reversed, so option 0's
+     * probability would be reported against option 2's label. That much is at least reproducible,
+     * because {@code String.hashCode} is specified. {@code Map.of} is worse: it salts its table per
+     * JVM, so three runs of one program gave three different orders and the same question answers
+     * differently after a restart.
+     *
+     * <p>A denylist rather than an allowlist, because a false refusal breaks working code: Guava's
+     * {@code ImmutableMap} iterates in insertion order and refusing it would be wrong.
+     *
+     * <p>So this does not catch everything. {@code Collections.unmodifiableMap}/
+     * {@code synchronizedMap}/{@code checkedMap} are the same wrapper class whichever map they
+     * wrap, so a wrapped {@code HashMap} is accepted and its order is not the caller's. Reaching
+     * the wrapped map needs {@code --add-opens} into {@code java.base}. Wrap a
+     * {@code LinkedHashMap}, or use {@link #choiceOf}.
+     */
+    private static boolean orderIsUnspecified(Map<String, ?> criteria) {
+        if (criteria.size() < 2) {
+            return false;                      // one option cannot be in the wrong order
+        }
+        if (criteria instanceof LinkedHashMap || criteria instanceof SortedMap) {
+            return false;
+        }
+        // `instanceof`, so a subclass is caught too: `class Mine extends HashMap {}` iterates in
+        // hash order and was being accepted. The ordered types are returned above, so this cannot
+        // reject a LinkedHashMap.
+        if (criteria instanceof HashMap || criteria instanceof Hashtable
+                || criteria instanceof WeakHashMap || criteria instanceof IdentityHashMap
+                || criteria instanceof ConcurrentHashMap) {
+            return true;
+        }
+        Class<?> type = criteria.getClass();
+        // `Map.of` and `Map.copyOf` with two or more entries. The class is package-private, so its
+        // name is the only handle on it; it has been stable since the factories arrived in 9. The
+        // single-entry form is a different class and cannot be misordered, so it is not named here.
+        return "java.util.ImmutableCollections$MapN".equals(type.getName());
     }
 
     /** A score over ordered levels, rendered as {@code "level <i>: <criterion>"}. */

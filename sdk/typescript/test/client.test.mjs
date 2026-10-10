@@ -115,6 +115,8 @@ test('invalid model and control values fail before sending a request', async () 
     { minConfidence: true }, { minConfidence: [] }, { minConfidence: {} },
     { minConfidence: { 'choice:2': 1.5 } }, { minConfidence: { 'choice:2': 'high' } },
     { minConfidence: { 'choice:2': NaN } },
+    { minConfidence: { 'choice:2-5': 0.9 } }, { minConfidence: { 'foo:2': 0.9 } },
+    { minConfidence: { 'choice:2': 0.9, 'score:1': 0.5 } },
   ]) {
     await assert.rejects(client.predict('hello', questions, options), LayaValidationError, JSON.stringify(options));
   }

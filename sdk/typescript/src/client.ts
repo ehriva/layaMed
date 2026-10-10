@@ -3,6 +3,7 @@ import {
   LayaTimeoutError, LayaValidationError,
 } from './errors.js';
 import type { Health, Prediction, PredictOptions, Questions, RequestOptions, State } from './types.js';
+import { isMinConfidenceKey } from './buckets.js';
 import { isRecord, validateJson, validateQuestions, validateTimeout } from './validation.js';
 import { validateHealth, validatePrediction } from './response.js';
 
@@ -12,11 +13,14 @@ function isThreshold(value: unknown): value is number {
 }
 
 /** Mirror core's `check_min_confidence`: one threshold for every answer, or a non-empty
- *  per-bucket map whose values are all thresholds. Anything else is refused before the
- *  request goes out, so a caller cannot pay for inference with a gate the server would 422. */
+ *  per-bucket map whose keys core can produce and whose values are all thresholds. Anything else
+ *  is refused before the request goes out, so a caller cannot pay for inference with a gate the
+ *  server would 422. */
 function validateMinConfidence(value: unknown): asserts value is number | Record<string, number> {
   if (isThreshold(value)) return;
-  if (isRecord(value) && Object.keys(value).length > 0 && Object.values(value).every(isThreshold)) return;
+  if (isRecord(value) && Object.keys(value).length > 0
+      && Object.keys(value).every(isMinConfidenceKey)
+      && Object.values(value).every(isThreshold)) return;
   throw new LayaValidationError(
     'minConfidence must be a number between 0 and 1, or a non-empty map of bucket to threshold');
 }

@@ -106,6 +106,10 @@ Key points:
 
 - `on_route` runs before the model is loaded, so a hook can pin a checkpoint and avoid loading
   another one.
+- `ctx.started_at` is reset after `route` and `load`, immediately before `on_predict_start`, so
+  the `ctx.elapsed_ms` an end hook reads is the prediction alone. Routing and a cold model load --
+  seconds, for a checkpoint that was not resident -- are outside it. Time the whole call from the
+  caller, or from `on_route`, if that is what you need.
 - Router-level predict hooks wrap the whole call. They are **not** forwarded into the Agent;
   an attached Agent with its own hooks runs those too, which is expected.
 - A Router-level `ctx.skip()` still adds `routing`, so the return shape is stable.

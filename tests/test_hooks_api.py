@@ -1512,6 +1512,16 @@ finally:
     _hooks_mod.clear_default_hooks()
 
 
+from laya.evals import compare_agreement, evaluate_agreement  # noqa: E402
+
+check("compare_agreement signature", list(inspect.signature(compare_agreement).parameters),
+      ["reference", "repeat", "student", "bootstrap_samples", "seed"])
+check("evaluate_agreement signature", list(inspect.signature(evaluate_agreement).parameters),
+      ["runner", "reference", "repeat", "student_provenance", "model", "bootstrap_samples", "seed"])
+check("agreement provenance is required",
+      inspect.signature(evaluate_agreement).parameters["student_provenance"].default,
+      inspect.Parameter.empty)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)

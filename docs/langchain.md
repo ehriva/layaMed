@@ -74,9 +74,13 @@ result = app.invoke({"input": "I was billed twice for last month's subscription.
 print(result["response"])  # -> "Handling billing..."
 ```
 
-`confidence_threshold` reads `answer_confidence`, the calibrated `max(p)` confidence the
-calibration figures describe, when the answer carries it, and falls back to the entropy
-`confidence` otherwise.
+`confidence_threshold` reads `answer_confidence`, the `max(p)` confidence the calibration figures
+are computed on, when the answer carries it, and falls back to the entropy `confidence` otherwise.
+It is not calibrated as shipped: `laya-multilingual` ships `temperature: [1.0, 1.0, 1.0]` and no
+`temperature_by_options` at all, and the english checkpoint's `choice:11+` entry is refused by the
+loader's own clamp with a warning that says to treat it as uncalibrated. Fit and validate the
+threshold on held-out data at the option counts your workload uses -- see the README's
+[Calibration](https://github.com/NandhaKishorM/laya#calibration) section.
 
 ### Routing with the full conversation
 
@@ -388,8 +392,12 @@ default); a larger value comes back as a 422.
 Every runnable also takes `lang` and `min_confidence`, the two per-request controls `Agent.predict`
 and `Router.predict` both read and `laya-serve` both accepts in the body. `lang` pins the language
 the state is routed and answered in -- select the answering checkpoint's per-language calibration
-rather than relying on built-in detection -- and `min_confidence` is core's abstention gate: a
-decision under it comes back as an abstention instead of a forced choice. Both are forwarded on the
+rather than relying on built-in detection -- and `min_confidence` is core's abstention gate, which
+marks rather than withholds: an answer under it comes back carrying `low_confidence: true`,
+`abstention: "abstained"` and `abstention_threshold` on the raw decision kept in `last_decision`,
+while the branch label the runnable returns is still the argmax. The label is changed by
+`confidence_threshold` and its `fallback`, not by the gate; a `min_confidence` on its own reports
+the abstention and routes anyway. Both are forwarded on the
 local and the remote path, and an unset one is omitted rather than sent as `None` so it cannot
 shadow a checkpoint's own default. `min_confidence=0.0` and `lang=""` are real values, not absences,
 and are forwarded as given.
@@ -398,7 +406,7 @@ and are forwarded as given.
 router = LayaRouter(
     criteria={"billing": "invoices", "tech": "bugs"},
     lang="es",                        # route and answer in Spanish
-    min_confidence=0.3,               # abstain below a 0.3 calibrated confidence
+    min_confidence=0.3,               # report an abstention below 0.3; the branch is still chosen
 )
 ```
 

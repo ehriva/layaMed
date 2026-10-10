@@ -627,8 +627,8 @@
       }
     },
     "decision": {
-      "model": "english",
-      "reason": "no letters detected in state; using default (english)",
+      "model": "multilingual",
+      "reason": "no letters detected in state; using default (multilingual)",
       "detection": {
         "script": "unknown",
         "script_profile": {},
@@ -659,8 +659,8 @@
       }
     },
     "decision": {
-      "model": "english",
-      "reason": "no letters detected in state; using default (english)",
+      "model": "multilingual",
+      "reason": "no letters detected in state; using default (multilingual)",
       "detection": {
         "script": "unknown",
         "script_profile": {},
@@ -956,8 +956,8 @@
       }
     },
     "decision": {
-      "model": "english",
-      "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+      "model": "multilingual",
+      "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
       "detection": {
         "script": "latin",
         "script_profile": {
@@ -1010,8 +1010,8 @@
       }
     },
     "decision": {
-      "model": "english",
-      "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+      "model": "multilingual",
+      "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
       "detection": {
         "script": "latin",
         "script_profile": {
@@ -1056,8 +1056,8 @@
       }
     },
     "decision": {
-      "model": "english",
-      "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+      "model": "multilingual",
+      "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
       "detection": {
         "script": "latin",
         "script_profile": {
@@ -1106,8 +1106,8 @@
       }
     },
     "decision": {
-      "model": "english",
-      "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+      "model": "multilingual",
+      "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
       "detection": {
         "script": "latin",
         "script_profile": {
@@ -1274,8 +1274,8 @@
       "state": "refund me"
     },
     "decision": {
-      "model": "english",
-      "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+      "model": "multilingual",
+      "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
       "detection": {
         "script": "latin",
         "script_profile": {

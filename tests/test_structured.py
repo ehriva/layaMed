@@ -381,6 +381,71 @@ check("batch/router questions per request",
 check("batch/router kwargs forwarded", router_like.calls[0]["kwargs"], {"batch_size": 3})
 check("batch/router projection matches agent path", router_outs, outs)
 
+
+# A real Router, not a fake that takes **kwargs: Router.predict_batch reads model/task/lang/
+# lang_guess/max_len/head_max_len off each request and has no such keywords, so forwarding them
+# whole raised TypeError and `decide_batch(model=...)` could not pin a checkpoint at all -- the
+# only way to reach a registered one, since those are never auto-routed.
+class StubCheckpoint:
+    """An attached agent that answers every state and records how it was called."""
+
+    def __init__(self, name):
+        self.name, self.calls = name, []
+
+    def predict_batch(self, states, questions, **kwargs):
+        self.calls.append({"states": list(states), "kwargs": kwargs})
+        return [{"model": "laya-rl-agent", "usage": {"input_tokens": 1, "output_tokens": 0},
+                 "answers": BATCH_ANSWERS[s]} for s in states]
+
+    def system_one(self, state, questions, **kwargs):
+        return self.predict_batch([state], questions, **kwargs)[0]
+
+    predict = system_one
+
+
+def stub_router():
+    router = laya.Router()
+    stubs = {name: StubCheckpoint(name) for name in ("english", "multilingual")}
+    for name, stub in stubs.items():
+        router.attach(name, stub)
+    return router, stubs
+
+
+for pin in ({"model": "multilingual"}, {"model": "ml"}, {"lang": "de"}, {"lang_guess": "de"}):
+    router, stubs = stub_router()
+    try:
+        pinned = router.decide_batch(STATES, schema=SCHEMA, **pin)
+    except TypeError as e:
+        pinned = repr(e)
+    check("batch/router %s answers every state on that checkpoint" % pin,
+          (pinned, [c["states"] for c in stubs["multilingual"].calls], stubs["english"].calls),
+          (outs, [STATES], []))
+
+router, stubs = stub_router()
+try:
+    router.decide_batch(STATES, schema=SCHEMA, model="english", max_len=256, head_max_len=128, batch_size=2)
+    seen = stubs["english"].calls[0]["kwargs"]
+    seen = {k: seen.get(k) for k in ("max_len", "head_max_len", "batch_size")}
+except TypeError as e:
+    seen = repr(e)
+check("batch/router per-request budget and call-level batch_size both reach the agent", seen,
+      {"max_len": 256, "head_max_len": 128, "batch_size": 2})
+
+router, stubs = stub_router()
+router.register("papers", "/models/papers")
+papers = StubCheckpoint("papers")
+router.attach("papers", papers)
+try:
+    pinned = router.decide_batch(STATES, schema=SCHEMA, model="papers")
+except TypeError as e:
+    pinned = repr(e)
+check("batch/router model= reaches a registered checkpoint", (pinned, [c["states"] for c in papers.calls]),
+      (outs, [STATES]))
+
+router, stubs = stub_router()
+check("batch/router decide_batch(model=) agrees with decide(model=)",
+      [router.decide(s, schema=SCHEMA, model="multilingual") for s in STATES], outs)
+
 # a string is a sequence of states only accidentally: refuse it like route_batch does
 check_raises("batch/rejects string states", TypeError,
              lambda: decide_batch(FakeBatchRunner({}), "abc", schema=SCHEMA))

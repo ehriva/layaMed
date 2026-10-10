@@ -1,0 +1,3104 @@
+{
+  "events": [
+    "on_predict_start",
+    "on_predict_end",
+    "on_route",
+    "on_load",
+    "on_evict",
+    "on_error"
+  ],
+  "composition": [
+    {
+      "case": "nothing-installed",
+      "defaults": [],
+      "installed": [],
+      "hooks": [],
+      "on_predict_start": [],
+      "on_predict_end": [],
+      "skip_defaults": false,
+      "order": []
+    },
+    {
+      "case": "defaults-only",
+      "defaults": [
+        "d1",
+        "d2"
+      ],
+      "installed": [],
+      "hooks": [],
+      "on_predict_start": [],
+      "on_predict_end": [],
+      "skip_defaults": false,
+      "order": [
+        "d1",
+        "d2"
+      ]
+    },
+    {
+      "case": "installed-only",
+      "defaults": [],
+      "installed": [
+        "i1",
+        "i2"
+      ],
+      "hooks": [],
+      "on_predict_start": [],
+      "on_predict_end": [],
+      "skip_defaults": false,
+      "order": [
+        "i1",
+        "i2"
+      ]
+    },
+    {
+      "case": "per-call-only",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        "p1",
+        "p2"
+      ],
+      "on_predict_start": [],
+      "on_predict_end": [],
+      "skip_defaults": false,
+      "order": [
+        "p1",
+        "p2"
+      ]
+    },
+    {
+      "case": "defaults-then-installed-then-per-call",
+      "defaults": [
+        "d1"
+      ],
+      "installed": [
+        "i1"
+      ],
+      "hooks": [
+        "p1"
+      ],
+      "on_predict_start": [],
+      "on_predict_end": [],
+      "skip_defaults": false,
+      "order": [
+        "d1",
+        "i1",
+        "p1"
+      ]
+    },
+    {
+      "case": "callables-come-after-hook-objects",
+      "defaults": [
+        "d1"
+      ],
+      "installed": [
+        "i1"
+      ],
+      "hooks": [
+        "p1"
+      ],
+      "on_predict_start": [
+        "s1"
+      ],
+      "on_predict_end": [
+        "e1"
+      ],
+      "skip_defaults": false,
+      "order": [
+        "d1",
+        "i1",
+        "p1",
+        "start:s1",
+        "end:e1"
+      ]
+    },
+    {
+      "case": "several-start-callables-keep-their-order",
+      "defaults": [],
+      "installed": [],
+      "hooks": [],
+      "on_predict_start": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "on_predict_end": [],
+      "skip_defaults": false,
+      "order": [
+        "start:s1",
+        "start:s2",
+        "start:s3"
+      ]
+    },
+    {
+      "case": "start-callables-before-end-callables",
+      "defaults": [],
+      "installed": [],
+      "hooks": [],
+      "on_predict_start": [
+        "s1"
+      ],
+      "on_predict_end": [
+        "e1"
+      ],
+      "skip_defaults": false,
+      "order": [
+        "start:s1",
+        "end:e1"
+      ]
+    },
+    {
+      "case": "skip-defaults-drops-only-the-defaults",
+      "defaults": [
+        "d1",
+        "d2"
+      ],
+      "installed": [
+        "i1"
+      ],
+      "hooks": [
+        "p1"
+      ],
+      "on_predict_start": [],
+      "on_predict_end": [],
+      "skip_defaults": true,
+      "order": [
+        "i1",
+        "p1"
+      ]
+    },
+    {
+      "case": "skip-defaults-with-nothing-else",
+      "defaults": [
+        "d1"
+      ],
+      "installed": [],
+      "hooks": [],
+      "on_predict_start": [],
+      "on_predict_end": [],
+      "skip_defaults": true,
+      "order": []
+    }
+  ],
+  "default_hooks_api": {
+    "after_set": [
+      "probe"
+    ],
+    "mutating_the_returned_list_changes_nothing": [
+      "probe"
+    ],
+    "after_add": [
+      "probe",
+      "added"
+    ],
+    "after_clear": []
+  },
+  "normalise_refusals": [
+    {
+      "input": "a class rather than an instance",
+      "error": "hooks entries must be instances, not classes; got _NotAHook. Instantiate it first."
+    },
+    {
+      "input": "an object implementing no event",
+      "error": "hooks entries must implement at least one of on_predict_start, on_predict_end, on_route, on_load, on_evict, on_error; got _NotAHook. Pass a plain callable as on_predict_start=/on_predict_end= instead."
+    },
+    {
+      "input": "an event attribute that is not callable",
+      "error": "hooks entry _NotCallable.on_predict_start must be callable, got str"
+    },
+    {
+      "input": "a plain object",
+      "error": "hooks entries must implement at least one of on_predict_start, on_predict_end, on_route, on_load, on_evict, on_error; got object. Pass a plain callable as on_predict_start=/on_predict_end= instead."
+    },
+    {
+      "input": "a non-callable on_predict_start",
+      "error": "on_predict_start must be callable, got int"
+    },
+    {
+      "input": "a non-callable on_predict_end",
+      "error": "on_predict_end must be callable, got str"
+    }
+  ],
+  "as_sequence": [
+    {
+      "input": "none",
+      "length": 0
+    },
+    {
+      "input": "one",
+      "length": 1
+    },
+    {
+      "input": "list-of-two",
+      "length": 2
+    },
+    {
+      "input": "tuple-of-three",
+      "length": 3
+    },
+    {
+      "input": "empty-list",
+      "length": 0
+    }
+  ],
+  "dispatch": [
+    {
+      "case": "every-hook-in-order",
+      "event": "on_predict_start",
+      "raise_errors": true,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "c",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [
+        "a.on_predict_start",
+        "b.on_predict_start",
+        "c.on_predict_start"
+      ],
+      "raised": null,
+      "warnings": [],
+      "results": null
+    },
+    {
+      "case": "a-hook-that-does-not-implement-the-event-is-skipped",
+      "event": "on_predict_start",
+      "raise_errors": true,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_predict_end"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "c",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [
+        "a.on_predict_start",
+        "c.on_predict_start"
+      ],
+      "raised": null,
+      "warnings": [],
+      "results": null
+    },
+    {
+      "case": "no-hook-implements-the-event",
+      "event": "on_route",
+      "raise_errors": true,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_end"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [],
+      "raised": null,
+      "warnings": [],
+      "results": null
+    },
+    {
+      "case": "raising-stops-the-chain",
+      "event": "on_predict_start",
+      "raise_errors": true,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": "raise"
+        },
+        {
+          "name": "c",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [
+        "a.on_predict_start",
+        "b.on_predict_start"
+      ],
+      "raised": {
+        "type": "ValueError",
+        "message": "boom from b"
+      },
+      "warnings": [],
+      "results": null
+    },
+    {
+      "case": "raise-errors-false-warns-and-continues",
+      "event": "on_predict_start",
+      "raise_errors": false,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": "raise"
+        },
+        {
+          "name": "c",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [
+        "a.on_predict_start",
+        "b.on_predict_start",
+        "c.on_predict_start"
+      ],
+      "raised": null,
+      "warnings": [
+        "laya: hook StubHook.on_predict_start failed: boom from b"
+      ],
+      "results": null
+    },
+    {
+      "case": "raise-errors-false-with-every-hook-failing",
+      "event": "on_predict_start",
+      "raise_errors": false,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": "raise"
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": "raise"
+        }
+      ],
+      "calls": [
+        "a.on_predict_start",
+        "b.on_predict_start"
+      ],
+      "raised": null,
+      "warnings": [
+        "laya: hook StubHook.on_predict_start failed: boom from a",
+        "laya: hook StubHook.on_predict_start failed: boom from b"
+      ],
+      "results": null
+    },
+    {
+      "case": "skip-does-not-stop-the-chain",
+      "event": "on_predict_start",
+      "raise_errors": true,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": "skip:1"
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_predict_start"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [
+        "a.on_predict_start",
+        "b.on_predict_start"
+      ],
+      "raised": null,
+      "warnings": [],
+      "results": 1
+    },
+    {
+      "case": "the-other-four-events-dispatch-the-same-way",
+      "event": "on_route",
+      "raise_errors": true,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_route",
+            "on_load",
+            "on_evict",
+            "on_error"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_route"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [
+        "a.on_route",
+        "b.on_route"
+      ],
+      "raised": null,
+      "warnings": [],
+      "results": null
+    },
+    {
+      "case": "on-error-dispatches-over-the-same-chain",
+      "event": "on_error",
+      "raise_errors": false,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_error"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_error"
+          ],
+          "behaviour": "raise"
+        }
+      ],
+      "calls": [
+        "a.on_error",
+        "b.on_error"
+      ],
+      "raised": null,
+      "warnings": [
+        "laya: hook StubHook.on_error failed: boom from b"
+      ],
+      "results": null
+    },
+    {
+      "case": "on-predict-end-dispatches-over-the-same-chain",
+      "event": "on_predict_end",
+      "raise_errors": true,
+      "chain": [
+        {
+          "name": "a",
+          "events": [
+            "on_predict_end"
+          ],
+          "behaviour": null
+        },
+        {
+          "name": "b",
+          "events": [
+            "on_predict_end"
+          ],
+          "behaviour": null
+        }
+      ],
+      "calls": [
+        "a.on_predict_end",
+        "b.on_predict_end"
+      ],
+      "raised": null,
+      "warnings": [],
+      "results": null
+    }
+  ],
+  "skip": [
+    {
+      "case": "one-result-per-state",
+      "states": 3,
+      "results": 3,
+      "accepted": true,
+      "error": null,
+      "assigned": [
+        10,
+        11,
+        12
+      ]
+    },
+    {
+      "case": "one-result-for-the-whole-call",
+      "states": 3,
+      "results": 1,
+      "accepted": true,
+      "error": null,
+      "assigned": [
+        10
+      ]
+    },
+    {
+      "case": "one-state-one-result",
+      "states": 1,
+      "results": 1,
+      "accepted": true,
+      "error": null,
+      "assigned": [
+        10
+      ]
+    },
+    {
+      "case": "two-results-for-one-state",
+      "states": 1,
+      "results": 2,
+      "accepted": false,
+      "error": "ctx.skip() takes one result for the whole call or one per state in ctx.states (1); got 2",
+      "assigned": null
+    },
+    {
+      "case": "too-few-results",
+      "states": 3,
+      "results": 2,
+      "accepted": false,
+      "error": "ctx.skip() takes one result for the whole call or one per state in ctx.states (3); got 2",
+      "assigned": null
+    },
+    {
+      "case": "no-results-at-all",
+      "states": 3,
+      "results": 0,
+      "accepted": false,
+      "error": "ctx.skip() takes one result for the whole call or one per state in ctx.states (3); got 0",
+      "assigned": null
+    },
+    {
+      "case": "too-many-results",
+      "states": 2,
+      "results": 5,
+      "accepted": false,
+      "error": "ctx.skip() takes one result for the whole call or one per state in ctx.states (2); got 5",
+      "assigned": null
+    },
+    {
+      "case": "no-states-no-results",
+      "states": 0,
+      "results": 0,
+      "accepted": true,
+      "error": null,
+      "assigned": []
+    },
+    {
+      "case": "no-states-one-result",
+      "states": 0,
+      "results": 1,
+      "accepted": true,
+      "error": null,
+      "assigned": [
+        10
+      ]
+    },
+    {
+      "case": "no-states-two-results",
+      "states": 0,
+      "results": 2,
+      "accepted": false,
+      "error": "ctx.skip() takes one result for the whole call or one per state in ctx.states (0); got 2",
+      "assigned": null
+    }
+  ],
+  "usage": [
+    {
+      "case": "one-result",
+      "results": [
+        {
+          "input_tokens": 11,
+          "output_tokens": 0
+        }
+      ],
+      "total": {
+        "input_tokens": 11,
+        "output_tokens": 0
+      }
+    },
+    {
+      "case": "several-results-sum",
+      "results": [
+        {
+          "input_tokens": 11,
+          "output_tokens": 1
+        },
+        {
+          "input_tokens": 22,
+          "output_tokens": 2
+        },
+        {
+          "input_tokens": 33,
+          "output_tokens": 3
+        }
+      ],
+      "total": {
+        "input_tokens": 66,
+        "output_tokens": 6
+      }
+    },
+    {
+      "case": "no-results-at-all",
+      "results": [],
+      "total": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "case": "zeroes",
+      "results": [
+        {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      ],
+      "total": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "case": "a-missing-usage-block",
+      "results": [
+        {}
+      ],
+      "total": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "case": "a-null-usage-block",
+      "results": [
+        {
+          "__usage_is_none__": true
+        }
+      ],
+      "total": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "case": "a-missing-key",
+      "results": [
+        {
+          "input_tokens": 7
+        }
+      ],
+      "total": {
+        "input_tokens": 7,
+        "output_tokens": 0
+      }
+    },
+    {
+      "case": "a-null-value",
+      "results": [
+        {
+          "input_tokens": 7,
+          "output_tokens": null
+        }
+      ],
+      "total": {
+        "input_tokens": 7,
+        "output_tokens": 0
+      }
+    },
+    {
+      "case": "a-float-is-truncated",
+      "results": [
+        {
+          "input_tokens": 7.9,
+          "output_tokens": 0
+        }
+      ],
+      "total": {
+        "input_tokens": 7,
+        "output_tokens": 0
+      }
+    }
+  ],
+  "timeouts": [
+    {
+      "input": "None",
+      "accepted": true,
+      "value": null,
+      "seconds": null,
+      "error": null
+    },
+    {
+      "input": "1",
+      "accepted": true,
+      "value": 1.0,
+      "seconds": "1",
+      "error": null
+    },
+    {
+      "input": "2",
+      "accepted": true,
+      "value": 2.0,
+      "seconds": "2",
+      "error": null
+    },
+    {
+      "input": "10",
+      "accepted": true,
+      "value": 10.0,
+      "seconds": "10",
+      "error": null
+    },
+    {
+      "input": "60",
+      "accepted": true,
+      "value": 60.0,
+      "seconds": "60",
+      "error": null
+    },
+    {
+      "input": "1.5",
+      "accepted": true,
+      "value": 1.5,
+      "seconds": "1.5",
+      "error": null
+    },
+    {
+      "input": "0.05",
+      "accepted": true,
+      "value": 0.05,
+      "seconds": "0.05",
+      "error": null
+    },
+    {
+      "input": "1e-07",
+      "accepted": true,
+      "value": 1e-07,
+      "seconds": "1e-07",
+      "error": null
+    },
+    {
+      "input": "'0.5'",
+      "accepted": true,
+      "value": 0.5,
+      "seconds": "0.5",
+      "error": null
+    },
+    {
+      "input": "0",
+      "accepted": false,
+      "value": null,
+      "seconds": null,
+      "error": "hooks_timeout must be a positive finite number or None; got 0"
+    },
+    {
+      "input": "0.0",
+      "accepted": false,
+      "value": null,
+      "seconds": null,
+      "error": "hooks_timeout must be a positive finite number or None; got 0.0"
+    },
+    {
+      "input": "-1",
+      "accepted": false,
+      "value": null,
+      "seconds": null,
+      "error": "hooks_timeout must be a positive finite number or None; got -1"
+    },
+    {
+      "input": "-0.5",
+      "accepted": false,
+      "value": null,
+      "seconds": null,
+      "error": "hooks_timeout must be a positive finite number or None; got -0.5"
+    },
+    {
+      "input": "nan",
+      "accepted": false,
+      "value": null,
+      "seconds": null,
+      "error": "hooks_timeout must be a positive finite number or None; got nan"
+    },
+    {
+      "input": "inf",
+      "accepted": false,
+      "value": null,
+      "seconds": null,
+      "error": "hooks_timeout must be a positive finite number or None; got inf"
+    },
+    {
+      "input": "-inf",
+      "accepted": false,
+      "value": null,
+      "seconds": null,
+      "error": "hooks_timeout must be a positive finite number or None; got -inf"
+    }
+  ],
+  "registry": [
+    {
+      "case": "add-keeps-insertion-order",
+      "script": [
+        "add:a",
+        "add:b",
+        "add:c"
+      ],
+      "steps": [
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a"
+          ]
+        },
+        {
+          "op": "add:b",
+          "returned": null,
+          "hooks": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "op": "add:c",
+          "returned": null,
+          "hooks": [
+            "a",
+            "b",
+            "c"
+          ]
+        }
+      ],
+      "final": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "case": "add-a-sequence-at-once",
+      "script": [
+        "add:[a,b]",
+        "add:c"
+      ],
+      "steps": [
+        {
+          "op": "add:[a,b]",
+          "returned": null,
+          "hooks": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "op": "add:c",
+          "returned": null,
+          "hooks": [
+            "a",
+            "b",
+            "c"
+          ]
+        }
+      ],
+      "final": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "case": "the-same-hook-twice",
+      "script": [
+        "add:a",
+        "add:a"
+      ],
+      "steps": [
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a"
+          ]
+        },
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a",
+            "a"
+          ]
+        }
+      ],
+      "final": [
+        "a",
+        "a"
+      ]
+    },
+    {
+      "case": "remove-by-identity",
+      "script": [
+        "add:a",
+        "add:b",
+        "remove:a"
+      ],
+      "steps": [
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a"
+          ]
+        },
+        {
+          "op": "add:b",
+          "returned": null,
+          "hooks": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "op": "remove:a",
+          "returned": true,
+          "hooks": [
+            "b"
+          ]
+        }
+      ],
+      "final": [
+        "b"
+      ]
+    },
+    {
+      "case": "remove-takes-every-copy",
+      "script": [
+        "add:a",
+        "add:a",
+        "add:b",
+        "remove:a"
+      ],
+      "steps": [
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a"
+          ]
+        },
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a",
+            "a"
+          ]
+        },
+        {
+          "op": "add:b",
+          "returned": null,
+          "hooks": [
+            "a",
+            "a",
+            "b"
+          ]
+        },
+        {
+          "op": "remove:a",
+          "returned": true,
+          "hooks": [
+            "b"
+          ]
+        }
+      ],
+      "final": [
+        "b"
+      ]
+    },
+    {
+      "case": "remove-something-never-installed",
+      "script": [
+        "add:a",
+        "remove:b"
+      ],
+      "steps": [
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a"
+          ]
+        },
+        {
+          "op": "remove:b",
+          "returned": false,
+          "hooks": [
+            "a"
+          ]
+        }
+      ],
+      "final": [
+        "a"
+      ]
+    },
+    {
+      "case": "a-block-installs-and-restores",
+      "script": [
+        "enter:1:[t]",
+        "exit:1"
+      ],
+      "steps": [
+        {
+          "op": "enter:1:[t]",
+          "returned": null,
+          "hooks": [
+            "t"
+          ]
+        },
+        {
+          "op": "exit:1",
+          "returned": null,
+          "hooks": []
+        }
+      ],
+      "final": []
+    },
+    {
+      "case": "a-block-over-an-already-installed-hook",
+      "script": [
+        "add:a",
+        "enter:1:[a]",
+        "exit:1"
+      ],
+      "steps": [
+        {
+          "op": "add:a",
+          "returned": null,
+          "hooks": [
+            "a"
+          ]
+        },
+        {
+          "op": "enter:1:[a]",
+          "returned": null,
+          "hooks": [
+            "a",
+            "a"
+          ]
+        },
+        {
+          "op": "exit:1",
+          "returned": null,
+          "hooks": [
+            "a"
+          ]
+        }
+      ],
+      "final": [
+        "a"
+      ]
+    },
+    {
+      "case": "overlapping-blocks",
+      "script": [
+        "enter:1:[x]",
+        "enter:2:[y]",
+        "exit:2",
+        "exit:1"
+      ],
+      "steps": [
+        {
+          "op": "enter:1:[x]",
+          "returned": null,
+          "hooks": [
+            "x"
+          ]
+        },
+        {
+          "op": "enter:2:[y]",
+          "returned": null,
+          "hooks": [
+            "x",
+            "y"
+          ]
+        },
+        {
+          "op": "exit:2",
+          "returned": null,
+          "hooks": [
+            "x"
+          ]
+        },
+        {
+          "op": "exit:1",
+          "returned": null,
+          "hooks": []
+        }
+      ],
+      "final": []
+    },
+    {
+      "case": "overlapping-blocks-exited-outermost-first",
+      "script": [
+        "enter:1:[x]",
+        "enter:2:[y]",
+        "exit:1",
+        "exit:2"
+      ],
+      "steps": [
+        {
+          "op": "enter:1:[x]",
+          "returned": null,
+          "hooks": [
+            "x"
+          ]
+        },
+        {
+          "op": "enter:2:[y]",
+          "returned": null,
+          "hooks": [
+            "x",
+            "y"
+          ]
+        },
+        {
+          "op": "exit:1",
+          "returned": null,
+          "hooks": [
+            "y"
+          ]
+        },
+        {
+          "op": "exit:2",
+          "returned": null,
+          "hooks": []
+        }
+      ],
+      "final": []
+    },
+    {
+      "case": "add-inside-a-block-survives-the-exit",
+      "script": [
+        "enter:1:[t]",
+        "add:d",
+        "exit:1"
+      ],
+      "steps": [
+        {
+          "op": "enter:1:[t]",
+          "returned": null,
+          "hooks": [
+            "t"
+          ]
+        },
+        {
+          "op": "add:d",
+          "returned": null,
+          "hooks": [
+            "t",
+            "d"
+          ]
+        },
+        {
+          "op": "exit:1",
+          "returned": null,
+          "hooks": [
+            "d"
+          ]
+        }
+      ],
+      "final": [
+        "d"
+      ]
+    },
+    {
+      "case": "a-block-with-several-arguments",
+      "script": [
+        "enter:1:[x],[y,z]",
+        "exit:1"
+      ],
+      "steps": [
+        {
+          "op": "enter:1:[x],[y,z]",
+          "returned": null,
+          "hooks": [
+            "x",
+            "y",
+            "z"
+          ]
+        },
+        {
+          "op": "exit:1",
+          "returned": null,
+          "hooks": []
+        }
+      ],
+      "final": []
+    },
+    {
+      "case": "a-block-with-nothing-in-it",
+      "script": [
+        "enter:1:",
+        "exit:1"
+      ],
+      "steps": [
+        {
+          "op": "enter:1:",
+          "returned": null,
+          "hooks": []
+        },
+        {
+          "op": "exit:1",
+          "returned": null,
+          "hooks": []
+        }
+      ],
+      "final": []
+    }
+  ],
+  "predict_batch": [
+    {
+      "case": "no-hooks",
+      "defaults": [],
+      "installed": [],
+      "hooks": [],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [],
+      "result": [
+        110
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": null
+    },
+    {
+      "case": "a-start-hook-sees-the-call",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {}
+        }
+      ],
+      "states": [
+        "s0",
+        "s1"
+      ],
+      "questions": [
+        "urgent",
+        "intent"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0",
+          "s1"
+        ],
+        "questions": [
+          "urgent",
+          "intent"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "urgent",
+            "intent"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "urgent",
+            "intent"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110,
+            111
+          ],
+          "usage": {
+            "input_tokens": 221,
+            "output_tokens": 201
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110,
+        111
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "default-installed-and-per-call-all-fire",
+      "defaults": [
+        {
+          "name": "d",
+          "behaviour": {}
+        }
+      ],
+      "installed": [
+        {
+          "name": "i",
+          "behaviour": {}
+        }
+      ],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {}
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "d.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "i.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "d.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        },
+        {
+          "call": "i.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-start-hook-rewrites-the-states",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "states:x,y,z"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "x",
+          "y",
+          "z"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "x",
+            "y",
+            "z"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110,
+            111,
+            112
+          ],
+          "usage": {
+            "input_tokens": 333,
+            "output_tokens": 303
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110,
+        111,
+        112
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-start-hook-rewrites-the-questions",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "questions:urgent,intent"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q",
+        "r"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "urgent",
+          "intent"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q",
+            "r"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "urgent",
+            "intent"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-start-hook-sets-the-token-budget",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "max_len:128"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {
+          "max_len": 128
+        }
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": 128,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-start-hook-sets-the-head-budget",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "head_max_len:64"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {
+          "head_max_len": 64
+        }
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": 64,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "skip-answers-the-call",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "skip:1"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": null,
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            10
+          ],
+          "usage": {
+            "input_tokens": 10,
+            "output_tokens": 0
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        10
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "skip-one-per-state",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "skip:2"
+          }
+        }
+      ],
+      "states": [
+        "s0",
+        "s1"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": null,
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            10,
+            11
+          ],
+          "usage": {
+            "input_tokens": 21,
+            "output_tokens": 1
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        10,
+        11
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "skip-one-for-the-whole-call",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "skip:1"
+          }
+        }
+      ],
+      "states": [
+        "s0",
+        "s1"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": null,
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            10
+          ],
+          "usage": {
+            "input_tokens": 10,
+            "output_tokens": 0
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        10
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "skip-with-a-count-that-fits-nothing",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "skip:3"
+          }
+        }
+      ],
+      "states": [
+        "s0",
+        "s1"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": null,
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_error",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "ctx.skip() takes one result for the whole call or one per state in ctx.states (2); got 3",
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "ctx.skip() takes one result for the whole call or one per state in ctx.states (2); got 3",
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": null,
+      "raised": {
+        "type": "ValueError",
+        "message": "ctx.skip() takes one result for the whole call or one per state in ctx.states (2); got 3",
+        "context": null
+      },
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "the-last-skip-wins",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "skip:1"
+          }
+        },
+        {
+          "name": "p2",
+          "behaviour": {
+            "on_predict_start": "skip:2"
+          }
+        }
+      ],
+      "states": [
+        "s0",
+        "s1"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": null,
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p2.on_predict_start",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            10
+          ],
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            10,
+            11
+          ],
+          "usage": {
+            "input_tokens": 21,
+            "output_tokens": 1
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        },
+        {
+          "call": "p2.on_predict_end",
+          "states": [
+            "s0",
+            "s1"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            10,
+            11
+          ],
+          "usage": {
+            "input_tokens": 21,
+            "output_tokens": 1
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        10,
+        11
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "an-end-hook-rewrites-the-results",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_end": "results:1"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        510
+      ],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-raising-start-hook-fails-the-call",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "raise"
+          }
+        },
+        {
+          "name": "p2",
+          "behaviour": {}
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": null,
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_error",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "boom from p",
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p2.on_error",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "boom from p",
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "boom from p",
+          "elapsed_ms_set": true
+        },
+        {
+          "call": "p2.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "boom from p",
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": null,
+      "raised": {
+        "type": "ValueError",
+        "message": "boom from p",
+        "context": null
+      },
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-raising-start-hook-is-only-a-warning",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_start": "raise"
+          }
+        },
+        {
+          "name": "p2",
+          "behaviour": {}
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": false,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p2.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        },
+        {
+          "call": "p2.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110
+      ],
+      "raised": null,
+      "warnings": [
+        "laya: hook StubHook.on_predict_start failed: boom from p"
+      ],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-raising-end-hook-fails-the-call",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_end": "raise"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": null,
+      "raised": {
+        "type": "ValueError",
+        "message": "boom from p",
+        "context": null
+      },
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "a-raising-end-hook-is-only-a-warning",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_end": "raise"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": false,
+      "inference_raises": false,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [
+            110
+          ],
+          "usage": {
+            "input_tokens": 110,
+            "output_tokens": 100
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [
+        110
+      ],
+      "raised": null,
+      "warnings": [
+        "laya: hook StubHook.on_predict_end failed: boom from p"
+      ],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "inference-fails",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {}
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": true,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_error",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "the graph refused this batch",
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "the graph refused this batch",
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": null,
+      "raised": {
+        "type": "RuntimeError",
+        "message": "the graph refused this batch",
+        "context": null
+      },
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "inference-fails-with-a-raising-error-hook",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_error": "raise"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": true,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_error",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "the graph refused this batch",
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "the graph refused this batch",
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": null,
+      "raised": {
+        "type": "RuntimeError",
+        "message": "the graph refused this batch",
+        "context": "ValueError"
+      },
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "inference-fails-with-a-raising-end-hook",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {
+            "on_predict_end": "raise"
+          }
+        }
+      ],
+      "states": [
+        "s0"
+      ],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": true,
+      "inference": {
+        "states": [
+          "s0"
+        ],
+        "questions": [
+          "q"
+        ],
+        "overrides": {}
+      },
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_error",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "the graph refused this batch",
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [
+            "s0"
+          ],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": "the graph refused this batch",
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": null,
+      "raised": {
+        "type": "RuntimeError",
+        "message": "the graph refused this batch",
+        "context": "ValueError"
+      },
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    },
+    {
+      "case": "no-states",
+      "defaults": [],
+      "installed": [],
+      "hooks": [
+        {
+          "name": "p",
+          "behaviour": {}
+        }
+      ],
+      "states": [],
+      "questions": [
+        "q"
+      ],
+      "hooks_raise": true,
+      "inference_raises": false,
+      "inference": null,
+      "calls": [
+        {
+          "call": "p.on_predict_start",
+          "states": [],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": null,
+          "usage": null,
+          "error": null,
+          "elapsed_ms_set": false
+        },
+        {
+          "call": "p.on_predict_end",
+          "states": [],
+          "questions": [
+            "q"
+          ],
+          "model": "stub-checkpoint",
+          "max_len": null,
+          "head_max_len": null,
+          "results": [],
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          },
+          "error": null,
+          "elapsed_ms_set": true
+        }
+      ],
+      "result": [],
+      "raised": null,
+      "warnings": [],
+      "one_run_id_per_call": true,
+      "run_id_hex_length": 32
+    }
+  ]
+}

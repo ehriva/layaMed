@@ -83,6 +83,15 @@ subprojects {
             // answer actually exists.
             systemProperty("laya.test.expectedJavaVersion", want.toString())
         }
+        // Process-wide default hooks are global mutable state with no automatic restore, so a
+        // test that sets one and does not clear it fails whichever test runs next. Two classes
+        // clear it in their own teardown and that was the whole protection -- discipline, not a
+        // mechanism, and correct only until the third class forgets. Auto-detection registers
+        // `DefaultHooksIsolation` (see that class) for classes that have not opted in, which is
+        // precisely the class that would forget. It is global to this module's tests, so
+        // `src/test/resources/META-INF/services/org.junit.jupiter.api.extension.Extension` is
+        // the one file that says what it turns on, and it holds exactly one entry.
+        systemProperty("junit.jupiter.extensions.autodetection.enabled", "true")
         // Passed through rather than inherited silently, so a lane that forgets them is a lane
         // whose parity tests abort loudly instead of one that quietly tests less.
         //
@@ -93,8 +102,25 @@ subprojects {
         // are supposed to abort by assumption. Treating blank as unset is what makes "this cell
         // has no graph" and "this machine has no graph" the same case, which is what the tests
         // are written against.
-        listOf("LAYA_CHECKPOINTS", "LAYA_ONNX_GRAPH", "LAYA_PREDICT_GOLDEN").forEach { name ->
-            System.getenv(name)?.takeIf { it.isNotBlank() }?.let { environment(name, it) }
+        //
+        // EVERY variable the tests read belongs in this list. `LAYA_TYPED_ONNX_GRAPH` was left
+        // out when it was added and worked anyway, because the Test JVM inherits the ambient
+        // environment -- which is exactly the quiet inheritance this block exists to replace,
+        // and it is the one of the four that two of the three parity cells set to `''`.
+        //
+        // Declared as an INPUT as well as set. `environment(...)` alone is not a task input, so
+        // toggling one of these left `test` UP-TO-DATE and handed back the PREVIOUS lane's
+        // results -- a with-checkpoints run reporting the model-free run's counts, which is a
+        // measurement of the wrong thing that looks exactly like a measurement of the right one.
+        // CI never saw it (fresh runners), and every local count taken without `cleanTest` could
+        // silently have been the other lane's. The input makes the lane part of the task's
+        // identity, so the toggle re-runs the suite on its own. Both halves of this block were
+        // found by separate reviews: the missing variable, and the missing input declaration.
+        listOf("LAYA_CHECKPOINTS", "LAYA_ONNX_GRAPH", "LAYA_TYPED_ONNX_GRAPH",
+                "LAYA_PREDICT_GOLDEN").forEach { name ->
+            val value = System.getenv(name)?.takeIf { it.isNotBlank() }
+            inputs.property("env.$name", value).optional(true)
+            value?.let { environment(name, it) }
         }
     }
 

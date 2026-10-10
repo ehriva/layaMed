@@ -63,6 +63,33 @@ public final class LanguageDetection {
     /** The Swedish phrase openers {@code latinProfile} accepts a short login request on. */
     private static final Set<String> SWEDISH_PHRASE_OPENERS = Set.of("kan", "jag", "vi");
 
+    /**
+     * How many letters a matched stopword needs before an all-caps line is believed.
+     *
+     * <p>{@code LOS}, {@code LAS} and {@code EL} are three, three and two letters, so any bar of
+     * four or more rejects them. The reference's sweep over 500,000 acronym runs and 50,000
+     * upper-cased US address lines reports that a bar of three still reads 3,751 acronym runs and
+     * 109 address lines as prose, while four closes both columns outright and five buys nothing
+     * measurable at the cost of 1,860 more real lines. Non-English diacritics are accepted in
+     * place of a long stopword, because the module already treats them as non-English evidence
+     * ({@link LanguageTables#NON_EN_DIACRITIC_RATE}) and neither an acronym nor a US place name
+     * carries any.
+     */
+    private static final int SHOUTED_MIN_STOPWORD = 4;
+
+    /**
+     * How many letters make a token a word rather than an acronym.
+     *
+     * <p>Used twice -- on an all-caps line, by {@link #shoutedEvidence}, and in
+     * {@link #analyseText} to decide whether an all-caps run inside mixed-case text is an acronym
+     * worth blanking. The reference states plainly that the sweep above does not justify this bar
+     * on the committed corpora -- at a stopword bar of four both false-positive columns are
+     * already zero -- and keeps it because the larger uncommitted corpora it was first chosen
+     * against did report acronym false positives surviving a stopword bar of four. It is costly:
+     * 2,198 of 10,960 shouted-prose lines are given up, 82.62% of them six tokens or longer.
+     */
+    private static final int SHOUTED_MIN_WORD = 5;
+
     private LanguageDetection() {
     }
 
@@ -284,6 +311,21 @@ public final class LanguageDetection {
     }
 
     /**
+     * Whether the non-Latin letters of a Latin-plurality text are enough to carry the state.
+     *
+     * <p>Named here rather than left inline, because the caps bars of {@link #analyseText} ask the
+     * same question for the opposite reason: a state this far from Latin is kept out of them.
+     *
+     * @param nonLatin the non-Latin share of the alphabetic characters
+     * @param nonLatinLetters how many letters that share works out to
+     */
+    static boolean nonLatinCarries(double nonLatin, int nonLatinLetters) {
+        return nonLatin >= LanguageTables.NON_LATIN_FRACTION
+                || (nonLatin >= LanguageTables.NON_LATIN_MIN_FRACTION
+                    && nonLatinLetters >= LanguageTables.NON_LATIN_MIN_LETTERS);
+    }
+
+    /**
      * Non-Latin runs that read as words rather than as annotation inside English prose.
      *
      * <p>English prose carries three kinds of non-Latin letter that are not a request written in
@@ -488,8 +530,13 @@ public final class LanguageDetection {
      * <p>An all-caps token inside mixed-case text is an acronym or a code: {@code MON}, {@code LA},
      * {@code EST}, {@code COM}, {@code DES} are hockey teams, states, time zones and radio bands,
      * not French or Portuguese. A segment written entirely in capitals keeps its words -- a
-     * customer shouting in Portuguese is still Portuguese -- which is why the caller only applies
-     * this when the segment holds a lowercase letter.
+     * customer shouting in Portuguese is still Portuguese -- which is why the callers apply this
+     * only to text that is not {@link #shouted}, and hold the shouted case to
+     * {@link #shoutedEvidence} instead.
+     *
+     * <p>This blanks <em>every</em> all-caps run, which is what the reference records as a helper
+     * and what the fixture pins. {@link #analyseText} needs the narrower rule -- only runs short
+     * enough to be acronyms -- and filters before calling, rather than this taking a flag.
      */
     static String blankUpperRuns(String text) {
         StringBuilder out = new StringBuilder(text.length());
@@ -519,6 +566,42 @@ public final class LanguageDetection {
             }
         }
         return out.toString();
+    }
+
+    /**
+     * The all-caps runs {@link #blankUpperRuns} would blank, in order.
+     *
+     * <p>The reference reads them off the same {@code finditer} it substitutes with, so the two
+     * cannot disagree about what a run is. Java has no equivalent of handing one scan to both a
+     * substitution and a match list without either a regex -- whose {@code \\w} is a different
+     * set from Python's -- or a callback, so the scan is written twice and the agreement is
+     * stated here instead: both build maximal runs of {@link UnicodeTables#isWordChar} and keep
+     * the ones of at least two code points that {@link UnicodeTables#isUpperString} accepts.
+     */
+    private static List<String> upperLetterRuns(String text) {
+        List<String> runs = new ArrayList<>();
+        int i = 0;
+        int length = text.length();
+        while (i < length) {
+            int cp = text.codePointAt(i);
+            if (!UnicodeTables.isWordChar(cp)) {
+                i += Character.charCount(cp);
+                continue;
+            }
+            int start = i;
+            while (i < length) {
+                int inner = text.codePointAt(i);
+                if (!UnicodeTables.isWordChar(inner)) {
+                    break;
+                }
+                i += Character.charCount(inner);
+            }
+            String run = text.substring(start, i);
+            if (codePointLength(run) >= 2 && UnicodeTables.isUpperString(run)) {
+                runs.add(run);
+            }
+        }
+        return runs;
     }
 
     // ------------------------------------------------------------------ the Latin guess
@@ -674,11 +757,90 @@ public final class LanguageDetection {
     }
 
     /**
+     * True for a <em>cased</em> segment written entirely in capitals.
+     *
+     * <p>The uppercase half is not redundant. A caseless script -- Devanagari, Bengali, CJK -- has
+     * no lowercase either, so testing only for the absence of lowercase would call every such
+     * segment shouted and hold it to a bar it cannot clear: the word scan splits at every
+     * combining mark, so the tokens are short by construction. Nothing is routed on that path
+     * today (the Bengali stopwords are romanised, so a Bengali-script line is named by script and
+     * never reaches here), but the bar belongs to cased text and saying so here keeps it that way.
+     *
+     * <p>That argument covers <em>pure</em> caseless text, which never reaches a caps bar at all.
+     * Text that merely contains some has no lowercase either and does reach one;
+     * {@link #analyseText} keeps both bars off it, because a bar that works by discarding Latin
+     * evidence has nothing to say about the half of the state it cannot read.
+     *
+     * <p>Both halves go through the recorded case tables rather than {@code Character.isUpperCase}
+     * and {@code Character.isLowerCase}: Python's {@code isupper} and {@code islower} are the
+     * general categories plus the {@code Other_Uppercase} and {@code Other_Lowercase} properties,
+     * which the JDK's two methods do not agree with on every code point.
+     */
+    static boolean shouted(String text) {
+        boolean sawUpper = false;
+        int i = 0;
+        while (i < text.length()) {
+            int codePoint = text.codePointAt(i);
+            i += Character.charCount(codePoint);
+            if (UnicodeTables.isLower(codePoint)) {
+                return false;
+            }
+            if (UnicodeTables.isUpper(codePoint)) {
+                sawUpper = true;
+            }
+        }
+        return sawUpper;
+    }
+
+    /**
+     * Whether an all-caps line's evidence for {@code language} is more than acronym-shaped tokens.
+     *
+     * <p>A word of {@link #SHOUTED_MIN_WORD} letters is required in every case, and then either
+     * non-English diacritics or a matched stopword of {@link #SHOUTED_MIN_STOPWORD} letters.
+     * Shouting is not a foreign language: {@code MON}, {@code LA}, {@code EST}, {@code COM} and
+     * {@code DES} are hockey teams, states, time zones and radio bands that collide with French
+     * stopwords, and nothing but their length tells them apart from words.
+     *
+     * @param tokens the word-scan tokens of the line
+     * @param language the language the Latin guess named
+     * @param diacriticRate the rate measured on the line
+     */
+    static boolean shoutedEvidence(List<String> tokens, String language, double diacriticRate) {
+        boolean hasWord = false;
+        for (String token : tokens) {
+            if (codePointLength(token) >= SHOUTED_MIN_WORD) {
+                hasWord = true;
+                break;
+            }
+        }
+        if (!hasWord) {
+            return false;
+        }
+        if (diacriticRate >= LanguageTables.NON_EN_DIACRITIC_RATE) {
+            return true;
+        }
+        Set<String> stop = LanguageTables.STOP_WORDS.get(language);
+        if (stop == null) {
+            // The reference's `_STOP.get(lang, set())` on a language it holds no list for: the
+            // intersection is empty, so no stopword can clear the bar.
+            return false;
+        }
+        for (String token : tokens) {
+            String lowered = pythonLower(token);
+            if (codePointLength(lowered) >= SHOUTED_MIN_STOPWORD && stop.contains(lowered)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Language code for one non-code line, or null when it does not name a foreign language.
      *
      * <p>Same evidence bar as the segment scan: four words, a language the Latin guess will name,
      * and two <em>different</em> words of that language. Acronyms and slash compounds are not
-     * words.
+     * words. A segment in all capitals keeps its acronym-shaped tokens -- shouting is not a
+     * foreign language -- so it must also clear {@link #shoutedEvidence}.
      */
     static String namedProseLanguage(String segment) {
         if (UnicodeTables.isBlank(segment) || hasCodeLine(segment)) {
@@ -691,15 +853,20 @@ public final class LanguageDetection {
             }
         }
         String prose = String.join(" ", kept);
-        if (UnicodeTables.hasLower(prose)) {
+        boolean allCaps = shouted(prose);
+        if (!allCaps) {
             prose = blankUpperRuns(prose);
         }
         List<String> tokens = words(prose);
         if (tokens.size() < 4) {
             return null;
         }
-        String language = latinProfile(prose).language();
+        LatinProfile profile = latinProfile(prose);
+        String language = profile.language();
         if (language == null || "en".equals(language)) {
+            return null;
+        }
+        if (allCaps && !shoutedEvidence(tokens, language, profile.diacriticRate())) {
             return null;
         }
         Set<String> stop = LanguageTables.STOP_WORDS.get(language);
@@ -763,9 +930,7 @@ public final class LanguageDetection {
                 : Rounding.round4(1.0 - profile.getOrDefault("latin", 0.0));
         int nonLatinLetters = roundHalfEven(nonLatin * countAlpha(text));
         if ("latin".equals(script) && !nonLatinWords(text).isEmpty()
-                && (nonLatin >= LanguageTables.NON_LATIN_FRACTION
-                    || (nonLatin >= LanguageTables.NON_LATIN_MIN_FRACTION
-                        && nonLatinLetters >= LanguageTables.NON_LATIN_MIN_LETTERS))) {
+                && nonLatinCarries(nonLatin, nonLatinLetters)) {
             // Non-Latin text is not for the English checkpoint even when Latin letters are the
             // plurality: a brand name or order code outvotes the CJK request around it letter for
             // letter, though one CJK character carries far more than a letter.
@@ -778,14 +943,77 @@ public final class LanguageDetection {
             return new Analysis(script, profile, null, false, true, 0.0, nonLatin, null);
         }
         LatinProfile latin = latinProfile(text);
+        String language = latin.language();
+        // The acronym bar belongs here too, not only in the segment scan. The scan runs only once
+        // a state already reads English overall, so a state that is *nothing but* an acronym line
+        // -- or one diluted by fewer English lines than it takes to tip this verdict -- never
+        // reached it and was named foreign outright: "MON DES EST LA" routed multilingual on its
+        // own, and so did the same line under one or two lines of English. Vetoing here leaves
+        // the text undecided, so looksNonEnglish still decides it: a shouted line with
+        // non-English diacritics is kept.
+        //
+        // Neither bar applies when the state is carried by a caseless script. Both of them answer
+        // the verdict by taking evidence *away* from the Latin letters, and looksNonEnglish, which
+        // decides what is left, reads Latin diacritics only -- it cannot see the caseless half.
+        // Nothing else catches the fall, either: the script promotion above needs nonLatinWords,
+        // which drops any run starting with a capital, so a shouted mixed-script line has no
+        // promotable word by construction. "PRIVET MON DES EST LA" written in Cyrillic is 35%
+        // Cyrillic letters and was being sent to the English checkpoint on the strength of
+        // disbelieving "MON DES EST LA". Whatever the Latin part is worth, text this far from
+        // Latin is not English, so there is nothing for either bar to buy here and a wrong
+        // language name costs nothing: the checkpoint is chosen on is_english.
+        if (language != null && !"en".equals(language)
+                && !nonLatinCarries(nonLatin, nonLatinLetters)) {
+            if (shouted(text)) {
+                if (!shoutedEvidence(words(text), language, latin.diacriticRate())) {
+                    language = null;
+                }
+            } else {
+                // Mixed-case text: the segment scan has always held that an acronym is not a
+                // word, but the whole-state verdict never applied that rule, so the acronyms
+                // voted in it. That is what let a short English state be outvoted -- one or two
+                // lines of English above "MON DES EST LA" still read as French overall, and only
+                // at three did English win the margin. Re-take the verdict without the all-caps
+                // runs. looksNonEnglish and the reported diacritic rate stay measured on the
+                // original text, so a foreign word that happens to be shouted cannot be blanked
+                // out of the diacritic safety net.
+                //
+                // Only *acronym-shaped* runs are blanked. Blanking every all-caps run deleted
+                // emphasis capitals, which are ordinary in real prose and are usually on the
+                // words that carry the sentence, so when the shouted words were the ones that
+                // named the language the evidence simply went: "sag mir das HEUTIGE DATUM" and
+                // "quiero cancelar mi PEDIDO POR FAVOR" both lost their verdict and routed
+                // english. It also broke monotonicity -- the fully upper-cased form held the
+                // shouted bar, but adding one lowercase English token moved the text to this
+                // branch, where it had no bar at all. So a run is blanked only while every one of
+                // them is short enough to be an acronym, by shoutedEvidence's own first test: a
+                // run of SHOUTED_MIN_WORD letters is a word, and a word is not blanked out of its
+                // own sentence. Measured over the 20,708 Latin-locale MASSIVE test rows,
+                // emphasis-capitalised two ways: regressions 1,753 -> 293 and 3,835 -> 752.
+                List<String> caps = upperLetterRuns(text);
+                boolean allAcronyms = !caps.isEmpty();
+                for (String run : caps) {
+                    if (codePointLength(run) >= SHOUTED_MIN_WORD) {
+                        allAcronyms = false;
+                        break;
+                    }
+                }
+                if (allAcronyms) {
+                    String blanked = blankUpperRuns(text);
+                    if (!blanked.equals(text)) {
+                        language = latinProfile(blanked).language();
+                    }
+                }
+            }
+        }
         // Undecided is not English. Treating it as English sent every Latin-script language we
         // hold no stopwords for to the checkpoint that cannot read it, silently. When nothing
         // identifies the language, non-English letters or a shared Swedish-Danish marker can
         // still prefer the multilingual checkpoint; text with neither signal still goes to the
         // English one.
-        boolean undecided = latin.language() == null;
-        boolean english = "en".equals(latin.language()) || (undecided && !latin.looksNonEnglish());
-        return new Analysis("latin", profile, latin.language(), english, undecided,
+        boolean undecided = language == null;
+        boolean english = "en".equals(language) || (undecided && !latin.looksNonEnglish());
+        return new Analysis("latin", profile, language, english, undecided,
                 Rounding.round4(latin.diacriticRate()), nonLatin, null);
     }
 
@@ -846,20 +1074,33 @@ public final class LanguageDetection {
             if (detected.english()) {
                 continue;
             }
+            // A named language still has to survive the prose scan: acronyms and slash compounds
+            // are not words. But a veto is not a verdict of English. Dropping the line here
+            // skipped the diacritic branch below, which exists for exactly this -- text that
+            // carries non-English letters and that no stopword list can name. An upper-cased
+            // German question with umlauts was vetoed for having no long stopword and then thrown
+            // away, so a German field routed english; now it falls through and its umlauts carry
+            // it. That is also why languageUndecided is no longer required below: a language named
+            // and then disbelieved is in the same evidential position as one never named.
+            //
+            // The ASCII spelling of that same question is a different case and is not fixed here.
+            // It has no diacritics to fall through to, and its longest matched German stopword is
+            // three letters, so SHOUTED_MIN_STOPWORD vetoes it and nothing recovers it: genuine
+            // German on the English checkpoint, one of the upper-cased casualties the reference
+            // counts and not an example of what this branch buys.
             String language = detected.language();
-            if (language != null && !"en".equals(language)) {
-                if (namedProseLanguage(sample) == null) {
+            boolean named = language != null && !"en".equals(language)
+                    && namedProseLanguage(sample) != null;
+            if (!named) {
+                if (!"latin".equals(detected.script()) && !"unknown".equals(detected.script())) {
+                    if (nonLatinWords(sample).isEmpty()
+                            || countAlpha(sample) < LanguageTables.NON_LATIN_MIN_LETTERS) {
+                        continue;
+                    }
+                } else if (!(detected.diacriticRate() >= LanguageTables.NON_EN_DIACRITIC_RATE
+                        && words(sample).size() >= 4)) {
                     continue;
                 }
-            } else if (!"latin".equals(detected.script()) && !"unknown".equals(detected.script())) {
-                if (nonLatinWords(sample).isEmpty()
-                        || countAlpha(sample) < LanguageTables.NON_LATIN_MIN_LETTERS) {
-                    continue;
-                }
-            } else if (!(detected.languageUndecided()
-                    && detected.diacriticRate() >= LanguageTables.NON_EN_DIACRITIC_RATE
-                    && words(sample).size() >= 4)) {
-                continue;
             }
             int letters = countAlpha(sample);
             if (letters > bestLetters) {

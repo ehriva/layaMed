@@ -26,7 +26,7 @@ For ARM64 hosts, DGX Spark and Apple Silicon, see
 
 Install a compatible NVIDIA driver and configure Docker with the
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-The GPU image uses PyTorch CUDA 12.8 wheels. Check your GPU's compute capability
+The GPU image uses PyTorch CUDA 13.0 wheels. Check your GPU's compute capability
 and driver against [PyTorch's supported builds](https://pytorch.org/get-started/locally/);
 older cards may require a different build. Allow additional disk space for CUDA
 layers. VRAM needs depend on the checkpoint, batch size and input length.
@@ -339,12 +339,16 @@ These apply to the `laya-serve` service only.
 | `LAYA_THREADS` | `OMP_NUM_THREADS` | caps torch intra-op threads; keep at or below physical cores |
 | `LAYA_AUTO_TASK` | `0` | `1` lets the router reach `typed-decisions` automatically |
 | `LAYA_DEFAULT_MODEL` | `multilingual` | Checkpoint a state with no language evidence falls back to (no letters, or Latin text too short to identify). Set `english` for mostly English traffic; an unresolvable name stops the container at startup instead of serving a configuration nobody asked for |
+| `LAYA_EXTRA_MODELS` | (none) | JSON object `{name: source}` registering extra checkpoints beside the bundled ones: a Hub repo id or local checkpoint directory as a string, or a `["repo", "subfolder"]` pair |
+| `LAYA_IDLE_UNLOAD_SECONDS` | `0` | unload resident checkpoints after this many idle seconds; the next request loads its checkpoint again. Zero disables unloading |
 | `LAYA_MAX_LOADED` | `2` | Checkpoints kept resident; `LAYA_AUTO_TASK` makes a third reachable on demand, and a cap below what routing chooses rebuilds one per switch |
 | `LAYA_MAX_CONCURRENT` | `16` | requests admitted at once; later ones get `503` (a value that does not parse, or is not positive, falls back to `16`) |
 | `LAYA_LOG_LEVEL` | `info` | uvicorn log level |
 | `LAYA_API_KEY` | (none) | when set, requires `Authorization: Bearer <key>` |
 | `LAYA_ROOT_PATH` | (empty) | public URL prefix for FastAPI when behind a reverse proxy; the proxy should strip it before forwarding |
 | `LAYA_MAX_TOKEN_BUDGET` | `8192` | cap on per-request `max_len` and `head_max_len` overrides |
+| `LAYA_MAX_BATCH_TOKENS` | `131072` | tokens one `/v1/systemone/batch` forward pass may collate (`states` × questions × row width); a larger batch is split into several passes, not refused |
+| `LAYA_JEV_STRICT` | `0` | `1` serves the strict Jev wire contract (no root `routing`, no per-answer `action` / `answer_confidence`, reduced `usage`) for strict Jev clients |
 | `LAYA_SHA256_DIGESTS` | (none) | JSON digests checked before a checkpoint is parsed: `{artifact: digest}` for every checkpoint, or `{model: {artifact: digest}}` per checkpoint. See [Security](security.md) |
 
 For example, set `LAYA_ROOT_PATH=/laya` when publishing the API under `/laya`. The proxy must

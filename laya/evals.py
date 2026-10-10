@@ -66,6 +66,38 @@ class EvalError(ValueError):
     """A dataset or report is malformed; the message names the row or field."""
 
 
+def compare_agreement(reference: Dict, repeat: Dict, student: Dict, *,
+                      bootstrap_samples: int = 2000, seed: int = 0) -> Dict[str, Any]:
+    """Compare saved teacher reference, teacher repeat, and student choice observations.
+
+    Inputs use ``laya-agreement-run/1``; see the evaluation guide for the schema.
+    All runs must contain the same cases and questions. Student nulls count as
+    disagreements and reduce coverage. The report includes a paired, case-clustered
+    bootstrap interval (100–100000 replicates), provenance, and individual decisions.
+    Teacher agreement is not ground-truth accuracy or a ceiling on student performance.
+    """
+    from ._agreement import compare_agreement as compare
+
+    return compare(reference, repeat, student, bootstrap_samples=bootstrap_samples, seed=seed)
+
+
+def evaluate_agreement(runner: Any, reference: Dict, repeat: Dict, *,
+                       student_provenance: Dict, model: Optional[str] = None,
+                       bootstrap_samples: int = 2000, seed: int = 0) -> Dict[str, Any]:
+    """Evaluate a local student's agreement with two saved teacher observations.
+
+    Validate both teacher runs before calling ``runner.predict(state, questions,
+    model=model)`` once per original case. Record the caller's student provenance;
+    use a null revision when it is unknown. Runner errors propagate, and missing or
+    invalid answers raise ``EvalError`` instead of dropping decisions. An answer's
+    ``abstention='abstained'`` becomes a null student observation.
+    """
+    from ._agreement import evaluate_agreement as evaluate_student
+
+    return evaluate_student(runner, reference, repeat, student_provenance=student_provenance,
+                            model=model, bootstrap_samples=bootstrap_samples, seed=seed)
+
+
 @dataclass
 class Example:
     """One labelled decision: a state, its questions, and the expected answer per question id."""

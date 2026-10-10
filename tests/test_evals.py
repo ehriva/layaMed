@@ -2,8 +2,10 @@
 
 Run: python -m pytest tests/test_evals.py -q
 """
+import io
 import json
 import re
+import sys
 import warnings
 
 import numpy as np
@@ -1824,6 +1826,30 @@ def test_cli_validate_and_dispatch(tmp_path):
     # that a threshold or baseline-tolerance failure uses. A CI job has to be able to tell
     # "my dataset is broken" from "the model regressed".
     assert evals_cli.main(["validate", str(bad)]) == 2
+
+
+def test_cli_writes_redirected_output_as_utf8(tmp_path, monkeypatch):
+    """`validate` prints question ids and `run --slice` prints tags: the caller's own text.
+
+    Redirected stdout is encoded with the locale's codec by default (cp1252 on Windows), so
+    `laya-evals validate data.jsonl > out.txt` died with a UnicodeEncodeError traceback on a
+    dataset whose question id is not Latin -- and with exit 1, the code docs/evals.md keeps for
+    a quality failure. The latin-1 wrapper stands in for that codec, so this fails on any OS
+    without the fix. Both entry points are checked because `laya eval` returns before the line
+    that sets stdout in `cli.main`.
+    """
+    from laya import cli, evals_cli
+
+    qid = "श्रेणी"
+    dataset = _write_dataset(tmp_path, [{"state": "s", "questions": {qid: Q["intent"]},
+                                         "expected": {qid: "a"}}])
+    for entry, argv in ((evals_cli.main, ["validate", dataset]),
+                        (cli.main, ["eval", "validate", dataset])):
+        raw = io.BytesIO()
+        monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="latin-1"))
+        assert entry(argv) == 0
+        sys.stdout.flush()
+        assert qid in raw.getvalue().decode("utf-8")
 
 
 def test_cli_compare_exit_codes(tmp_path):

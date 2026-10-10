@@ -10,7 +10,8 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.json && node -e \"require('node:fs').copyFileSync('../LICENSE', 'LICENSE')\"",
-    "test": "vitest",
+    "test": "npm run test:types && vitest",
+    "test:types": "tsc --noEmit -p tests/tsconfig.types.json",
     "test:package": "node --test tests/package-e2e.mjs",
     "prepack": "npm run build"
   },

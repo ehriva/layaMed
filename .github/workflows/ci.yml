@@ -164,7 +164,7 @@ jobs:
           pip install -e . pytest
 
       - name: Eval harness tests
-        run: python -m pytest tests/test_evals.py -q
+        run: python -m pytest tests/test_evals.py tests/test_evals_agreement.py -q
 
       - name: Shortlist attribution tests
         run: python -m pytest tests/test_evals_shortlist.py -q
@@ -306,7 +306,17 @@ jobs:
           python-version: "3.11"
       - run: pip install ruff
       - name: Ruff
-        run: ruff check laya/ --select=E9,F63,F7,F82,F401,F811 --line-length=120
+        # Two invocations, because the SDK script directories carry pre-existing F401/F811
+        # import debt that is not worth churning in an unrelated change. They DO get `F82`,
+        # the undefined-name group, which is a real bug class rather than style: a
+        # `verify_snapshot(..., name)` whose enclosing parameter was `name_or_path` reached
+        # review in this repository, and it would have raised `NameError` on every Hugging
+        # Face download and failed all four .NET parity cells. ruff finds it in under a
+        # second. Widen the second list to the first's rule set once that debt is paid.
+        run: |
+          ruff check laya/ --select=E9,F63,F7,F82,F401,F811 --line-length=120
+          ruff check laya-java/scripts/ laya-dotnet/tools/ laya-ts/scripts/ \
+            --select=E9,F63,F7,F82 --line-length=120
       - name: Byte-compile every module
         run: python -m compileall -q laya/ tests/
 

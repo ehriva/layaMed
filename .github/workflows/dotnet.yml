@@ -58,6 +58,16 @@ jobs:
       - name: Test regeneration cache and skip guard
         run: python laya-dotnet/tools/test_ci_tools.py
       - name: Regenerate the routing goldens from Python
+        env:
+          # Scoped to this step, not the workflow: a workflow-level `env` reaches every step of
+          # every job, including `pip`, `gradle`, `semgrep` and third-party actions that have no
+          # business holding a credential. Only the steps that fetch from the hub get it.
+          #
+          # Unauthenticated requests are rate-limited, and a throttled fetch is what arrived
+          # TRUNCATED here. Unset expands to "", which the implicit token path treats as
+          # anonymous -- the explicit `token=` call sites normalise "" to None themselves,
+          # because an empty Bearer header makes httpx refuse the request outright.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python laya-dotnet/tools/regen_golden.py --checkpoint routing
       - name: Golden drift vs. committed (informational)
         run: |
@@ -101,6 +111,21 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
+      # One cell at a time. Every cell that needs weights fetches them from the same Hugging
+      # Face repo, and four in parallel -- alongside `java.yml`'s parity matrix against the same
+      # repo in the same run -- is what provoked the throttle. `regen_golden.py` now refuses an
+      # incomplete snapshot at the fetch, so this is no longer the only thing between a
+      # truncated download and a confusing failure; not provoking the throttle is simply
+      # cheaper than diagnosing it, and this lane is advisory.
+      #
+      # TWO, not one. One was the first attempt and it cost too much: measured from this PR's own
+      # cells, serialising takes the parity critical path from 10:56 to 30:08. Two keeps the peak
+      # well below the seven concurrent fetches that provoked the throttle while costing roughly
+      # half of that. And serialising is no longer the load-bearing half of the fix -- the
+      # download sites now refuse an incomplete snapshot AT THE FETCH, naming the file, so a
+      # throttled fetch fails immediately and legibly instead of three minutes later inside a
+      # tokenizer constructor. This only reduces how often that path is taken.
+      max-parallel: 2
       matrix:
         include:
           - name: english
@@ -169,6 +194,16 @@ jobs:
           key: laya-onnx-${{ runner.os }}-typed-decisions-${{ hashFiles('laya-dotnet/tools/regen_golden.py', 'laya-dotnet/tools/export_onnx.py', 'laya-ts/scripts/export_onnx.py', 'laya-dotnet/tools/requirements-regen.txt', 'laya/common.py') }}
 
       - name: Export the checkpoints and regenerate their goldens from Python
+        env:
+          # Scoped to this step, not the workflow: a workflow-level `env` reaches every step of
+          # every job, including `pip`, `gradle`, `semgrep` and third-party actions that have no
+          # business holding a credential. Only the steps that fetch from the hub get it.
+          #
+          # Unauthenticated requests are rate-limited, and a throttled fetch is what arrived
+          # TRUNCATED here. Unset expands to "", which the implicit token path treats as
+          # anonymous -- the explicit `token=` call sites normalise "" to None themselves,
+          # because an empty Bearer header makes httpx refuse the request outright.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           args=()
           for c in ${{ matrix.checkpoints }}; do args+=(--checkpoint "$c"); done

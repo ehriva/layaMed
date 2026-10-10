@@ -11,6 +11,13 @@ import java.util.List;
  */
 public final class Collator {
 
+    /**
+     * The fewest option slots the graph accepts. The exported head takes {@code topk(2)} of the
+     * option probabilities, so a run whose questions all have one option is padded with a masked
+     * second slot: the graph scores it -1e4 and decode reads each row only to its own option count.
+     */
+    static final int MIN_MARKER_SLOTS = 2;
+
     /** The five inputs the graph takes, flattened row-major. */
     public record Batch(long[][] inputIds, long[][] attentionMask, long[][] markerPos,
                         boolean[][] markerMask, long[] qtype, int rows, int length, int markers) {
@@ -35,7 +42,7 @@ public final class Collator {
         }
         int rows = items.size();
         int length = 0;
-        int markerWidth = 0;
+        int markerWidth = MIN_MARKER_SLOTS;
         for (Item item : items) {
             length = Math.max(length, item.ids().length);
             markerWidth = Math.max(markerWidth, item.markers().length);

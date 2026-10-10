@@ -785,9 +785,9 @@
         "value": "plain english"
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
         "workflow": "customer_service",
         "detection": {
           "script": "latin",
@@ -992,9 +992,9 @@
         "value": "plain english"
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
         "workflow": null,
         "detection": {
           "script": "latin",
@@ -1035,9 +1035,9 @@
         "value": "plain english"
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
         "workflow": null,
         "detection": {
           "script": "latin",
@@ -1167,9 +1167,9 @@
         "value": "plain english words here now"
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
         "workflow": null,
         "detection": {
           "script": "latin",
@@ -1192,9 +1192,9 @@
         "value": "plain english words here now"
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
         "workflow": null,
         "detection": {
           "script": "latin",
@@ -1352,9 +1352,9 @@
         "value": "12345 !!! ---"
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "no letters detected in state; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "no letters detected in state; using default (multilingual)",
         "workflow": null,
         "detection": {
           "script": "unknown",
@@ -1538,9 +1538,9 @@
         "value": "Quero cancelar"
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "Latin script, language not identified and no non-English letters; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "Latin script, language not identified and no non-English letters; using default (multilingual)",
         "workflow": null,
         "detection": {
           "script": "latin",
@@ -1609,9 +1609,9 @@
         "value": null
       },
       "decision": {
-        "model": "english",
-        "repo": "convaiinnovations/laya",
-        "reason": "no letters detected in state; using default (english)",
+        "model": "multilingual",
+        "repo": "convaiinnovations/laya/multilingual",
+        "reason": "no letters detected in state; using default (multilingual)",
         "workflow": null,
         "detection": {
           "script": "unknown",

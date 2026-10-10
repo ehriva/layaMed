@@ -29,7 +29,7 @@ python -m pip install laya
 
 With [uv](https://docs.astral.sh/uv/), run `uv add laya` in a uv project or `uv pip install laya` in a virtual environment.
 
-Python 3.10 or newer. Optional extras: `laya[serve]` (HTTP server), `laya[mcp]` (MCP server), `laya[langchain]` (LangChain and LangGraph), `laya[llamaindex]` (LlamaIndex selectors), `laya[crewai]` (CrewAI routing), `laya[onnx]` (ONNX Runtime), `laya[fast]` (TileLang GPU fast path). Step-by-step setup for each platform, CPU-only or GPU PyTorch builds, and troubleshooting are in [Installation details](#installation-details).
+Python 3.10 or newer. Optional extras: `laya[serve]` (HTTP server), `laya[mcp]` (MCP server), `laya[langchain]` (LangChain and LangGraph), `laya[llamaindex]` (LlamaIndex selectors), `laya[crewai]` (CrewAI routing), `laya[onnx]` (ONNX Runtime), `laya[fast]` (TileLang GPU fast path), `laya[structured]` (pydantic models in `decide`). Step-by-step setup for each platform, CPU-only or GPU PyTorch builds, and troubleshooting are in [Installation details](#installation-details).
 
 For TypeScript / Node.js / browser, see [`laya-ts/`](https://github.com/NandhaKishorM/laya/tree/main/laya-ts/). npm releases (`npm install laya-ts`) are published from this repository's `laya-ts-v*` release tags.
 
@@ -94,15 +94,20 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 
 **[nandhakishorm.github.io/laya](https://nandhakishorm.github.io/laya/)**: guides for [prediction hooks](https://nandhakishorm.github.io/laya/hooks/), [schema-driven decisions](https://nandhakishorm.github.io/laya/structured/), [Docker](https://nandhakishorm.github.io/laya/docker/) and [LangChain and LangGraph](https://nandhakishorm.github.io/laya/langchain/), plus a full [API reference](https://nandhakishorm.github.io/laya/reference/).
 
-## What's new in 0.4.0
+## What's new in 0.4.2
 
-* **The routing default is now `multilingual`.** Text whose language the detector cannot place
-  used to fall back to the English checkpoint. On the 51-language sweep the multilingual
-  checkpoint leads on 50 of the 51, the exception being English itself (0.820 against 0.710),
-  and by 0.180 macro accuracy excluding English. Identified English still routes to the English
-  checkpoint, so only undecided text moves. Set `Router(default="english")` or
-  `LAYA_DEFAULT_MODEL=english` to restore the old behaviour; the break-even is around 62%
-  English traffic.
+* **The TypeScript tree parses again.** An unterminated template literal in `hooks.ts` shipped
+  in 0.4.1 and stopped 22 of 34 test files from loading (#1056).
+* **Jev confidence alongside ours.** `/v1/systemone` adds `x_jev_confidence`, computed locally
+  from the same probabilities, so a threshold carried over from Jev can be compared directly
+  (#1066, #302). `confidence` is unchanged and the field is absent under `LAYA_JEV_STRICT`.
+* **Shortlisting keeps working with an `option_order`.** A narrowed choice drops the order with
+  a warning instead of failing the agent's permutation check (#1063).
+* **A near-miss checkpoint name warns.** Registering `englsh` tells you it is one edit from
+  `english`, and registers it anyway (#1055, #919).
+* **Compose forwards four more knobs** that the runtime already read (#1053, #1054), and the
+  Java and .NET docs now name the multilingual default 0.4.0 moved them to (#1069).
+* **Java** gains `Router.predictBatch` and `Shortlist.predictTournament` (#1060, #1061).
 
 Earlier releases are in the [GitHub releases](https://github.com/NandhaKishorM/laya/releases).
 
@@ -286,11 +291,11 @@ checkpoint goes from 24/58 correct at its default 192-token option budget to 34/
 accuracy back, because `max_len` then leaves fewer tokens for the request itself. [Honest
 limits](#honest-limits) describes the same budget ceiling for a 77-option question.
 
-Device selection is automatic, in this order: **CUDA → MPS → CPU**. Mixed precision is used on
+Device selection is automatic, in this order: **CUDA → MPS → XPU → CPU**. Mixed precision is used on
 CUDA; CPU and MPS run fp32. Override with `device=`, which is accepted by both entry points:
 
 ```python
-agent = laya.load("convaiinnovations/laya", device="cpu")      # or "cuda", "mps"
+agent = laya.load("convaiinnovations/laya", device="cpu")      # or "cuda", "mps", "xpu"
 router = Router(preload=True, device="mps")
 ```
 
@@ -502,7 +507,7 @@ questions = {
         "criteria": {
             "billing": "invoices, payments, refunds",
             "technical": "bugs, outages, system errors",
-            "sales": "pricing, new contracts",
+            "sales": "pricing, new contracts, plan upgrades",
             "other": "everything else"
         }
     },
@@ -542,9 +547,20 @@ res_hi["routing"]
 # {
 #   'model': 'multilingual',
 #   'repo': 'convaiinnovations/laya/multilingual',
-#   'reason': 'non-Latin script (devanagari, 100% of letters); the English checkpoint cannot read it'
+#   'reason': 'non-Latin script (devanagari, 100% of letters); the English checkpoint cannot read it',
+#   'detection': {'script': 'devanagari', 'script_profile': {'devanagari': 1.0},
+#                 'language': None, 'is_english': False, 'language_undecided': True,
+#                 'diacritic_rate': 0.0, 'non_latin_fraction': 1.0, 'mixed_segment': None},
+#   'workflow': None
 # }
 ```
+
+All five keys are always present. `detection` is the
+[`laya.lang.analyse`](#supplying-your-own-language-detection) result the decision was made from,
+and is `None` whenever routing decided before detection ran: `model=`, `task=`, a detected
+workflow, a decisive `lang=` and a resolving `lang_guess` all take precedence over it and
+short-circuit it. `workflow` names the typed-decisions workflow whose question ids matched, and is
+`None` when none did.
 
 Inspect a routing decision without running any forward pass:
 
@@ -660,8 +676,14 @@ Routing asks one question: *can the English checkpoint read this state?* The bui
 ```python
 from laya.lang import analyse
 analyse("Care este ora in Tokyo?")
-# {'script': 'latin', 'language': 'en', 'is_english': True}   -> the English checkpoint
+# {'script': 'latin', 'script_profile': {'latin': 1.0}, 'language': 'en', 'is_english': True,
+#  'language_undecided': False, 'diacritic_rate': 0.0, 'non_latin_fraction': 0.0,
+#  'mixed_segment': None}                                     -> the English checkpoint
 ```
+
+`is_english` is the key routing reads. `language_undecided` separates "read as English" from
+"carried no usable signal, so the default applies", and `mixed_segment` names the line or field
+that made a mostly-English state non-English (`None` when none did).
 
 If you already run a language-identification model, hand routing the answer instead of relying on the heuristic. `lang_guess` takes a language code or a callable receiving the state, and is checked after an explicit `lang=` and before detection:
 
@@ -728,9 +750,12 @@ your traffic is not English), `LAYA_MAX_LOADED` (checkpoints resident at
 once, 2 by default; raise it to 3 when `LAYA_AUTO_TASK` makes a third one
 reachable on demand, or the server rebuilds one every time routing switches),
 `LAYA_IDLE_UNLOAD_SECONDS` (unload idle checkpoints; `0` disables it, `300` frees device memory
-after five minutes and makes the next request pay a cold load), and `LAYA_API_KEY` (when set, clients must
+after five minutes and makes the next request pay a cold load), `LAYA_EXTRA_MODELS` (a JSON object
+`{"my-checkpoint": "/path/to/it"}` registering extra checkpoints — Hub repo ids, local directories
+or `["repo", "subfolder"]` pairs — beside the bundled ones), and `LAYA_API_KEY` (when set, clients must
 send `Authorization: Bearer <key>`). A client's `model` field is honoured when it
-names a Laya checkpoint (`english`/`multilingual`/`typed-decisions` or a published Hub id).
+names a Laya checkpoint (`english`/`multilingual`/`typed-decisions`, a `LAYA_EXTRA_MODELS` name,
+or a published Hub id).
 `jev-1` and `convaiinnovations/laya` still mean the router auto-selects by script/language.
 A path or an unpublished Hub id (`/path/to/checkpoint`, `org/repo`) is a 422 on both
 `/v1/systemone` and `/v1/systemone/batch` instead of being answered by another checkpoint.
@@ -880,9 +905,11 @@ result = agent.predict_long(state, questions, hooks=[AuditLog()])   # the scan, 
   `usage["windows"]` at 0, because no window scored it.
 
 A smaller `window` isolates a short deciding span better (it becomes a larger fraction of its
-window); the default (`max_len - head_max_len`) favors context and throughput. Either way the
-window is capped at the room the questions leave for the state inside `max_len`, so a window is
-never re-truncated on the way to the model and `token_start`/`token_end` describe the span it read:
+window); the default (`max(64, max_len - head_max_len - 8)` — 312 tokens on the English checkpoint
+at its 512/192 defaults, 760 on the other two at 1,024/256) favors context and throughput. Either
+way the window is capped at the room the questions leave for the state inside `max_len`, so a
+window is never re-truncated on the way to the model and `token_start`/`token_end` describe the
+span it read:
 many options leave little room (on the English checkpoint, 2 options leave 483 state tokens and
 100 leave 100), and a window past that room used to be cut short silently. Output shape matches
 `predict`, with `usage["windows"]` added.
@@ -987,7 +1014,7 @@ A threshold also depends on the autocast dtype. On CUDA at compute capability 8 
 
 ### Opt-in abstention: `min_confidence`
 
-`predict`, `predict_batch`, `system_one` and `decide` — on `Agent`, `Router` and `ONNXAgent` — take an opt-in `min_confidence`, off by default. It is a caller-side policy on top of the emitted confidence: every answer whose `answer_confidence` falls below the threshold is flagged `low_confidence: True`, with the raw answer, probabilities and confidence left intact for inspection.
+`predict`, `predict_batch`, `system_one`, `decide` and `decide_batch` — on `Agent`, `Router` and `ONNXAgent` — take an opt-in `min_confidence`, off by default. It is a caller-side policy on top of the emitted confidence: every answer whose `answer_confidence` falls below the threshold is flagged `low_confidence: True`, with the raw answer, probabilities and confidence left intact for inspection.
 
 ```python
 res = agent.predict(state, questions, min_confidence=0.85)
@@ -1123,6 +1150,9 @@ safety = agent.predict({"post": "User comment text"}, laya.moderation_questions(
 
 # 4. Support Ticket Triage (intent, urgency, frustration, churn)
 triage = agent.predict({"message": "My payment failed twice"}, laya.triage_questions())
+
+# 5. Email Triage (category, spam, phishing, urgency, reply expected)
+email = agent.predict({"body": "Your account is locked, verify now"}, laya.email_questions())
 ```
 
 ---
@@ -1446,7 +1476,7 @@ Full detail, including every workflow and all 51 languages: **[`BENCHMARKS.md`](
 | model | accuracy | soft acc | Brier | ECE | score MAE |
 |---|---|---|---|---|---|
 | **`laya-typed-decisions`** | **0.766** | 0.471 | **0.062** | 0.213 | **0.242** |
-| `laya` | 0.362 | 0.332 | 0.316 | 0.175 | 0.694 |
+| `laya` | 0.362 | 0.331 | 0.315 | 0.174 | 0.694 |
 | `laya-multilingual` | 0.352 | 0.328 | 0.463 | 0.314 | 0.760 |
 | *Jev 1.13.0 (published)* | *0.727* | *0.580* | *0.148* | *0.144* | *0.391* |
 | *teacher self-agreement ceiling* | *0.735* | | | | |

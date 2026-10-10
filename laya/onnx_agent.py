@@ -775,12 +775,24 @@ class ONNXAgent(HookRegistry):
 
                 b = collate_items(per_state_items, self.tok.pad_token_id)
 
+                marker_pos = b["marker_pos"].numpy().astype(np.int64)
+                marker_mask = b["marker_mask"].numpy().astype(bool)
+                if marker_pos.shape[1] < 2:
+                    # The exported head takes `topk(2)` of the option probabilities: the eager
+                    # forward's one-option branch is a Python `if`, which the trace bakes in, so
+                    # ONNX Runtime refuses a run whose questions all have one option. A masked
+                    # second slot scores -1e4, is sliced off at decode, and gives the act head the
+                    # zero second probability the eager branch pads in.
+                    width = ((0, 0), (0, 2 - marker_pos.shape[1]))
+                    marker_pos = np.pad(marker_pos, width)
+                    marker_mask = np.pad(marker_mask, width)
+
                 # Prepare ONNX inputs as numpy arrays
                 ort_inputs = {
                     "input_ids": b["input_ids"].numpy().astype(np.int64),
                     "attention_mask": b["attention_mask"].numpy().astype(np.int64),
-                    "marker_pos": b["marker_pos"].numpy().astype(np.int64),
-                    "marker_mask": b["marker_mask"].numpy().astype(bool),
+                    "marker_pos": marker_pos,
+                    "marker_mask": marker_mask,
                     "qtype": b["qtype"].numpy().astype(np.int64),
                 }
 

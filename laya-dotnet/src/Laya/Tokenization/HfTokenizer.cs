@@ -106,6 +106,8 @@ public sealed class HfTokenizer : ILayaTokenizer, IDisposable
 
     // ── post-processor stripping ───────────────────────────────────────────────
 
+    private static readonly object s_cacheLock = new();
+
     /// <summary>
     /// Returns the path to a cached copy of the tokenizer with <c>post_processor</c> set
     /// to <see langword="null"/>. Regenerates the cache when the source file has changed.
@@ -126,32 +128,39 @@ public sealed class HfTokenizer : ILayaTokenizer, IDisposable
         if (IsCacheValid(primaryPath, fingerprint))
             return primaryPath;
 
-        if (TryWriteStripped(sourcePath, primaryPath, fingerprint))
-            return primaryPath;
+        lock (s_cacheLock)
+        {
+            if (IsCacheValid(primaryPath, fingerprint))
+                return primaryPath;
 
-        // Fallback: a per-source temp directory when the artifact directory is read-only.
-        var fallbackDir = Path.Combine(
-            Path.GetTempPath(), "laya", FingerprintToSafeName(sourcePath));
-        System.IO.Directory.CreateDirectory(fallbackDir);
+            if (TryWriteStripped(sourcePath, primaryPath, fingerprint))
+                return primaryPath;
 
-        var fallbackPath = Path.Combine(fallbackDir, "tokenizer.nopost.json");
+            // Fallback: a per-source temp directory when the artifact directory is read-only.
+            var fallbackDir = Path.Combine(
+                Path.GetTempPath(), "laya", FingerprintToSafeName(sourcePath));
+            System.IO.Directory.CreateDirectory(fallbackDir);
 
-        if (IsCacheValid(fallbackPath, fingerprint))
-            return fallbackPath;
+            var fallbackPath = Path.Combine(fallbackDir, "tokenizer.nopost.json");
 
-        if (TryWriteStripped(sourcePath, fallbackPath, fingerprint))
-            return fallbackPath;
+            if (IsCacheValid(fallbackPath, fingerprint))
+                return fallbackPath;
 
-        throw new IOException(
-            $"Cannot write stripped tokenizer cache to either:\n" +
-            $"  {primaryPath}\n  {fallbackPath}\n" +
-            "Check that at least one of those directories is writable.");
+            if (TryWriteStripped(sourcePath, fallbackPath, fingerprint))
+                return fallbackPath;
+
+            throw new IOException(
+                $"Cannot write stripped tokenizer cache to either:\n" +
+                $"  {primaryPath}\n  {fallbackPath}\n" +
+                "Check that at least one of those directories is writable.");
+        }
     }
 
     private static bool IsCacheValid(string cachedPath, string fingerprint)
     {
         var metaPath = cachedPath + ".meta";
-        if (!File.Exists(cachedPath) || !File.Exists(metaPath))
+        var info = new FileInfo(cachedPath);
+        if (!info.Exists || info.Length == 0 || !File.Exists(metaPath))
             return false;
         try { return File.ReadAllText(metaPath).Trim() == fingerprint; }
         catch (IOException) { return false; }
@@ -162,6 +171,9 @@ public sealed class HfTokenizer : ILayaTokenizer, IDisposable
         try
         {
             WriteStrippedTokenizer(sourcePath, destPath);
+            var info = new FileInfo(destPath);
+            if (!info.Exists || info.Length == 0)
+                return false;
             File.WriteAllText(destPath + ".meta", fingerprint);
             return true;
         }
@@ -174,8 +186,8 @@ public sealed class HfTokenizer : ILayaTokenizer, IDisposable
     /// <summary>
     /// Parses <paramref name="sourcePath"/> with <c>JsonNode</c>, sets
     /// <c>"post_processor"</c> to <c>null</c>, and writes the result to
-    /// <paramref name="destPath"/> via a <c>.part</c> temp file so an interrupted write
-    /// never leaves a partial cache.
+    /// <paramref name="destPath"/> via a unique <c>.part</c> temp file so an interrupted write
+    /// or concurrent writer never leaves a partial or colliding cache.
     /// </summary>
     private static void WriteStrippedTokenizer(string sourcePath, string destPath)
     {
@@ -187,16 +199,27 @@ public sealed class HfTokenizer : ILayaTokenizer, IDisposable
         // underlying Rust tokenizers library treats identically to the key being absent.
         root["post_processor"] = null;
 
-        var partPath = destPath + ".part";
-        using (var outStream = new FileStream(
-                   partPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        var partPath = $"{destPath}.{Guid.NewGuid():N}.part";
+        try
         {
-            using var writer = new Utf8JsonWriter(outStream);
-            root.WriteTo(writer);
-        }
+            using (var outStream = new FileStream(
+                       partPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                using var writer = new Utf8JsonWriter(outStream);
+                root.WriteTo(writer);
+                writer.Flush();
+            }
 
-        if (File.Exists(destPath)) File.Delete(destPath);
-        File.Move(partPath, destPath);
+            File.Move(partPath, destPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(partPath))
+            {
+                try { File.Delete(partPath); }
+                catch (IOException) { }
+            }
+        }
     }
 
     /// <summary>

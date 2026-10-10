@@ -89,7 +89,7 @@ public final class SequenceBuilder {
                                  boolean truncateLeft, int[] stateIds) {
         Head head = buildHead(tok, question, headMaxLen, optionOrder);
         List<Integer> ids = new ArrayList<>(head.ids());
-        int sep = required(tok.sepId(), "sep_token", tok);
+        int sep = required(tok.sepId(), "sep_token");
 
         // `room` already reserves the closing [SEP], so every state token it admits survives the
         // final clamp to `maxLen`.
@@ -130,9 +130,9 @@ public final class SequenceBuilder {
      */
     public static Head buildHead(Tokenizer tok, Question question, int headMaxLen,
                                  int[] optionOrder) {
-        int cls = required(tok.clsId(), "cls_token", tok);
-        int sep = required(tok.sepId(), "sep_token", tok);
-        int mask = required(tok.maskId(), "mask_token", tok);
+        int cls = required(tok.clsId(), "cls_token");
+        int sep = required(tok.sepId(), "sep_token");
+        int mask = required(tok.maskId(), "mask_token");
 
         List<String> options = question.renderOptions();
         int[] order = optionOrder != null ? optionOrder : naturalOrder(options.size());
@@ -237,7 +237,7 @@ public final class SequenceBuilder {
         return text.replace(mask, " ");
     }
 
-    private static int required(java.util.OptionalInt id, String role, Tokenizer tok) {
+    private static int required(java.util.OptionalInt id, String role) {
         if (id.isEmpty()) {
             throw new IllegalStateException(
                     "this checkpoint's tokenizer_config.json names no " + role

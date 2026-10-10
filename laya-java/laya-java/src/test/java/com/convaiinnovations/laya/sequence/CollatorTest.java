@@ -44,7 +44,30 @@ final class CollatorTest {
         // "no marker". A port that inferred liveness from the position would mask out option 0.
         Collator.Batch batch = Collator.collate(List.of(
                 new Collator.Item(new int[] {7}, new int[] {0}, 1)), 0);
-        assertArrayEquals(new long[] {0}, batch.markerPos()[0]);
-        assertArrayEquals(new boolean[] {true}, batch.markerMask()[0]);
+        assertArrayEquals(new long[] {0, 0}, batch.markerPos()[0]);
+        assertArrayEquals(new boolean[] {true, false}, batch.markerMask()[0]);
+    }
+
+    @Test
+    @DisplayName("a run of one-option questions still sends two marker slots, the second masked")
+    void oneOptionRunPadsToTwoSlots() {
+        // The exported head takes topk(2) over the option slots; one slot fails in ONNX Runtime.
+        Collator.Batch batch = Collator.collate(List.of(
+                new Collator.Item(new int[] {5, 6}, new int[] {1}, 1),
+                new Collator.Item(new int[] {7}, new int[] {0}, 2)), 0);
+        assertEquals(2, batch.markers());
+        assertArrayEquals(new long[] {1, 0}, batch.markerPos()[0]);
+        assertArrayEquals(new boolean[] {true, false}, batch.markerMask()[0]);
+        assertArrayEquals(new long[] {0, 0}, batch.markerPos()[1]);
+        assertArrayEquals(new boolean[] {true, false}, batch.markerMask()[1]);
+    }
+
+    @Test
+    @DisplayName("a run already two slots or wider is not padded further")
+    void twoOrMoreSlotsUnchanged() {
+        Collator.Batch batch = Collator.collate(List.of(
+                new Collator.Item(new int[] {5}, new int[] {0, 0}, 0)), 0);
+        assertEquals(2, batch.markers());
+        assertArrayEquals(new boolean[] {true, true}, batch.markerMask()[0]);
     }
 }

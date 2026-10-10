@@ -1,0 +1,3831 @@
+{
+  "limits": {
+    "max_properties": 32,
+    "max_options": 32,
+    "max_score_levels": 10
+  },
+  "schemas": [
+    {
+      "case": "enum-is-a-choice",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support",
+              "sales"
+            ]
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "What is `dept`?",
+          "criteria": {
+            "billing": null,
+            "support": null,
+            "sales": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ],
+            [
+              "sales",
+              "sales"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "enum-of-numbers-keeps-its-values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "enum": [
+              10,
+              20,
+              30
+            ]
+          }
+        }
+      },
+      "questions": {
+        "code": {
+          "type": "choice",
+          "instructions": "What is `code`?",
+          "criteria": {
+            "10": null,
+            "20": null,
+            "30": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "code",
+          "kind": "choice",
+          "options": [
+            [
+              "10",
+              10
+            ],
+            [
+              "20",
+              20
+            ],
+            [
+              "30",
+              30
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "enum-with-a-null-branch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tier": {
+            "enum": [
+              "gold",
+              null
+            ]
+          }
+        }
+      },
+      "questions": {
+        "tier": {
+          "type": "choice",
+          "instructions": "What is `tier`?",
+          "criteria": {
+            "gold": null,
+            "null": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "tier",
+          "kind": "choice",
+          "options": [
+            [
+              "gold",
+              "gold"
+            ],
+            [
+              "null",
+              null
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "const-is-a-one-option-choice",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "refund"
+          }
+        }
+      },
+      "questions": {
+        "kind": {
+          "type": "choice",
+          "instructions": "What is `kind`?",
+          "criteria": {
+            "refund": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "kind",
+          "kind": "choice",
+          "options": [
+            [
+              "refund",
+              "refund"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "const-null-is-still-a-const",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": null
+          }
+        }
+      },
+      "questions": {
+        "kind": {
+          "type": "choice",
+          "instructions": "What is `kind`?",
+          "criteria": {
+            "null": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "kind",
+          "kind": "choice",
+          "options": [
+            [
+              "null",
+              null
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "boolean-is-a-noul",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "needs_human": {
+            "type": "boolean"
+          }
+        }
+      },
+      "questions": {
+        "needs_human": {
+          "type": "noul",
+          "instructions": "Is `needs_human` true?"
+        }
+      },
+      "plan": [
+        {
+          "name": "needs_human",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "enum-of-booleans-is-a-noul",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "flag": {
+            "enum": [
+              true,
+              false
+            ]
+          }
+        }
+      },
+      "questions": {
+        "flag": {
+          "type": "noul",
+          "instructions": "Is `flag` true?"
+        }
+      },
+      "plan": [
+        {
+          "name": "flag",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "integer-is-a-score",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "urgency": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          }
+        }
+      },
+      "questions": {
+        "urgency": {
+          "type": "score",
+          "instructions": "Score `urgency` from 1 to 5",
+          "criteria": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "urgency",
+          "kind": "score",
+          "options": [],
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "case": "number-with-integer-bounds-is-a-score",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 0 to 2",
+          "criteria": [
+            "0",
+            "1",
+            "2"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 0
+        }
+      ]
+    },
+    {
+      "case": "score-from-zero",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 0 to 3",
+          "criteria": [
+            "0",
+            "1",
+            "2",
+            "3"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 0
+        }
+      ]
+    },
+    {
+      "case": "score-with-a-negative-minimum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": -2,
+            "maximum": 2
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from -2 to 2",
+          "criteria": [
+            "-2",
+            "-1",
+            "0",
+            "1",
+            "2"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": -2
+        }
+      ]
+    },
+    {
+      "case": "score-of-one-level",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 7,
+            "maximum": 7
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 7 to 7",
+          "criteria": [
+            "7"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 7
+        }
+      ]
+    },
+    {
+      "case": "an-empty-description-generates-the-instruction",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ],
+            "description": ""
+          },
+          "ok": {
+            "type": "boolean",
+            "description": ""
+          },
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "description": ""
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "What is `dept`?",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        },
+        "ok": {
+          "type": "noul",
+          "instructions": "Is `ok` true?"
+        },
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 1 to 3",
+          "criteria": [
+            "1",
+            "2",
+            "3"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        },
+        {
+          "name": "ok",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "case": "description-replaces-the-generated-instruction",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ],
+            "description": "Which desk owns this?"
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Is the customer satisfied?"
+          },
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "description": "How loud is the complaint?"
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which desk owns this?",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        },
+        "ok": {
+          "type": "noul",
+          "instructions": "Is the customer satisfied?"
+        },
+        "n": {
+          "type": "score",
+          "instructions": "How loud is the complaint?",
+          "criteria": [
+            "1",
+            "2",
+            "3"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        },
+        {
+          "name": "ok",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "case": "anyof-optional-is-unwrapped",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "anyOf": [
+              {
+                "enum": [
+                  "billing",
+                  "support"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "pick a desk"
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "pick a desk",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "oneof-optional-is-unwrapped",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 1 to 4",
+          "criteria": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "case": "falsy-anyof-falls-through-to-oneof",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "anyOf": [],
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "b": {
+            "anyOf": {},
+            "oneOf": [
+              {
+                "enum": [
+                  "x",
+                  "y"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "c": {
+            "anyOf": "",
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 2,
+                "maximum": 4
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "d": {
+            "anyOf": 0,
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "e": {
+            "anyOf": false,
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "f": {
+            "anyOf": null,
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "questions": {
+        "a": {
+          "type": "noul",
+          "instructions": "Is `a` true?"
+        },
+        "b": {
+          "type": "choice",
+          "instructions": "What is `b`?",
+          "criteria": {
+            "x": null,
+            "y": null
+          }
+        },
+        "c": {
+          "type": "score",
+          "instructions": "Score `c` from 2 to 4",
+          "criteria": [
+            "2",
+            "3",
+            "4"
+          ]
+        },
+        "d": {
+          "type": "noul",
+          "instructions": "Is `d` true?"
+        },
+        "e": {
+          "type": "noul",
+          "instructions": "Is `e` true?"
+        },
+        "f": {
+          "type": "noul",
+          "instructions": "Is `f` true?"
+        }
+      },
+      "plan": [
+        {
+          "name": "a",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "b",
+          "kind": "choice",
+          "options": [
+            [
+              "x",
+              "x"
+            ],
+            [
+              "y",
+              "y"
+            ]
+          ],
+          "minimum": null
+        },
+        {
+          "name": "c",
+          "kind": "score",
+          "options": [],
+          "minimum": 2
+        },
+        {
+          "name": "d",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "e",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "f",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "anyof-branch-keeps-its-own-description",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "anyOf": [
+              {
+                "enum": [
+                  "a",
+                  "b"
+                ],
+                "description": "the branch's"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "the outer one"
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "the branch's",
+          "criteria": {
+            "a": null,
+            "b": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "a",
+              "a"
+            ],
+            [
+              "b",
+              "b"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "nullable-type-list-is-unwrapped",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "billing",
+              "support"
+            ]
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "What is `dept`?",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "nullable-integer-type-list",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 3
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 0 to 3",
+          "criteria": [
+            "0",
+            "1",
+            "2",
+            "3"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 0
+        }
+      ]
+    },
+    {
+      "case": "allof-of-one-is-unwrapped-outer-keys-on-top",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/Desk"
+              }
+            ],
+            "description": "the field's"
+          }
+        },
+        "$defs": {
+          "Desk": {
+            "enum": [
+              "billing",
+              "support"
+            ],
+            "description": "An enumeration."
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "the field's",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "allof-of-one-inline-outer-keys-win",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "allOf": [
+              {
+                "enum": [
+                  "a",
+                  "b"
+                ],
+                "description": "the branch's"
+              }
+            ],
+            "description": "the field's"
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "the field's",
+          "criteria": {
+            "a": null,
+            "b": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "a",
+              "a"
+            ],
+            [
+              "b",
+              "b"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "ref-sibling-keys-beat-the-definition",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "$ref": "#/$defs/Scale",
+            "maximum": 1
+          }
+        },
+        "$defs": {
+          "Scale": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 0 to 1",
+          "criteria": [
+            "0",
+            "1"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 0
+        }
+      ]
+    },
+    {
+      "case": "ref-into-defs-drops-the-definition-description",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "$ref": "#/$defs/Desk"
+          }
+        },
+        "$defs": {
+          "Desk": {
+            "enum": [
+              "billing",
+              "support"
+            ],
+            "description": "An enumeration."
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "What is `dept`?",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "ref-into-definitions-draft-07",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "$ref": "#/definitions/Desk"
+          }
+        },
+        "definitions": {
+          "Desk": {
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "What is `dept`?",
+          "criteria": {
+            "1": null,
+            "2": null,
+            "3": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "1",
+              1
+            ],
+            [
+              "2",
+              2
+            ],
+            [
+              "3",
+              3
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "ref-with-a-sibling-description",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "$ref": "#/$defs/Desk",
+            "description": "the field's"
+          }
+        },
+        "$defs": {
+          "Desk": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "the field's",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "ref-alias-chain",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "$ref": "#/$defs/Alias"
+          }
+        },
+        "$defs": {
+          "Alias": {
+            "$ref": "#/$defs/Desk"
+          },
+          "Desk": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          }
+        }
+      },
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "What is `dept`?",
+          "criteria": {
+            "billing": null,
+            "support": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "dept",
+          "kind": "choice",
+          "options": [
+            [
+              "billing",
+              "billing"
+            ],
+            [
+              "support",
+              "support"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "top-level-type-may-be-absent",
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "questions": {
+        "ok": {
+          "type": "noul",
+          "instructions": "Is `ok` true?"
+        }
+      },
+      "plan": [
+        {
+          "name": "ok",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "property-order-is-preserved",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "zebra": {
+            "type": "boolean"
+          },
+          "alpha": {
+            "enum": [
+              "z",
+              "a",
+              "m"
+            ]
+          },
+          "middle": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      },
+      "questions": {
+        "zebra": {
+          "type": "noul",
+          "instructions": "Is `zebra` true?"
+        },
+        "alpha": {
+          "type": "choice",
+          "instructions": "What is `alpha`?",
+          "criteria": {
+            "z": null,
+            "a": null,
+            "m": null
+          }
+        },
+        "middle": {
+          "type": "score",
+          "instructions": "Score `middle` from 0 to 1",
+          "criteria": [
+            "0",
+            "1"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "zebra",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "alpha",
+          "kind": "choice",
+          "options": [
+            [
+              "z",
+              "z"
+            ],
+            [
+              "a",
+              "a"
+            ],
+            [
+              "m",
+              "m"
+            ]
+          ],
+          "minimum": null
+        },
+        {
+          "name": "middle",
+          "kind": "score",
+          "options": [],
+          "minimum": 0
+        }
+      ]
+    },
+    {
+      "case": "max-options-boundary",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "enum": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9",
+              "10",
+              "11",
+              "12",
+              "13",
+              "14",
+              "15",
+              "16",
+              "17",
+              "18",
+              "19",
+              "20",
+              "21",
+              "22",
+              "23",
+              "24",
+              "25",
+              "26",
+              "27",
+              "28",
+              "29",
+              "30",
+              "31"
+            ]
+          }
+        }
+      },
+      "questions": {
+        "c": {
+          "type": "choice",
+          "instructions": "What is `c`?",
+          "criteria": {
+            "0": null,
+            "1": null,
+            "2": null,
+            "3": null,
+            "4": null,
+            "5": null,
+            "6": null,
+            "7": null,
+            "8": null,
+            "9": null,
+            "10": null,
+            "11": null,
+            "12": null,
+            "13": null,
+            "14": null,
+            "15": null,
+            "16": null,
+            "17": null,
+            "18": null,
+            "19": null,
+            "20": null,
+            "21": null,
+            "22": null,
+            "23": null,
+            "24": null,
+            "25": null,
+            "26": null,
+            "27": null,
+            "28": null,
+            "29": null,
+            "30": null,
+            "31": null
+          }
+        }
+      },
+      "plan": [
+        {
+          "name": "c",
+          "kind": "choice",
+          "options": [
+            [
+              "0",
+              "0"
+            ],
+            [
+              "1",
+              "1"
+            ],
+            [
+              "2",
+              "2"
+            ],
+            [
+              "3",
+              "3"
+            ],
+            [
+              "4",
+              "4"
+            ],
+            [
+              "5",
+              "5"
+            ],
+            [
+              "6",
+              "6"
+            ],
+            [
+              "7",
+              "7"
+            ],
+            [
+              "8",
+              "8"
+            ],
+            [
+              "9",
+              "9"
+            ],
+            [
+              "10",
+              "10"
+            ],
+            [
+              "11",
+              "11"
+            ],
+            [
+              "12",
+              "12"
+            ],
+            [
+              "13",
+              "13"
+            ],
+            [
+              "14",
+              "14"
+            ],
+            [
+              "15",
+              "15"
+            ],
+            [
+              "16",
+              "16"
+            ],
+            [
+              "17",
+              "17"
+            ],
+            [
+              "18",
+              "18"
+            ],
+            [
+              "19",
+              "19"
+            ],
+            [
+              "20",
+              "20"
+            ],
+            [
+              "21",
+              "21"
+            ],
+            [
+              "22",
+              "22"
+            ],
+            [
+              "23",
+              "23"
+            ],
+            [
+              "24",
+              "24"
+            ],
+            [
+              "25",
+              "25"
+            ],
+            [
+              "26",
+              "26"
+            ],
+            [
+              "27",
+              "27"
+            ],
+            [
+              "28",
+              "28"
+            ],
+            [
+              "29",
+              "29"
+            ],
+            [
+              "30",
+              "30"
+            ],
+            [
+              "31",
+              "31"
+            ]
+          ],
+          "minimum": null
+        }
+      ]
+    },
+    {
+      "case": "max-score-levels-boundary",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        }
+      },
+      "questions": {
+        "n": {
+          "type": "score",
+          "instructions": "Score `n` from 1 to 10",
+          "criteria": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10"
+          ]
+        }
+      },
+      "plan": [
+        {
+          "name": "n",
+          "kind": "score",
+          "options": [],
+          "minimum": 1
+        }
+      ]
+    },
+    {
+      "case": "max-properties-boundary",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "p00": {
+            "type": "boolean"
+          },
+          "p01": {
+            "type": "boolean"
+          },
+          "p02": {
+            "type": "boolean"
+          },
+          "p03": {
+            "type": "boolean"
+          },
+          "p04": {
+            "type": "boolean"
+          },
+          "p05": {
+            "type": "boolean"
+          },
+          "p06": {
+            "type": "boolean"
+          },
+          "p07": {
+            "type": "boolean"
+          },
+          "p08": {
+            "type": "boolean"
+          },
+          "p09": {
+            "type": "boolean"
+          },
+          "p10": {
+            "type": "boolean"
+          },
+          "p11": {
+            "type": "boolean"
+          },
+          "p12": {
+            "type": "boolean"
+          },
+          "p13": {
+            "type": "boolean"
+          },
+          "p14": {
+            "type": "boolean"
+          },
+          "p15": {
+            "type": "boolean"
+          },
+          "p16": {
+            "type": "boolean"
+          },
+          "p17": {
+            "type": "boolean"
+          },
+          "p18": {
+            "type": "boolean"
+          },
+          "p19": {
+            "type": "boolean"
+          },
+          "p20": {
+            "type": "boolean"
+          },
+          "p21": {
+            "type": "boolean"
+          },
+          "p22": {
+            "type": "boolean"
+          },
+          "p23": {
+            "type": "boolean"
+          },
+          "p24": {
+            "type": "boolean"
+          },
+          "p25": {
+            "type": "boolean"
+          },
+          "p26": {
+            "type": "boolean"
+          },
+          "p27": {
+            "type": "boolean"
+          },
+          "p28": {
+            "type": "boolean"
+          },
+          "p29": {
+            "type": "boolean"
+          },
+          "p30": {
+            "type": "boolean"
+          },
+          "p31": {
+            "type": "boolean"
+          }
+        }
+      },
+      "questions": {
+        "p00": {
+          "type": "noul",
+          "instructions": "Is `p00` true?"
+        },
+        "p01": {
+          "type": "noul",
+          "instructions": "Is `p01` true?"
+        },
+        "p02": {
+          "type": "noul",
+          "instructions": "Is `p02` true?"
+        },
+        "p03": {
+          "type": "noul",
+          "instructions": "Is `p03` true?"
+        },
+        "p04": {
+          "type": "noul",
+          "instructions": "Is `p04` true?"
+        },
+        "p05": {
+          "type": "noul",
+          "instructions": "Is `p05` true?"
+        },
+        "p06": {
+          "type": "noul",
+          "instructions": "Is `p06` true?"
+        },
+        "p07": {
+          "type": "noul",
+          "instructions": "Is `p07` true?"
+        },
+        "p08": {
+          "type": "noul",
+          "instructions": "Is `p08` true?"
+        },
+        "p09": {
+          "type": "noul",
+          "instructions": "Is `p09` true?"
+        },
+        "p10": {
+          "type": "noul",
+          "instructions": "Is `p10` true?"
+        },
+        "p11": {
+          "type": "noul",
+          "instructions": "Is `p11` true?"
+        },
+        "p12": {
+          "type": "noul",
+          "instructions": "Is `p12` true?"
+        },
+        "p13": {
+          "type": "noul",
+          "instructions": "Is `p13` true?"
+        },
+        "p14": {
+          "type": "noul",
+          "instructions": "Is `p14` true?"
+        },
+        "p15": {
+          "type": "noul",
+          "instructions": "Is `p15` true?"
+        },
+        "p16": {
+          "type": "noul",
+          "instructions": "Is `p16` true?"
+        },
+        "p17": {
+          "type": "noul",
+          "instructions": "Is `p17` true?"
+        },
+        "p18": {
+          "type": "noul",
+          "instructions": "Is `p18` true?"
+        },
+        "p19": {
+          "type": "noul",
+          "instructions": "Is `p19` true?"
+        },
+        "p20": {
+          "type": "noul",
+          "instructions": "Is `p20` true?"
+        },
+        "p21": {
+          "type": "noul",
+          "instructions": "Is `p21` true?"
+        },
+        "p22": {
+          "type": "noul",
+          "instructions": "Is `p22` true?"
+        },
+        "p23": {
+          "type": "noul",
+          "instructions": "Is `p23` true?"
+        },
+        "p24": {
+          "type": "noul",
+          "instructions": "Is `p24` true?"
+        },
+        "p25": {
+          "type": "noul",
+          "instructions": "Is `p25` true?"
+        },
+        "p26": {
+          "type": "noul",
+          "instructions": "Is `p26` true?"
+        },
+        "p27": {
+          "type": "noul",
+          "instructions": "Is `p27` true?"
+        },
+        "p28": {
+          "type": "noul",
+          "instructions": "Is `p28` true?"
+        },
+        "p29": {
+          "type": "noul",
+          "instructions": "Is `p29` true?"
+        },
+        "p30": {
+          "type": "noul",
+          "instructions": "Is `p30` true?"
+        },
+        "p31": {
+          "type": "noul",
+          "instructions": "Is `p31` true?"
+        }
+      },
+      "plan": [
+        {
+          "name": "p00",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p01",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p02",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p03",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p04",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p05",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p06",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p07",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p08",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p09",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p10",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p11",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p12",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p13",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p14",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p15",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p16",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p17",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p18",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p19",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p20",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p21",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p22",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p23",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p24",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p25",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p26",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p27",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p28",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p29",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p30",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        },
+        {
+          "name": "p31",
+          "kind": "noul",
+          "options": [],
+          "minimum": null
+        }
+      ]
+    }
+  ],
+  "projections": [
+    {
+      "case": "choice-returns-the-value-not-the-label",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "enum": [
+              10,
+              20,
+              30
+            ]
+          }
+        }
+      },
+      "answers": {
+        "code": {
+          "type": "choice",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "choice": "20",
+          "probabilities": {
+            "10": 0.1,
+            "20": 0.8,
+            "30": 0.1
+          }
+        }
+      },
+      "values": {
+        "code": 20
+      }
+    },
+    {
+      "case": "choice-value-and-label-coincide-for-a-string-enum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          }
+        }
+      },
+      "answers": {
+        "dept": {
+          "type": "choice",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "choice": "support",
+          "probabilities": {
+            "billing": 0.3,
+            "support": 0.7
+          }
+        }
+      },
+      "values": {
+        "dept": "support"
+      }
+    },
+    {
+      "case": "const-projects-to-the-const-value",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": 7
+          }
+        }
+      },
+      "answers": {
+        "kind": {
+          "type": "choice",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "choice": "7",
+          "probabilities": {
+            "7": 1.0
+          }
+        }
+      },
+      "values": {
+        "kind": 7
+      }
+    },
+    {
+      "case": "choice-null-value",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tier": {
+            "enum": [
+              "gold",
+              null
+            ]
+          }
+        }
+      },
+      "answers": {
+        "tier": {
+          "type": "choice",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "choice": "null",
+          "probabilities": {
+            "gold": 0.2,
+            "null": 0.8
+          }
+        }
+      },
+      "values": {
+        "tier": null
+      }
+    },
+    {
+      "case": "choice-unknown-label-falls-back-to-the-label",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "enum": [
+              10,
+              20
+            ]
+          }
+        }
+      },
+      "answers": {
+        "code": {
+          "type": "choice",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "choice": "99",
+          "probabilities": {
+            "10": 0.5,
+            "20": 0.5
+          }
+        }
+      },
+      "values": {
+        "code": "99"
+      }
+    },
+    {
+      "case": "score-is-argmax-plus-minimum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "urgency": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          }
+        }
+      },
+      "answers": {
+        "urgency": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 0.9,
+          "probabilities": {
+            "0": 0.1,
+            "1": 0.1,
+            "2": 0.6,
+            "3": 0.1,
+            "4": 0.1
+          },
+          "legend": {}
+        }
+      },
+      "values": {
+        "urgency": 3
+      }
+    },
+    {
+      "case": "score-argmax-with-a-zero-minimum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        }
+      },
+      "answers": {
+        "n": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 0.0,
+          "probabilities": {
+            "0": 0.1,
+            "1": 0.2,
+            "2": 0.1,
+            "3": 0.6
+          },
+          "legend": {}
+        }
+      },
+      "values": {
+        "n": 3
+      }
+    },
+    {
+      "case": "score-argmax-with-a-negative-minimum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": -2,
+            "maximum": 2
+          }
+        }
+      },
+      "answers": {
+        "n": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 4.0,
+          "probabilities": {
+            "0": 0.6,
+            "1": 0.1,
+            "2": 0.1,
+            "3": 0.1,
+            "4": 0.1
+          },
+          "legend": {}
+        }
+      },
+      "values": {
+        "n": -2
+      }
+    },
+    {
+      "case": "score-argmax-tie-takes-the-first-level",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          }
+        }
+      },
+      "answers": {
+        "n": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 2.0,
+          "probabilities": {
+            "0": 0.4,
+            "1": 0.4,
+            "2": 0.2
+          },
+          "legend": {}
+        }
+      },
+      "values": {
+        "n": 1
+      }
+    },
+    {
+      "case": "score-without-probabilities-rounds",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 7
+          }
+        }
+      },
+      "answers": {
+        "n": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 2.4,
+          "probabilities": {},
+          "legend": {}
+        }
+      },
+      "values": {
+        "n": 5
+      }
+    },
+    {
+      "case": "score-without-probabilities-rounds-half-to-even",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": -2,
+            "maximum": 2
+          }
+        }
+      },
+      "answers": {
+        "n": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 2.5,
+          "probabilities": {},
+          "legend": {}
+        }
+      },
+      "values": {
+        "n": 0
+      }
+    },
+    {
+      "case": "score-without-probabilities-rounds-half-to-even-odd-case",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": -2,
+            "maximum": 2
+          }
+        }
+      },
+      "answers": {
+        "n": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 1.5,
+          "probabilities": {},
+          "legend": {}
+        }
+      },
+      "values": {
+        "n": 0
+      }
+    },
+    {
+      "case": "noul-exactly-half-is-true",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "answers": {
+        "ok": {
+          "type": "noul",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "noul": 0.5
+        }
+      },
+      "values": {
+        "ok": true
+      }
+    },
+    {
+      "case": "noul-just-below-half-is-false",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "answers": {
+        "ok": {
+          "type": "noul",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "noul": 0.49999999999999994
+        }
+      },
+      "values": {
+        "ok": false
+      }
+    },
+    {
+      "case": "noul-true",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "answers": {
+        "ok": {
+          "type": "noul",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "noul": 0.93
+        }
+      },
+      "values": {
+        "ok": true
+      }
+    },
+    {
+      "case": "low-confidence-choice-is-null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          }
+        }
+      },
+      "answers": {
+        "dept": {
+          "type": "choice",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "choice": "support",
+          "probabilities": {
+            "billing": 0.3,
+            "support": 0.7
+          },
+          "low_confidence": true
+        }
+      },
+      "values": {
+        "dept": null
+      }
+    },
+    {
+      "case": "low-confidence-score-is-null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          }
+        }
+      },
+      "answers": {
+        "n": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 1.0,
+          "probabilities": {
+            "0": 0.2,
+            "1": 0.7,
+            "2": 0.1
+          },
+          "legend": {},
+          "low_confidence": true
+        }
+      },
+      "values": {
+        "n": null
+      }
+    },
+    {
+      "case": "low-confidence-noul-is-null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "answers": {
+        "ok": {
+          "type": "noul",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "noul": 0.93,
+          "low_confidence": true
+        }
+      },
+      "values": {
+        "ok": null
+      }
+    },
+    {
+      "case": "an-unanswered-field-is-omitted-not-null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "answers": {
+        "ok": {
+          "type": "noul",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "noul": 0.8
+        }
+      },
+      "values": {
+        "ok": true
+      }
+    },
+    {
+      "case": "every-kind-at-once",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          },
+          "urgency": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "needs_human": {
+            "type": "boolean"
+          }
+        }
+      },
+      "answers": {
+        "dept": {
+          "type": "choice",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.9,
+            "support": 0.1
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "score": 3.0,
+          "probabilities": {
+            "0": 0.0,
+            "1": 0.1,
+            "2": 0.1,
+            "3": 0.7,
+            "4": 0.1
+          },
+          "legend": {}
+        },
+        "needs_human": {
+          "type": "noul",
+          "confidence": 0.6,
+          "answer_confidence": 0.7,
+          "action": {
+            "act_probability": 0.2
+          },
+          "noul": 0.2
+        }
+      },
+      "values": {
+        "dept": "billing",
+        "urgency": 4,
+        "needs_human": false
+      }
+    }
+  ],
+  "refusals": [
+    {
+      "case": "free-string",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string"
+          }
+        }
+      },
+      "error": "properties.note: a free string cannot be a fixed option set; use 'enum' or a boolean"
+    },
+    {
+      "case": "array",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "error": "properties.tags: arrays are not supported; ask one field per element"
+    },
+    {
+      "case": "nested-object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "inner": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "error": "properties.inner: nested objects are not supported; flatten the schema"
+    },
+    {
+      "case": "union-of-two-real-types",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "error": "properties.x: only 'Optional[...]' unions (one non-null branch) are supported, got 2"
+    },
+    {
+      "case": "union-of-null-only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "anyOf": [
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "error": "properties.x: only 'Optional[...]' unions (one non-null branch) are supported, got 0"
+    },
+    {
+      "case": "oneof-of-two-real-types",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "error": "properties.x: only 'Optional[...]' unions (one non-null branch) are supported, got 2"
+    },
+    {
+      "case": "type-list-with-two-non-null-types",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        }
+      },
+      "error": "properties.x: 'type' has multiple non-null types; unions are not supported"
+    },
+    {
+      "case": "top-level-is-an-array",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "error": "the top level must be an object with 'properties'"
+    },
+    {
+      "case": "top-level-has-no-properties",
+      "schema": {
+        "type": "object"
+      },
+      "error": "the top level must be an object with 'properties'"
+    },
+    {
+      "case": "top-level-type-is-wrong-but-properties-is-there",
+      "schema": {
+        "type": "array",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "error": "the top level must be an object with 'properties'"
+    },
+    {
+      "case": "top-level-is-a-string-schema",
+      "schema": {
+        "type": "string"
+      },
+      "error": "the top level must be an object with 'properties'"
+    },
+    {
+      "case": "empty-properties",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "error": "'properties' must be a non-empty object"
+    },
+    {
+      "case": "properties-is-not-an-object",
+      "schema": {
+        "type": "object",
+        "properties": []
+      },
+      "error": "'properties' must be a non-empty object"
+    },
+    {
+      "case": "too-many-properties",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "p00": {
+            "type": "boolean"
+          },
+          "p01": {
+            "type": "boolean"
+          },
+          "p02": {
+            "type": "boolean"
+          },
+          "p03": {
+            "type": "boolean"
+          },
+          "p04": {
+            "type": "boolean"
+          },
+          "p05": {
+            "type": "boolean"
+          },
+          "p06": {
+            "type": "boolean"
+          },
+          "p07": {
+            "type": "boolean"
+          },
+          "p08": {
+            "type": "boolean"
+          },
+          "p09": {
+            "type": "boolean"
+          },
+          "p10": {
+            "type": "boolean"
+          },
+          "p11": {
+            "type": "boolean"
+          },
+          "p12": {
+            "type": "boolean"
+          },
+          "p13": {
+            "type": "boolean"
+          },
+          "p14": {
+            "type": "boolean"
+          },
+          "p15": {
+            "type": "boolean"
+          },
+          "p16": {
+            "type": "boolean"
+          },
+          "p17": {
+            "type": "boolean"
+          },
+          "p18": {
+            "type": "boolean"
+          },
+          "p19": {
+            "type": "boolean"
+          },
+          "p20": {
+            "type": "boolean"
+          },
+          "p21": {
+            "type": "boolean"
+          },
+          "p22": {
+            "type": "boolean"
+          },
+          "p23": {
+            "type": "boolean"
+          },
+          "p24": {
+            "type": "boolean"
+          },
+          "p25": {
+            "type": "boolean"
+          },
+          "p26": {
+            "type": "boolean"
+          },
+          "p27": {
+            "type": "boolean"
+          },
+          "p28": {
+            "type": "boolean"
+          },
+          "p29": {
+            "type": "boolean"
+          },
+          "p30": {
+            "type": "boolean"
+          },
+          "p31": {
+            "type": "boolean"
+          },
+          "p32": {
+            "type": "boolean"
+          }
+        }
+      },
+      "error": "33 properties exceeds MAX_PROPERTIES=32"
+    },
+    {
+      "case": "too-many-options",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "enum": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9",
+              "10",
+              "11",
+              "12",
+              "13",
+              "14",
+              "15",
+              "16",
+              "17",
+              "18",
+              "19",
+              "20",
+              "21",
+              "22",
+              "23",
+              "24",
+              "25",
+              "26",
+              "27",
+              "28",
+              "29",
+              "30",
+              "31",
+              "32"
+            ]
+          }
+        }
+      },
+      "error": "properties.c: 33 options exceeds MAX_OPTIONS=32"
+    },
+    {
+      "case": "empty-enum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "enum": []
+          }
+        }
+      },
+      "error": "properties.c: 'enum' must not be empty"
+    },
+    {
+      "case": "duplicate-choice-labels",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "enum": [
+              "1",
+              1
+            ]
+          }
+        }
+      },
+      "error": "properties.c: enum values produce duplicate choice labels"
+    },
+    {
+      "case": "numeric-without-bounds",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer"
+          }
+        }
+      },
+      "error": "properties.n: a numeric field needs integer 'minimum' and 'maximum' to become a score"
+    },
+    {
+      "case": "numeric-with-float-bounds",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 1.5
+          }
+        }
+      },
+      "error": "properties.n: a numeric field needs integer 'minimum' and 'maximum' to become a score"
+    },
+    {
+      "case": "maximum-below-minimum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 1
+          }
+        }
+      },
+      "error": "properties.n: 'maximum' 1 is below 'minimum' 5"
+    },
+    {
+      "case": "too-many-score-levels",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          }
+        }
+      },
+      "error": "properties.n: 11 levels exceeds MAX_SCORE_LEVELS=10; narrow the range or use an enum"
+    },
+    {
+      "case": "empty-property-schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {}
+        }
+      },
+      "error": "properties.c: unsupported schema {}"
+    },
+    {
+      "case": "property-is-not-an-object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": "nope"
+        }
+      },
+      "error": "properties.c: property must be an object, got str"
+    },
+    {
+      "case": "unresolvable-ref",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "$ref": "#/$defs/Missing"
+          }
+        },
+        "$defs": {}
+      },
+      "error": "properties.c: $ref '#/$defs/Missing' does not resolve to an entry of this schema's '$defs' or 'definitions'"
+    },
+    {
+      "case": "remote-ref",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "$ref": "https://example.test/Desk"
+          }
+        }
+      },
+      "error": "properties.c: $ref 'https://example.test/Desk' does not resolve to an entry of this schema's '$defs' or 'definitions'"
+    },
+    {
+      "case": "recursive-ref",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "$defs": {
+          "Node": {
+            "$ref": "#/$defs/Node"
+          }
+        }
+      },
+      "error": "properties.c: $ref '#/$defs/Node' is recursive; flatten the schema"
+    },
+    {
+      "case": "truthy-non-array-anyof-is-not-a-fallthrough",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "anyOf": "abc"
+          }
+        }
+      },
+      "error": "properties.x: only 'Optional[...]' unions (one non-null branch) are supported, got 0"
+    },
+    {
+      "case": "truthy-non-array-anyof-with-a-oneof-to-shadow",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "anyOf": {
+              "a": 1
+            },
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "error": "properties.x: only 'Optional[...]' unions (one non-null branch) are supported, got 0"
+    },
+    {
+      "case": "top-level-is-null",
+      "schema": null,
+      "error": "expected a JSON schema object, got NoneType"
+    }
+  ],
+  "arguments": [
+    {
+      "case": "decide-with-both",
+      "error": "pass exactly one of schema= or questions="
+    },
+    {
+      "case": "decide-with-neither",
+      "error": "pass exactly one of schema= or questions="
+    },
+    {
+      "case": "decide-batch-with-both",
+      "error": "pass exactly one of schema= or questions="
+    },
+    {
+      "case": "decide-batch-with-neither",
+      "error": "pass exactly one of schema= or questions="
+    },
+    {
+      "case": "decide-batch-over-a-string",
+      "error": "states must be a sequence of states, not str"
+    },
+    {
+      "case": "decide-batch-without-a-batching-runner",
+      "error": "object has no predict_batch; loop decide() over the states instead"
+    }
+  ],
+  "calls": [
+    {
+      "case": "decide-ungated",
+      "batch": false,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "min_confidence": null,
+      "predictions": [
+        {
+          "dept": {
+            "type": "choice",
+            "confidence": 0.6,
+            "answer_confidence": 0.9,
+            "action": {
+              "act_probability": 0.2
+            },
+            "choice": "support",
+            "probabilities": {
+              "billing": 0.3,
+              "support": 0.7
+            }
+          },
+          "ok": {
+            "type": "noul",
+            "confidence": 0.6,
+            "answer_confidence": 0.55,
+            "action": {
+              "act_probability": 0.2
+            },
+            "noul": 0.9
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "values": {
+            "dept": "support",
+            "ok": true
+          },
+          "confidence": {
+            "dept": 0.6,
+            "ok": 0.6
+          },
+          "answer_confidence": {
+            "dept": 0.9,
+            "ok": 0.55
+          },
+          "probabilities": {
+            "dept": {
+              "billing": 0.3,
+              "support": 0.7
+            },
+            "ok": {
+              "false": 0.1,
+              "true": 0.9
+            }
+          }
+        }
+      ],
+      "forwarded": []
+    },
+    {
+      "case": "decide-gated-nulls-only-the-field-below-the-bar",
+      "batch": false,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "min_confidence": 0.6,
+      "predictions": [
+        {
+          "dept": {
+            "type": "choice",
+            "confidence": 0.6,
+            "answer_confidence": 0.9,
+            "action": {
+              "act_probability": 0.2
+            },
+            "choice": "support",
+            "probabilities": {
+              "billing": 0.3,
+              "support": 0.7
+            }
+          },
+          "ok": {
+            "type": "noul",
+            "confidence": 0.6,
+            "answer_confidence": 0.55,
+            "action": {
+              "act_probability": 0.2
+            },
+            "noul": 0.9
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "values": {
+            "dept": "support",
+            "ok": null
+          },
+          "confidence": {
+            "dept": 0.6,
+            "ok": 0.6
+          },
+          "answer_confidence": {
+            "dept": 0.9,
+            "ok": 0.55
+          },
+          "probabilities": {
+            "dept": {
+              "billing": 0.3,
+              "support": 0.7
+            },
+            "ok": {
+              "false": 0.1,
+              "true": 0.9
+            }
+          }
+        }
+      ],
+      "forwarded": [
+        "min_confidence"
+      ]
+    },
+    {
+      "case": "decide-gated-nulls-everything",
+      "batch": false,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "min_confidence": 0.95,
+      "predictions": [
+        {
+          "dept": {
+            "type": "choice",
+            "confidence": 0.6,
+            "answer_confidence": 0.9,
+            "action": {
+              "act_probability": 0.2
+            },
+            "choice": "support",
+            "probabilities": {
+              "billing": 0.3,
+              "support": 0.7
+            }
+          },
+          "ok": {
+            "type": "noul",
+            "confidence": 0.6,
+            "answer_confidence": 0.55,
+            "action": {
+              "act_probability": 0.2
+            },
+            "noul": 0.9
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "values": {
+            "dept": null,
+            "ok": null
+          },
+          "confidence": {
+            "dept": 0.6,
+            "ok": 0.6
+          },
+          "answer_confidence": {
+            "dept": 0.9,
+            "ok": 0.55
+          },
+          "probabilities": {
+            "dept": {
+              "billing": 0.3,
+              "support": 0.7
+            },
+            "ok": {
+              "false": 0.1,
+              "true": 0.9
+            }
+          }
+        }
+      ],
+      "forwarded": [
+        "min_confidence"
+      ]
+    },
+    {
+      "case": "decide-gated-at-zero-nulls-nothing",
+      "batch": false,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          }
+        }
+      },
+      "min_confidence": 0.0,
+      "predictions": [
+        {
+          "dept": {
+            "type": "choice",
+            "confidence": 0.6,
+            "answer_confidence": 0.1,
+            "action": {
+              "act_probability": 0.2
+            },
+            "choice": "billing",
+            "probabilities": {
+              "billing": 0.6,
+              "support": 0.4
+            }
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "values": {
+            "dept": "billing"
+          },
+          "confidence": {
+            "dept": 0.6
+          },
+          "answer_confidence": {
+            "dept": 0.1
+          },
+          "probabilities": {
+            "dept": {
+              "billing": 0.6,
+              "support": 0.4
+            }
+          }
+        }
+      ],
+      "forwarded": [
+        "min_confidence"
+      ]
+    },
+    {
+      "case": "decide-rounds-the-nouls-two-sided-distribution",
+      "batch": false,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "min_confidence": null,
+      "predictions": [
+        {
+          "ok": {
+            "type": "noul",
+            "confidence": 0.6,
+            "answer_confidence": 0.88,
+            "action": {
+              "act_probability": 0.2
+            },
+            "noul": 0.123456
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "values": {
+            "ok": false
+          },
+          "confidence": {
+            "ok": 0.6
+          },
+          "answer_confidence": {
+            "ok": 0.88
+          },
+          "probabilities": {
+            "ok": {
+              "false": 0.8765,
+              "true": 0.1235
+            }
+          }
+        }
+      ],
+      "forwarded": []
+    },
+    {
+      "case": "decide-batch-keeps-input-order",
+      "batch": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          }
+        }
+      },
+      "min_confidence": null,
+      "predictions": [
+        {
+          "n": {
+            "type": "score",
+            "confidence": 0.6,
+            "answer_confidence": 0.7,
+            "action": {
+              "act_probability": 0.2
+            },
+            "score": 0.0,
+            "probabilities": {
+              "0": 0.8,
+              "1": 0.1,
+              "2": 0.1
+            },
+            "legend": {}
+          }
+        },
+        {
+          "n": {
+            "type": "score",
+            "confidence": 0.6,
+            "answer_confidence": 0.7,
+            "action": {
+              "act_probability": 0.2
+            },
+            "score": 1.0,
+            "probabilities": {
+              "0": 0.1,
+              "1": 0.8,
+              "2": 0.1
+            },
+            "legend": {}
+          }
+        },
+        {
+          "n": {
+            "type": "score",
+            "confidence": 0.6,
+            "answer_confidence": 0.7,
+            "action": {
+              "act_probability": 0.2
+            },
+            "score": 2.0,
+            "probabilities": {
+              "0": 0.1,
+              "1": 0.1,
+              "2": 0.8
+            },
+            "legend": {}
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "values": {
+            "n": 1
+          },
+          "confidence": {
+            "n": 0.6
+          },
+          "answer_confidence": {
+            "n": 0.7
+          },
+          "probabilities": {
+            "n": {
+              "0": 0.8,
+              "1": 0.1,
+              "2": 0.1
+            }
+          }
+        },
+        {
+          "values": {
+            "n": 2
+          },
+          "confidence": {
+            "n": 0.6
+          },
+          "answer_confidence": {
+            "n": 0.7
+          },
+          "probabilities": {
+            "n": {
+              "0": 0.1,
+              "1": 0.8,
+              "2": 0.1
+            }
+          }
+        },
+        {
+          "values": {
+            "n": 3
+          },
+          "confidence": {
+            "n": 0.6
+          },
+          "answer_confidence": {
+            "n": 0.7
+          },
+          "probabilities": {
+            "n": {
+              "0": 0.1,
+              "1": 0.1,
+              "2": 0.8
+            }
+          }
+        }
+      ],
+      "forwarded": []
+    },
+    {
+      "case": "decide-batch-gates-each-state-on-its-own",
+      "batch": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dept": {
+            "enum": [
+              "billing",
+              "support"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "min_confidence": 0.5,
+      "predictions": [
+        {
+          "dept": {
+            "type": "choice",
+            "confidence": 0.6,
+            "answer_confidence": 0.9,
+            "action": {
+              "act_probability": 0.2
+            },
+            "choice": "support",
+            "probabilities": {
+              "billing": 0.3,
+              "support": 0.7
+            }
+          },
+          "ok": {
+            "type": "noul",
+            "confidence": 0.6,
+            "answer_confidence": 0.55,
+            "action": {
+              "act_probability": 0.2
+            },
+            "noul": 0.9
+          }
+        },
+        {
+          "dept": {
+            "type": "choice",
+            "confidence": 0.6,
+            "answer_confidence": 0.4,
+            "action": {
+              "act_probability": 0.2
+            },
+            "choice": "billing",
+            "probabilities": {
+              "billing": 0.6,
+              "support": 0.4
+            }
+          },
+          "ok": {
+            "type": "noul",
+            "confidence": 0.6,
+            "answer_confidence": 0.55,
+            "action": {
+              "act_probability": 0.2
+            },
+            "noul": 0.2
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "values": {
+            "dept": "support",
+            "ok": true
+          },
+          "confidence": {
+            "dept": 0.6,
+            "ok": 0.6
+          },
+          "answer_confidence": {
+            "dept": 0.9,
+            "ok": 0.55
+          },
+          "probabilities": {
+            "dept": {
+              "billing": 0.3,
+              "support": 0.7
+            },
+            "ok": {
+              "false": 0.1,
+              "true": 0.9
+            }
+          }
+        },
+        {
+          "values": {
+            "dept": null,
+            "ok": false
+          },
+          "confidence": {
+            "dept": 0.6,
+            "ok": 0.6
+          },
+          "answer_confidence": {
+            "dept": 0.4,
+            "ok": 0.55
+          },
+          "probabilities": {
+            "dept": {
+              "billing": 0.6,
+              "support": 0.4
+            },
+            "ok": {
+              "false": 0.8,
+              "true": 0.2
+            }
+          }
+        }
+      ],
+      "forwarded": []
+    }
+  ]
+}

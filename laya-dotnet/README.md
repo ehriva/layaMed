@@ -72,10 +72,11 @@ using Laya;
 This SDK runs **ONNX** models (opset 18), in either of two artifact layouts. The
 **fused** layout — this repo's own `export_onnx.py` — is a `model.onnx` graph with its weights in
 a `model.onnx.data` sidecar beside it, plus `rl_agent_config.json` and `tokenizer/`. The
-**split** layout — produced by `laya-ts`'s exporter — is a self-contained `encoder.onnx` and
-`head.onnx` pair with no external-data sidecar, plus the same `rl_agent_config.json` and a
-root-level `tokenizer.json`. No Python is needed at runtime for either; Python (or, for the split
-layout, `laya-ts`) is used once, to export the model from the published PyTorch checkpoint.
+**split** layout — produced by `laya-ts`'s exporter — is an `encoder.onnx` and `head.onnx`
+pair, each with its own `.data` sidecar when that graph's weights exceed the protobuf limit,
+plus the same `rl_agent_config.json` and a root-level `tokenizer.json`. No Python is needed at
+runtime for either; Python (or, for the split layout, `laya-ts`) is used once, to export the
+model from the published PyTorch checkpoint.
 
 The engine auto-detects which layout a directory holds — nothing in the API asks you to choose
 one. Point it at a checkpoint directory with `LayaEngine.FromDirectory(...)`,
@@ -215,8 +216,8 @@ Question.Noul(
 ### Instructions
 
 `instructions` is `object`, not `string`. A string is used exactly as written, which is what you
-normally want. Any other value is serialized as JSON with non-ASCII characters escaped, matching
-the Python SDK's behavior with non-string instructions. Refer to state fields in backticks
+normally want. Any other value is serialized as JSON with non-ASCII characters kept as written,
+matching the Python SDK's behavior with non-string instructions. Refer to state fields in backticks
 (`` `body` ``), as the presets do.
 
 ### QuestionSet
@@ -481,8 +482,10 @@ override), loading checkpoints lazily under an LRU cache:
 
 ```csharp
 using var router = new LayaRouter(new LayaRouterOptions { MaxLoaded = 2 });
-var result = router.Predict(new { message = "I was charged twice" }, questions);   // -> english
-var deDe   = router.Predict(new { message = "Mein Konto wurde zweimal belastet" }, questions); // -> multilingual
+var result = router.Predict(
+    new Dictionary<string, object?> { ["message"] = "I was charged twice" }, questions);   // -> english
+var deDe   = router.Predict(
+    new Dictionary<string, object?> { ["message"] = "Mein Konto wurde zweimal belastet" }, questions); // -> multilingual
 Console.WriteLine(result.Routing!.Reason);   // "English Latin text"
 ```
 

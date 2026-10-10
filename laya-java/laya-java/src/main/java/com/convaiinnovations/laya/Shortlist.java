@@ -13,7 +13,7 @@ import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Opt-in embedding shortlist for a choice question with many labels. A port of
+ * Opt-in embedding shortlist and tournament for a choice question with many labels. A port of
  * {@code laya.shortlist}.
  *
  * <p>Every option of a choice shares one {@code head_max_len} budget, so a large label set leaves
@@ -42,6 +42,9 @@ import java.util.concurrent.locks.ReentrantLock;
  *       paying per embedding call cares about that last part.
  * </ul>
  *
+ * <p>{@link #predictTournament} needs no embedder: the decision model answers the labels in groups
+ * small enough to keep their tokens, and the group winners meet in one more prediction.
+ *
  * <p>{@code embed_fn_from_agent} is deliberately not ported. It mean-pools the checkpoint's own
  * encoder, which needs the encoder's hidden states; the ONNX graph this runtime loads exposes
  * logits, not hidden states. A dedicated bi-encoder passed as an {@link Embedder} shortlists
@@ -51,6 +54,9 @@ public final class Shortlist {
 
     /** The reference's default: keep twenty labels. */
     public static final int DEFAULT_K = 20;
+
+    /** The reference's default tournament group: up to 256 labels take one round. */
+    public static final int DEFAULT_TOURNAMENT_GROUP = 16;
 
     private Shortlist() {
     }
@@ -165,10 +171,14 @@ public final class Shortlist {
      */
     public static Ranking rank(Object state, Map<String, ?> criteria, Embedder embedder, int k,
             String instructions) {
-        Map<String, Object> options = new LinkedHashMap<>();
         if (criteria == null) {
             throw new IllegalArgumentException("criteria must not be null");
         }
+        // Validated BEFORE the copy. Copying into a LinkedHashMap preserves whatever order the
+        // caller's map had, so checking afterwards can never fail -- and order decides which labels
+        // survive the cut here, not just how they are numbered.
+        Question.requireOrderedCriteria(criteria);
+        Map<String, Object> options = new LinkedHashMap<>();
         options.putAll(criteria);
         if (options.isEmpty()) {
             throw new IllegalArgumentException("choice criteria must contain at least one option");
@@ -230,6 +240,186 @@ public final class Shortlist {
     public static Shortlisted predict(Predictor predictor, Object state,
             Map<String, Question> questions, Embedder embedder) {
         return predict(predictor, state, questions, embedder, DEFAULT_K);
+    }
+
+    // ------------------------------------------------------------------ the tournament
+
+    /**
+     * What a tournament left of one choice question.
+     *
+     * @param labels the finalists, in criteria order; every label when no round was played
+     * @param total  how many labels the question had
+     * @param rounds how many elimination rounds the question played
+     */
+    public record Bracket(List<String> labels, int total, int rounds) {
+
+        public Bracket {
+            labels = List.copyOf(labels);
+            if (labels.isEmpty()) {
+                throw new IllegalArgumentException("a bracket keeps at least one label");
+            }
+            if (total < labels.size()) {
+                throw new IllegalArgumentException(String.format(
+                        "total is %d but %d labels were kept", total, labels.size()));
+            }
+            if (rounds < 0) {
+                throw new IllegalArgumentException("rounds must not be negative, got " + rounds);
+            }
+            if (rounds == 0 && labels.size() != total) {
+                throw new IllegalArgumentException(String.format(
+                        "a choice that played no round keeps all %d labels, not %d",
+                        total, labels.size()));
+            }
+        }
+    }
+
+    /** The final prediction of a tournament, and each choice question's bracket. */
+    public record Tournament(Prediction prediction, Map<String, Bracket> tournament) {
+
+        public Tournament {
+            if (prediction == null) {
+                throw new IllegalArgumentException("prediction must not be null");
+            }
+            if (tournament == null) {
+                throw new IllegalArgumentException("tournament must not be null");
+            }
+            tournament = Collections.unmodifiableMap(new LinkedHashMap<>(tournament));
+        }
+    }
+
+    /**
+     * Narrow each large choice question by elimination, then predict once more.
+     *
+     * <p>A choice with more than {@code groupSize} labels is cut, in criteria order, into groups of
+     * near-equal size and at most {@code groupSize}. One prediction answers every group of every
+     * such question -- the groups go in as separate questions, keyed {@code "0"}, {@code "1"}, ...
+     * -- and each group's answer goes through to the next round. Rounds repeat until no choice has
+     * more than {@code groupSize} labels left.
+     *
+     * <p>The final prediction answers every question of the request, with each choice that played
+     * a round cut to its finalists; everything else goes to it unchanged, so when nothing needs a
+     * round it is the only call. Answers, probabilities and usage are the final call's, so a
+     * tournament choice's probabilities are over its finalists only. The caller's map is not
+     * modified.
+     *
+     * <p>A round's answer advances as given, as in the reference: an answer from outside its group
+     * is carried forward, and duplicates collapse when the question is cut.
+     *
+     * @throws IllegalArgumentException if {@code groupSize} is below two; if a round's prediction
+     *                                  has no choice answer for a group (the reference's
+     *                                  {@code KeyError}, raised at once); or if a question is cut
+     *                                  to a label it does not have (its {@code KeyError} at that
+     *                                  cut, in the next round or the final call)
+     */
+    public static Tournament predictTournament(Predictor predictor, Object state,
+            Map<String, Question> questions, int groupSize) {
+        if (predictor == null) {
+            throw new IllegalArgumentException("predictor must not be null");
+        }
+        if (questions == null) {
+            throw new IllegalArgumentException("questions must not be null");
+        }
+        if (groupSize < 2) {
+            throw new IllegalArgumentException(
+                    "group_size must be an integer of at least 2, got " + groupSize);
+        }
+        Map<String, List<String>> finalists = new LinkedHashMap<>();
+        Map<String, Integer> rounds = new LinkedHashMap<>();
+        for (Map.Entry<String, Question> entry : questions.entrySet()) {
+            Question question = entry.getValue();
+            if (question != null && question.type() == Question.Type.CHOICE) {
+                finalists.put(entry.getKey(), question.labels());
+                rounds.put(entry.getKey(), 0);
+            }
+        }
+        while (true) {
+            List<String> owners = new ArrayList<>();
+            List<List<String>> groups = new ArrayList<>();
+            for (Map.Entry<String, List<String>> entry : finalists.entrySet()) {
+                List<List<String>> parts = groups(entry.getValue(), groupSize);
+                if (parts.size() > 1) {
+                    for (List<String> part : parts) {
+                        owners.add(entry.getKey());
+                        groups.add(part);
+                    }
+                }
+            }
+            if (groups.isEmpty()) {
+                break;
+            }
+            Map<String, Question> round = new LinkedHashMap<>();
+            for (int i = 0; i < groups.size(); i++) {
+                round.put(Integer.toString(i), cut(questions.get(owners.get(i)), groups.get(i)));
+            }
+            Prediction answered = predictor.predict(state, round);
+            Map<String, List<String>> winners = new LinkedHashMap<>();
+            for (int i = 0; i < groups.size(); i++) {
+                String id = Integer.toString(i);
+                Answer answer = answered == null ? null : answered.answer(id);
+                // Only a missing choice fails here; any label advances, as in the reference.
+                if (!(answer instanceof Answer.Choice choice) || choice.choice() == null) {
+                    throw new IllegalArgumentException(String.format(
+                            "round question %s of %s has no choice answer: %s",
+                            id, PythonJson.repr(owners.get(i)), answer));
+                }
+                winners.computeIfAbsent(owners.get(i), key -> new ArrayList<>())
+                        .add(choice.choice());
+            }
+            for (Map.Entry<String, List<String>> entry : winners.entrySet()) {
+                finalists.put(entry.getKey(), entry.getValue());
+                rounds.merge(entry.getKey(), 1, Integer::sum);
+            }
+        }
+        Map<String, Question> last = new LinkedHashMap<>(questions);
+        Map<String, Bracket> meta = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : finalists.entrySet()) {
+            String id = entry.getKey();
+            int played = rounds.get(id);
+            if (played > 0) {
+                last.put(id, cut(questions.get(id), entry.getValue()));
+            }
+            meta.put(id, new Bracket(entry.getValue(), questions.get(id).labels().size(), played));
+        }
+        return new Tournament(predictor.predict(state, last), meta);
+    }
+
+    /** A tournament with the reference's default group size. */
+    public static Tournament predictTournament(Predictor predictor, Object state,
+            Map<String, Question> questions) {
+        return predictTournament(predictor, state, questions, DEFAULT_TOURNAMENT_GROUP);
+    }
+
+    /**
+     * {@code labels} in criteria order, cut into {@code ceil(n / groupSize)} contiguous groups.
+     *
+     * <p>Group {@code i} is {@code labels[i*n/parts : (i+1)*n/parts]}, the reference's integer
+     * split, so sizes differ by at most one and the larger groups fall where it puts them.
+     */
+    static List<List<String>> groups(List<String> labels, int groupSize) {
+        int n = labels.size();
+        int parts = (n + groupSize - 1) / groupSize;
+        List<List<String>> out = new ArrayList<>(parts);
+        for (int i = 0; i < parts; i++) {
+            // long, so i * n cannot overflow on a large label set.
+            int from = (int) ((long) i * n / parts);
+            int to = (int) ((long) (i + 1) * n / parts);
+            out.add(List.copyOf(labels.subList(from, to)));
+        }
+        return out;
+    }
+
+    /** The question asked again over these of its labels, in the order given. */
+    private static Question cut(Question question, List<String> labels) {
+        Map<String, Object> criteria = criteriaOf(question);
+        Map<String, Object> subset = new LinkedHashMap<>();
+        for (String label : labels) {
+            if (!criteria.containsKey(label)) {
+                throw new IllegalArgumentException(
+                        "the choice has no label " + PythonJson.repr(label) + " to cut to");
+            }
+            subset.put(label, criteria.get(label));
+        }
+        return Question.choice(question.instructions(), subset);
     }
 
     // ------------------------------------------------------------------ the ranking

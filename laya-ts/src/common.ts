@@ -238,10 +238,28 @@ function pyRepr(v: unknown): string {
   return String(v);
 }
 
-export type MinConfidenceMap = Record<string, number>;
+/** The option types and option-count sizes `optionBucket`/`tempBucket` can produce. The bucket
+ *  type and the runtime `BUCKET_KEY` check below are both derived from these, so what the type
+ *  accepts cannot drift from the keys the runtime produces. */
+const BUCKET_TYPES = ["choice", "score", "noul"] as const;
+const BUCKET_SIZES = ["2", "3-5", "6-10", "11+"] as const;
+
+/** The option-count bucket for a question with `k` options. */
+function optionCountBucketSize(k: number): (typeof BUCKET_SIZES)[number] {
+  return k <= 2 ? BUCKET_SIZES[0] : k <= 5 ? BUCKET_SIZES[1] : k <= 10 ? BUCKET_SIZES[2] : BUCKET_SIZES[3];
+}
+
+/** One bucket key the runtime can produce, e.g. "choice:2" or "score:11+". */
+export type MinConfidenceBucket = `${(typeof BUCKET_TYPES)[number]}:${(typeof BUCKET_SIZES)[number]}`;
+/** A `MinConfidenceMap` key: a bucket the runtime can produce, or "default" for the rest. */
+export type MinConfidenceKey = MinConfidenceBucket | "default";
+
+export type MinConfidenceMap = { [K in MinConfidenceKey]?: number };
 export type MinConfidence = number | MinConfidenceMap;
 
-const BUCKET_KEY = /^(choice|score|noul):(2|3-5|6-10|11\+)$/;
+const BUCKET_KEY = new RegExp(
+  `^(${BUCKET_TYPES.join("|")}):(${BUCKET_SIZES.map((size) => size.replace("+", "\\+")).join("|")})$`,
+);
 
 /**
  * Validate a per-bucket abstention-threshold map (#394).
@@ -253,7 +271,7 @@ export function checkMinConfidenceMap(m: unknown): MinConfidenceMap {
   if (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).length === 0) {
     throw new Error(`a min_confidence map must be a non-empty dict of bucket -> float, got ${pyRepr(m)}`);
   }
-  const out: MinConfidenceMap = {};
+  const out: Record<string, number> = {};
   for (const [key, val] of Object.entries(m as Record<string, unknown>)) {
     if (key !== "default" && !BUCKET_KEY.test(key)) {
       throw new Error(`min_confidence map keys must be strings like 'choice:3-5', got ${pyRepr(key)}`);
@@ -293,7 +311,7 @@ export function optionBucket(answer: Record<string, unknown>): string | null {
   } else {
     return null;
   }
-  const size = k <= 2 ? "2" : k <= 5 ? "3-5" : k <= 10 ? "6-10" : "11+";
+  const size = optionCountBucketSize(k);
   return `${qt}:${size}`;
 }
 
@@ -303,8 +321,9 @@ export function resolveMinConfidence(
   defaultVal: number = 0.0,
 ): number {
   const key = optionBucket(answer);
-  if (key !== null && key in thresholds) {
-    return thresholds[key];
+  if (key !== null) {
+    const threshold = (thresholds as Record<string, number | undefined>)[key];
+    if (threshold !== undefined) return threshold;
   }
   return thresholds.default ?? defaultVal;
 }
@@ -352,8 +371,7 @@ export function clampTemperature(t: unknown): number {
   return Math.min(TEMP_MAX, Math.max(TEMP_MIN, f));
 }
 export function tempBucket(qtype: number, k: number): string {
-  const size = k <= 2 ? "2" : k <= 5 ? "3-5" : k <= 10 ? "6-10" : "11+";
-  return `${["choice", "score", "noul"][qtype]}:${size}`;
+  return `${BUCKET_TYPES[qtype]}:${optionCountBucketSize(k)}`;
 }
 
 export interface BinningEntry {

@@ -29,6 +29,117 @@ Exit codes: `0` on success, `1` when a threshold or a baseline tolerance fails, 
 usage error. `run` prints the overall metrics and any requested slices to stdout, and writes
 the full report and a Markdown summary when `--json` / `--markdown` are given.
 
+## Comparing a student with repeated teacher decisions
+
+When a teacher gives different answers to the same input, a single saved answer
+does not describe its repeatability. `compare_agreement` compares a student and
+an independent teacher repeat against one fixed reference teacher observation.
+It takes three saved runs and needs no model weights or teacher service:
+
+```bash
+laya-evals agreement reference.json repeat.json student.json \
+    --bootstrap-samples 2000 --seed 0 --json agreement.json
+```
+
+Without `--json`, the command writes the report to stdout. `--seed` controls only
+the bootstrap, not model generation. Success exits `0`; malformed or misaligned
+runs exit `2`. This command does not apply a replacement or quality gate.
+
+Each input is a JSON object with the following shape:
+
+```json
+{
+  "schema": "laya-agreement-run/1",
+  "run_id": "teacher-reference",
+  "provenance": {
+    "model": "teacher-checkpoint",
+    "revision": null,
+    "settings": {"temperature": 0.7, "prompt_template": "Choose one label."},
+    "seed": 42
+  },
+  "cases": [{
+    "id": "ticket-001",
+    "state": "I was charged twice.",
+    "questions": {"route": {
+      "type": "choice",
+      "instructions": "Select the team responsible for this request.",
+      "criteria": ["billing", "support"]
+    }},
+    "answers": {"route": "billing"},
+    "language": "en",
+    "tags": ["duplicate-charge"]
+  }]
+}
+```
+
+Use a distinct `run_id` for each observation run. All three runs must contain
+exactly the same unique case IDs, states, question definitions, language and tags;
+row order may differ. A state must be non-null JSON. Question definitions preserve option order and accept
+non-empty criteria dictionaries or lists of distinct string labels. Answers must
+cover every question. A student answer may be `null` for abstention; teacher
+answers must be labels. Missing cases, unknown labels, non-finite JSON values and
+duplicate JSON object keys in CLI inputs are errors, rather than omitted samples.
+
+The two teacher runs must declare identical model, revision and settings. Put
+sampling parameters and the prompt template in `settings`, and repetition seeds
+outside it. Other metadata, such as the dataset revision and generation script,
+is preserved. Record immutable model revisions when available; explicitly use
+`null` when unknown. The report flags unknown revisions but cannot verify that
+the recorded provenance is accurate or that the teacher calls were independent.
+Input object order is significant, matching Laya's serialization of structured
+states and questions; keep it identical across the runs.
+
+To run a local student after validating the teacher records:
+
+```python
+import json
+import laya
+from laya.evals import evaluate_agreement
+
+with open("reference.json", encoding="utf-8") as handle:
+    reference = json.load(handle)
+with open("repeat.json", encoding="utf-8") as handle:
+    repeat = json.load(handle)
+revision = "YOUR_CHECKPOINT_COMMIT"
+with laya.Router(device="cpu", revision=revision) as runner:
+    report = evaluate_agreement(
+        runner, reference, repeat, model="english",
+        student_provenance={
+            "model": "convaiinnovations/laya", "revision": revision,
+            "settings": {"device": "cpu"},
+        },
+    )
+print(report["overall"])
+```
+
+The runner uses the same `predict(state, questions, model=...)` protocol as the
+labelled harness (for example, `laya.Router`). Inputs are
+copied before inference. Runner failures propagate; invalid or incomplete outputs
+raise `EvalError`. A choice flagged `abstention="abstained"` becomes a null
+observation, while its underlying choice must still be a valid label.
+
+The separate `laya-agreement-report/1` report records provenance, input hashes,
+individual paired decisions and rates sliced by question ID, language and tag.
+For every decision, teacher repeat agreement is `repeat == reference`, student
+agreement is `student == reference`, and the paired delta is their difference.
+All rates use the full decision count: abstentions contribute zero agreement and
+reduce `student_coverage`. The 95% percentile interval resamples whole case IDs,
+keeping their questions together, and recomputes the ratio of decision sums. It
+is deterministic for fixed inputs, seed and bootstrap count (100–100000). With
+fewer than two cases the interval is `null`. Slice rates have no intervals.
+
+Agreement is not accuracy, and teacher repeatability is not a theoretical ceiling.
+Both models can agree on a wrong answer. The interval describes variation across
+the supplied cases with their saved observations; it does not capture additional
+teacher generations. An interval containing zero does not establish equivalence.
+Inspect slices and individual decisions for label skew, and use labelled evals
+for correctness or calibration claims.
+
+[`examples/evals/teacher_agreement.py`](https://github.com/NandhaKishorM/laya/blob/main/examples/evals/teacher_agreement.py)
+replays two published teacher observations from a pinned public dataset against
+a local Laya checkpoint, saving the three runs and their report. Its small fixed
+sample demonstrates the workflow, not deployment readiness.
+
 ## Attributing shortlist errors
 
 For a labelled high-cardinality choice set, `laya.evals_shortlist.evaluate_shortlist`
@@ -131,13 +242,20 @@ Each metric is computed per answer where it applies and aggregated over the data
 | `noul_accuracy` | `noul` | fraction whose boolean (probability >= 0.5) matches |
 | `score_mae` | `score` | mean absolute error |
 | `score_within_<tol>` | `score` | fraction within an absolute tolerance |
-| `ece` | any answer with a confidence | expected calibration error, 15 bins, computed on the column `laya.evals._answer_confidence` reads -- `answer["answer_confidence"]` where the answer carries it, and a fallback where it does not; see [which confidence a metric reads](#which-confidence-a-metric-reads) |
+| `ece` | any answer with a confidence and a known label | expected calibration error, 15 bins, computed on the column `laya.evals._answer_confidence` reads -- `answer["answer_confidence"]` where the answer carries it, and a fallback where it does not; see [which confidence a metric reads](#which-confidence-a-metric-reads) |
 | `brier` | any answer with a confidence and a known label | Brier score of confidence as P(correct), `mean((confidence - correct)**2)`; lower is better |
 | `aurc` | any answer with a confidence and a known label | area under the risk--coverage curve: one risk value per distinct confidence level, each weighted by the answers that level spans; lower is better, and rewards a confidence that *ranks* right from wrong rather than just being calibrated |
 | `selective_accuracy@50`, `selective_accuracy@80` | any answer with a confidence and a known label | accuracy over the answers a confidence threshold at the 50% / 80% coverage point accepts -- what abstaining on the least-confident tail buys. A threshold cannot split a group of equal confidences, so this can cover more than the named fraction; see [coverage cuts](#coverage-cuts-and-ties) |
 | `mean_confidence` | any answer with a confidence | mean of the same column -- `answer["answer_confidence"]` where the answer carries it |
 | `latency_p50_ms`, `latency_p95_ms` | per request | wall time each request waited, informational -- see [batching](#batching-and-timing) |
 | `cost_per_decision_p50_ms`, `cost_per_decision_p95_ms` | per decision | a call's wall time divided by the rows it carried, informational |
+
+A "known label" is one `_correct` can judge: a `choice` answer against a string label, or a `noul`
+answer against a boolean. A `score` answer has no `correct` value at any tolerance, so it is left out
+of all five of those metrics -- `ece` included, because `ece`, `brier`, `aurc` and both
+`selective_accuracy@*` read one and the same `(confidence, correct)` column. A `score`-only dataset
+therefore publishes no `ece` however confident its answers are, and `--max-ece` over it fails with
+`metric 'ece' is not in the report` rather than passing on a number that was never computed.
 
 ### Which confidence a metric reads
 
@@ -207,8 +325,11 @@ With no ties in the data there is one level per answer, and both metrics are exa
 always been -- bit-identical, not merely close.
 
 
-Add `ScoreWithin(0.25)` to the evaluator list for a tolerance metric; the default set is
-`choice_accuracy`, `noul_accuracy`, `score_mae`, `mean_confidence`, plus `ece`. From the CLI the
+Add `ScoreWithin(0.25)` to the evaluator list for a tolerance metric; the default evaluator set is
+`choice_accuracy`, `noul_accuracy`, `score_mae` and `mean_confidence`. The confidence metrics are not
+evaluators and are not opted into: `ece`, `brier`, `aurc`, `selective_accuracy@50` and
+`selective_accuracy@80` are all computed on every run that has at least one answer carrying both a
+confidence and a known label, whatever evaluator list it was given. From the CLI the
 same thing is one flag: `laya-evals run data.jsonl --score-within 0.25` reports `score_within_0.25`
 beside the defaults, and the flag repeats, so `--score-within 0.25 --score-within 0.5` reports both.
 

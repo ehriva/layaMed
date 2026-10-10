@@ -131,6 +131,68 @@ def run(cmd: list, env: dict = None):
     print("  (%.1f s)" % (time.perf_counter() - t0), flush=True)
 
 
+def verify_snapshot(directory, label, required=()):
+    """Refuses a snapshot that is missing files, or whose files arrived empty or unparseable.
+
+    `snapshot_download` reports success on a TRUNCATED fetch. Measured in CI: the hub
+    rate-limited an unauthenticated request and `hf-xet` wrote a 0-byte 34 MB
+    `tokenizer.json` without raising, and nothing noticed until a tokenizer constructor failed
+    with `EOF while parsing a value at line 1 column 0` ninety seconds later, in a test, with
+    no mention of a download in the message. Checked here, where the cause is still visible.
+
+    `required` is the point, not the size checks. Walking what is present cannot see a file
+    that never arrived -- an empty directory passes a walk -- so the caller names what it
+    asked the hub for and absence is an error.
+
+    `.cache/` is skipped: with `local_dir=`, `huggingface_hub` keeps its own bookkeeping in
+    `<dir>/.cache/huggingface/download/`, and the `.lock` files there are legitimately
+    0 bytes. A first version of this check walked them and rejected a HEALTHY english
+    checkpoint, which is the one failure mode a fail-closed guard must not have.
+    """
+    problems = []
+    for name in required:
+        if not os.path.exists(os.path.join(directory, name)):
+            problems.append("%s: missing -- it was requested but never arrived" % name)
+    for base, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d != ".cache"]
+        for name in files:
+            path = os.path.join(base, name)
+            shown = os.path.relpath(path, directory)
+            try:
+                size = os.path.getsize(path)
+            except OSError as problem:
+                problems.append("%s: cannot stat (%s)" % (shown, problem))
+                continue
+            if size == 0:
+                problems.append("%s: 0 bytes" % shown)
+                continue
+            if name.endswith(".json"):
+                try:
+                    with open(path, "rb") as handle:
+                        json.load(handle)
+                except Exception as problem:
+                    problems.append("%s: %d bytes, not valid JSON (%s)" % (shown, size, problem))
+            elif name.endswith(".safetensors") and size < 1024:
+                # A floor, not a completeness check, and deliberately so: `safetensors` already
+                # validates that the tensor byte ranges cover the file, and says so clearly --
+                # a 2.3 GB weights file truncated to 500 KB raises `SafetensorError: Error while
+                # deserializing header: incomplete metadata, file not fully covered`, in the
+                # exporter, seconds after the fetch. That is self-diagnosing, which is exactly
+                # what the 0-byte `tokenizer.json` was NOT: it surfaced as `EOF while parsing a
+                # value at line 1 column 0` from a .NET constructor, in a test, ninety seconds
+                # later, naming neither a file nor a download. So this only catches a file too
+                # short to hold the 8-byte length prefix and a header at all, where the loader's
+                # own error would be about a malformed header rather than a truncated download.
+                problems.append("%s: %d bytes, too small to hold a header" % (shown, size))
+    if problems:
+        raise SystemExit(
+            "%s: the %s snapshot is incomplete, so nothing downstream can be trusted:\n"
+            "  %s\n\nThis is what a rate-limited or interrupted Hugging Face fetch looks "
+            "like. Re-run; if it persists, set HF_TOKEN for the higher rate limit, or reduce "
+            "how many jobs fetch this repo at once."
+            % (os.path.basename(__file__), label, "\n  ".join(problems)))
+
+
 def snapshot(name: str, revision: str) -> str:
     """The pinned checkpoint directory in the Hugging Face cache (downloaded on first use)."""
     from huggingface_hub import snapshot_download
@@ -150,7 +212,9 @@ def snapshot(name: str, revision: str) -> str:
         "tokenizer.json", "tokenizer/*", "encoder/*",
     )]
     root = snapshot_download(repo, revision=revision, allow_patterns=allow)
-    return os.path.join(root, subfolder) if subfolder else root
+    directory = os.path.join(root, subfolder) if subfolder else root
+    verify_snapshot(directory, name, required=("rl_agent_config.json",))
+    return directory
 
 
 def publish(partial: str, final: str, stamp: str):

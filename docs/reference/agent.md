@@ -31,3 +31,38 @@ provider silently falls back per node.
 ```bash
 python scripts/export_onnx.py --model convaiinnovations/laya --output laya.onnx --quantize
 ```
+
+## In-process dynamic quantization
+
+The quantized export above is the int8 path `ONNXAgent` loads. `torch.ao.quantization.quantize_dynamic`
+on a live `Agent` is a different operation.
+
+[Issue #1065](https://github.com/NandhaKishorM/laya/issues/1065) reports that the default fbgemm
+engine crashes with SIGILL (illegal instruction) on a CPU with SSE4.2 and no AVX2 (laya 0.3.22,
+torch 2.14). Check the CPU first. `torch.backends.cpu.get_cpu_capability()` returns `"NO AVX"`
+when AVX2 is unavailable, and `"AVX2"` or `"AVX512"` when it is. On Linux,
+`grep -m1 flags /proc/cpuinfo` prints the raw flags (`avx2` is absent in the report). The
+setting that ran there is qnnpack, applied only to the encoder:
+
+```python
+import torch
+import torch.nn as nn
+
+torch.backends.quantized.engine = "qnnpack"
+torch.ao.quantization.quantize_dynamic(
+    agent.model.encoder, {nn.Linear}, dtype=torch.qint8, inplace=True)
+```
+
+Encoder-only quantization does run, with either engine the CPU can execute. It is not a speedup
+you can assume, and it changes scores. On the machine in #1065, qnnpack took 3.7 s against 3.0 s
+in fp32 for 20 states, and one candidate's `noul` went from 0.15 to 0.04. A spot check on the
+multilingual checkpoint with torch 2.14.1 (capability `AVX512`, four threads, short states) saw
+the same kind of move: qnnpack took 2.1 s against 0.57 s, and one `noul` went from 0.90 to 0.13.
+fbgemm was faster on that CPU (0.39 s) and still moved the score, to 0.15. Validate latency and
+probabilities on your own data.
+
+Do not quantize the whole `agent.model`. That replaces the decision head's `nn.Linear` layers
+with dynamically quantized linears, whose `weight` is a method rather than a tensor. The head
+is an `nn.TransformerEncoderLayer`, and its fast path reads `.device` on those weights, so
+`predict` raises `AttributeError: 'function' object has no attribute 'device'`. Leave the
+head in fp32.

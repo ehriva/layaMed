@@ -29,7 +29,8 @@ source .venv/bin/activate
 pip install -e ".[mcp]"
 ```
 
-Optional extras are declared in `pyproject.toml`: `serve`, `fast`, `onnx`, `langchain`, `langgraph`.
+Optional extras are declared in `pyproject.toml`: `serve`, `fast`, `mcp`, `structured`, `onnx`,
+`langchain`, `langgraph`, `llamaindex`, `crewai`.
 Install the ones a change needs, for example `pip install -e ".[serve]"`.
 
 If you use [uv](https://docs.astral.sh/uv/), the same setup is below. uv environments come without

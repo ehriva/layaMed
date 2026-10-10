@@ -44,6 +44,7 @@ check_true("ScoreWithin names its tolerance", evals.ScoreWithin(0.25).name == "s
 # --------------------------------------------------------------- exports / callables
 for name in ("Dataset", "Example", "EvalError", "EvalReport", "evaluate", "ece", "assert_regression",
              "REPORT_SCHEMA", "questions_fingerprint", "file_fingerprint",
+             "compare_agreement", "evaluate_agreement",
              "brier", "aurc", "selective_accuracy", "is_confidence_metric",
              # `_eval_policy` imports these three, so they are a contract between two modules in
              # this package, not internals -- a rename would break the release gate, not just a
@@ -158,7 +159,7 @@ def _subparsers(parser):
 
 
 _subs = _subparsers(evals_cli._build_parser())
-check("laya-evals subcommands", sorted(_subs), ["compare", "evidence", "run", "validate"])
+check("laya-evals subcommands", sorted(_subs), ["agreement", "compare", "evidence", "run", "validate"])
 
 _unhelped, _unstated, _options = [], [], {}
 for _sub, _parser in sorted(_subs.items()):

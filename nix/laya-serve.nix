@@ -284,6 +284,22 @@ in
       '';
     };
 
+    extraModels = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = ''{"my-checkpoint": "/var/lib/laya/my-checkpoint"}'';
+      description = ''
+        Checkpoints to register beside the bundled ones (sets
+        `LAYA_EXTRA_MODELS`), as a JSON object mapping a name to its source: a
+        Hub repo id, a local checkpoint directory, or a `["repo", "subfolder"]`
+        pair. A name matching a bundled checkpoint re-points it, which is how a
+        fine-tune is served under `english` without a code change. The server
+        parses and validates this at startup and refuses to start on a malformed
+        value or a name it will not accept, so this module passes it through
+        rather than restating the rules. null registers nothing.
+      '';
+    };
+
     defaultModel = lib.mkOption {
       type = lib.types.nullOr (lib.types.strMatching "[A-Za-z0-9._/-]+");
       default = null;
@@ -365,6 +381,8 @@ in
         LAYA_MAX_BATCH_TOKENS = toString cfg.maxBatchTokens;
       } // lib.optionalAttrs (cfg.revision != null) {
         LAYA_REVISION = cfg.revision;
+      } // lib.optionalAttrs (cfg.extraModels != null) {
+        LAYA_EXTRA_MODELS = cfg.extraModels;
       } // lib.optionalAttrs (cfg.defaultModel != null) {
         LAYA_DEFAULT_MODEL = cfg.defaultModel;
       } // {

@@ -63,9 +63,13 @@ Failure matrix, per event and runtime:
 | `on_error` | Agent / Router | never masks the original exception; chained as `__context__`. |
 | `on_predict_end` (success path) | Agent / Router | `hooks_raise=True`: propagates (the result is computed but the call fails). `False`: warn. |
 | `on_predict_end` (failure path) | Agent / Router | never masks the original exception; chained as `__context__`. |
-| `on_route` | Router | propagates directly; there is no predict context yet. |
-| `on_load` | Router | propagates directly; the checkpoint stays built and resident. |
-| `on_evict` | Router | propagates directly; the checkpoint is already freed. |
+| `on_route` | Router | `hooks_raise=True`: propagates out of `route()`; raised inside `Router.predict` it also runs `on_error` and `on_predict_end`. `False`: warn and continue with the decision as it stands. |
+| `on_load` | Router | `hooks_raise=True`: propagates out of `load()`/`preload()`; the checkpoint stays built and resident. `False`: warn and continue. |
+| `on_evict` | Router | `hooks_raise=True`: propagates out of `load()`/`unload()`; the checkpoint is already freed. `False`: warn and continue. |
+
+Every row obeys the same `hooks_raise`: the routing and model-lifecycle events are dispatched
+with the Router's policy, so `hooks_raise=False` warns and continues for them exactly as it does
+for the predict events.
 
 Consequences worth knowing:
 

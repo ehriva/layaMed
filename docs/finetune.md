@@ -75,8 +75,9 @@ laya-train --data tickets.csv --text-column body --label-column department --dry
 ```
 
 `--dry-run` builds the training items with the tokenizer and config of `--base`, without loading
-its weights or training, and prints how many rows were read, how many items they produced, and how many questions
-were skipped and why:
+its weights or training, and prints how many rows were read, how many items they produced, how many
+questions were skipped and why, and the optimizer-update budget the configured defaults will spend
+(see [Sizing a run in optimizer updates](#sizing-a-run-in-optimizer-updates)):
 
 | reason | the question was skipped because |
 |---|---|
@@ -84,6 +85,33 @@ were skipped and why:
 | `invalid_question`, `invalid_target` | the question or its answer could not be read |
 | `options_collapsed` | the head budget left two options with the same tokens (#538) |
 | `options_beyond_max_len` | the question's options do not fit in `max_len` |
+
+### Sizing a run in optimizer updates
+
+`--epochs`, `--micro-batch` and `--grad-accum` decide how much training a run gets, but the number
+that matters is the optimizer updates it performs. An epoch is split into
+`ceil(items / micro_batch)` micro-batches; one update runs per `grad_accum` micro-batches, plus one
+for the final partial window of each epoch, which steps once even when it holds fewer:
+
+```
+updates = epochs * ceil(ceil(train_items / micro_batch) / grad_accum)
+```
+
+`--dry-run` and the start of a run both print this budget, from the post-calibration training
+count, with the effective batch:
+
+```
+optimizer budget: 1100 train item(s), effective batch up to 64 (micro_batch 8 x grad_accum 8), 72 optimizer updates over 4 epoch(s)
+```
+
+The defaults (4 epochs, effective batch 64) are the notebook's. On typed-decisions' 6,000
+decisions the default 400-item calibration slice leaves 5,600 training items, so a default run
+spends **352** updates — 376 only if no slice were held out. That number is a reference for
+comparing runs of different sizes, not a cutoff: 1,100 *training* items at the same settings give
+72 updates (64 when 1,100 is the pre-split count and the 10% slice holds 110 out), and
+[#963](https://github.com/NandhaKishorM/laya/issues/963) measured a head that collapsed there while
+8 epochs still failed on the task itself. A small dataset therefore needs more epochs to reach a
+similar update count.
 
 ### What a run writes
 
@@ -102,6 +130,30 @@ laya.train: choice calibration: not fitted: 2 calibration items, fewer than 10, 
 
 A warning like that means the checkpoint's confidences were not calibrated; don't gate on
 `min_confidence` with it until a run with more data fits them.
+
+### Diagnose a run that stays at chance
+
+If a fine-tune never rises above the class prior, accuracy alone cannot say whether the task is
+hard or the budget is wrong. A label-encoding positive control separates the two: prepend a tag
+that spells the answer (for example `label=<department>; `) to every training and test text, and
+fine-tune on that copy. The model can read the answer off the tag, so the same budget has a
+trivially learnable signal to fit.
+
+- Positive control fails to learn → suspect the budget, the optimization or the run setup, not the
+  task.
+- Positive control reaches 1.00 while the real task stays at the prior → the evidence points at
+  task or representation difficulty rather than too few updates.
+  [#963](https://github.com/NandhaKishorM/laya/issues/963) measured both at 8 epochs: the positive
+  control reached 1.00 while the real task still collapsed.
+
+A passing positive control only shows the run can fit a deliberately easy signal; it is not proof
+that the real task is learnable or that the checkpoint generalizes.
+
+Takeoff near the ln K plateau is also seed-dependent, so one run is not evidence either way.
+[#963](https://github.com/NandhaKishorM/laya/issues/963) saw 9 of 15 runs leave the plateau and 6
+never do within 32 epochs, on identical data and configuration. Repeat the run with different seeds
+before concluding that a task is unlearnable or that a budget is fine, and read the collapse
+warning the run prints before gating on `min_confidence`.
 
 ### Options
 

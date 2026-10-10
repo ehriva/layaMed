@@ -35,6 +35,47 @@ def answer_confidence_value(answer: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+def jev_confidence(answer: Dict[str, Any]) -> Optional[float]:
+    """The `confidence` Jev would report for this answer's `probabilities`, or None (#302).
+
+    Laya's `confidence` is normalized entropy, and Jev's is a different formula, so a threshold
+    carried over from Jev selects about twice as much on Laya. These are TypeSafe's own formulas
+    (`system-one-adapter-python`, `_utils/confidence_metrics.py`):
+
+        choice  (max(p) - 1/n) / (1 - 1/n)
+        score   max(0, 1 - sum(p_i * |i - mode|) / D), D the same sum for a uniform distribution
+
+    Both are 1.0 for a single option, and a zero total is read as uniform, as the adapter does.
+    A noul answer has no Jev `confidence`, and malformed probabilities give None rather than a
+    guess, so a caller filtering on this number never filters on a made-up one.
+    """
+    kind = answer.get("type")
+    probabilities = answer.get("probabilities")
+    if kind not in ("choice", "score") or not isinstance(probabilities, dict) or not probabilities:
+        return None
+    try:
+        if kind == "score":
+            p = [float(probabilities[key]) for key in sorted(probabilities, key=int)]
+        else:
+            p = [float(value) for value in probabilities.values()]
+    except (TypeError, ValueError):
+        return None
+    if any(isinstance(v, bool) for v in probabilities.values()) or not all(math.isfinite(v) for v in p):
+        return None
+    n = len(p)
+    if n == 1:
+        return 1.0
+    total = sum(p)
+    p = [v / total for v in p] if total else [1.0 / n] * n
+    if kind == "choice":
+        return (max(p) - 1.0 / n) / (1.0 - 1.0 / n)
+    mode = max(range(n), key=p.__getitem__)
+    spread = sum(v * abs(i - mode) for i, v in enumerate(p))
+    center = (n - 1) / 2
+    uniform_spread = sum(abs(i - center) for i in range(n)) / n
+    return max(0.0, 1.0 - spread / uniform_spread)
+
+
 def _gate_confidence(answer: Dict[str, Any]) -> Optional[float]:
     """The number the abstention gate compares against `min_confidence`, or None if there is none.
 

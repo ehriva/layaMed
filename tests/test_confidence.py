@@ -2241,6 +2241,61 @@ for _fn in (test_presets_page_drops_the_three_set_claim,
     else:
         PASS.append("docs-presets/%s" % _fn.__name__)
 
+# --- jev_confidence: Jev's `confidence` formula, reported beside Laya's own (#302) ----------
+# The vectors are TypeSafe's own (system-one-adapter-python, tests/utils/test_confidence_metrics.py)
+# plus the two answers in the jevcompat spec's example response.
+from laya.confidence import jev_confidence  # noqa: E402
+
+
+def _choice(*p):
+    return {"type": "choice", "probabilities": {"o%d" % i: v for i, v in enumerate(p)}}
+
+
+def _score(*p):
+    return {"type": "score", "probabilities": {str(i): v for i, v in enumerate(p)}}
+
+
+for _name, _answer, _want in (
+    ("choice/uniform-2", _choice(0.5, 0.5), 0.0),
+    ("choice/zero-total-is-uniform", _choice(0.2, 0.2), 0.0),
+    ("choice/0.82-0.18", _choice(0.82, 0.18), 0.64),
+    ("choice/single-option", _choice(1.0), 1.0),
+    ("choice/jevcompat-example", _choice(0.88, 0.12), 0.76),
+    ("score/uniform-5", _score(*[0.2] * 5), 0.0),
+    ("score/unnormalized-uniform-5", _score(*[0.04] * 5), 0.0),
+    ("score/peaked-5", _score(0.01, 0.02, 0.07, 0.3, 0.6), 0.55),
+    ("score/single-level", _score(1.0), 1.0),
+    ("score/jevcompat-example", _score(0.0, 0.95, 0.05), 0.925),
+):
+    _got = jev_confidence(_answer)
+    check_true("jev_confidence/%s" % _name, _got is not None and abs(_got - _want) < 1e-9,
+               "got %r, want %r" % (_got, _want))
+
+# Score levels are read in numeric order, not string order: "10" sorts before "2" as text.
+_levels = {str(i): 0.0 for i in range(11)}
+_levels["10"] = 1.0
+check("jev_confidence/score-levels-in-numeric-order",
+      jev_confidence({"type": "score", "probabilities": _levels}), 1.0)
+
+# The same distribution gives the two numbers #302 measured apart: entropy is not Jev's formula.
+_p = np.array([0.7, 0.1, 0.1, 0.1])
+check_true("jev_confidence/differs-from-entropy-confidence",
+           abs(jev_confidence(_choice(*_p)) - 0.6) < 1e-9 and confidence_from_probs(_p, 4) < 0.35,
+           "jev %r, entropy %r" % (jev_confidence(_choice(*_p)), confidence_from_probs(_p, 4)))
+
+# No number rather than a made-up one: a noul has no Jev confidence, and malformed input is refused.
+for _name, _answer in (
+    ("noul", {"type": "noul", "noul": 0.9}),
+    ("unknown-type", {"type": "weird", "probabilities": {"a": 1.0}}),
+    ("missing-probabilities", {"type": "choice"}),
+    ("empty-probabilities", {"type": "choice", "probabilities": {}}),
+    ("non-numeric-probability", _choice(0.5, "high")),
+    ("bool-probability", _choice(True, False)),
+    ("nan-probability", _choice(float("nan"), 0.5)),
+    ("non-integer-score-level", {"type": "score", "probabilities": {"low": 0.5, "high": 0.5}}),
+):
+    check("jev_confidence/none-for-%s" % _name, jev_confidence(_answer), None)
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)

@@ -121,8 +121,8 @@ public sealed class LayaRouterTests
         new RouteCase("explicit task", new Dictionary<string, object?> { ["body"] = "x" }, null, "typed_decisions", null, LayaCheckpoint.TypedDecisions),
         new RouteCase("explicit lang en", new Dictionary<string, object?> { ["body"] = "मुझसे दो बार" }, null, null, "en", LayaCheckpoint.English),
         new RouteCase("explicit lang de", new Dictionary<string, object?> { ["body"] = "hello there" }, null, null, "de", LayaCheckpoint.Multilingual),
-        new RouteCase("empty state", new Dictionary<string, object?>(), null, null, null, LayaCheckpoint.English),
-        new RouteCase("none state", null, null, null, null, LayaCheckpoint.English),
+        new RouteCase("empty state", new Dictionary<string, object?>(), null, null, null, LayaCheckpoint.Multilingual),
+        new RouteCase("none state", null, null, null, null, LayaCheckpoint.Multilingual),
     ];
 
     [Fact]
@@ -157,11 +157,15 @@ public sealed class LayaRouterTests
         Assert.Equal(LayaCheckpoint.Multilingual, d.Model);
     }
 
-    [Fact]
-    public void CustomDefaultOverride()
+    [Theory]
+    [InlineData(LayaCheckpoint.English)]
+    [InlineData(LayaCheckpoint.Multilingual)]
+    public void CustomDefaultOverride(LayaCheckpoint checkpoint)
     {
-        using var router = NewFakeRouter(new LayaRouterOptions { Default = LayaCheckpoint.Multilingual });
-        Assert.Equal(LayaCheckpoint.Multilingual, router.Route("12345", GenericQuestions).Model);
+        using var router = NewFakeRouter(new LayaRouterOptions { Default = checkpoint });
+        Assert.Equal(checkpoint, router.Route("12345", GenericQuestions).Model);
+        Assert.Equal(checkpoint, router.Route("Quero cancelar", GenericQuestions).Model);
+        Assert.Equal(LayaCheckpoint.English, router.Route("I was charged twice", GenericQuestions).Model);
     }
 
     [Theory]

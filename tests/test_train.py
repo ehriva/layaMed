@@ -561,6 +561,19 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn(agent.predict("app", {"department": DEPARTMENT})["answers"]["department"]["choice"],
                       DEPARTMENT["criteria"])
 
+    def test_startup_prints_the_optimizer_budget(self):
+        import contextlib
+        import io
+
+        from laya.train import optimizer_updates
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            report = self.run_finetune("out_budget", epochs=2)
+        expected = optimizer_updates(report["train_items"], 8, 1, 2)
+        self.assertIn("optimizer budget", buf.getvalue())
+        self.assertIn("%d optimizer updates" % expected, buf.getvalue())
+
     def test_rlcd_objective_still_trains(self):
         report = self.run_finetune("out_rlcd", loss="rlcd")
         self.assertLess(report["epoch_loss"][-1], report["epoch_loss"][0])
@@ -573,6 +586,37 @@ class EndToEndTests(unittest.TestCase):
             if name.startswith("encoder."):
                 self.assertTrue(torch.allclose(before[name].half().float(), after[name].float()), name)
         self.assertFalse(torch.allclose(before["scorer.1.weight"].half().float(), after["scorer.1.weight"].float()))
+
+    def test_model_is_on_the_device_before_the_base_evaluation(self):
+        # finetune scores the base checkpoint before train_model moves the model, which crashed
+        # on CUDA and MPS (inputs on the device, weights on CPU). CPU cannot show the crash, so
+        # record the order instead: the model must be moved before the first calibration_records.
+        import laya.train as lt
+
+        events = []
+        real_load, real_records = lt.load_checkpoint, lt.calibration_records
+
+        def load_checkpoint(model_dir):
+            model, tok, cfg = real_load(model_dir)
+            real_to = model.to
+
+            def to(*args, **kwargs):
+                events.append(("to", torch.device(args[0] if args else kwargs["device"])))
+                return real_to(*args, **kwargs)
+
+            model.to = to
+            return model, tok, cfg
+
+        def calibration_records(model, tok, items, device, *args, **kwargs):
+            events.append(("records", device))
+            return real_records(model, tok, items, device, *args, **kwargs)
+
+        with patch("laya.train.load_checkpoint", load_checkpoint), \
+                patch("laya.train.calibration_records", calibration_records):
+            self.run_finetune("out_device", epochs=1)
+        cpu = torch.device("cpu")
+        first_eval = events.index(("records", cpu))
+        self.assertIn(("to", cpu), events[:first_eval], events)
 
     def test_frozen_encoder_runs_without_dropout(self):
         from laya.train import load_checkpoint
@@ -1089,6 +1133,91 @@ class PriorCollapseTests(unittest.TestCase):
         self.assertTrue(any("collapsed to the class prior" in m for m in collapsed_msgs), collapsed_msgs)
         peaked_msgs = run(peaked)
         self.assertFalse(any("collapsed to the class prior" in m for m in peaked_msgs), peaked_msgs)
+
+
+class OptimizerBudgetTests(unittest.TestCase):
+    """#963 proposal 3: the optimizer-update budget is derived once and surfaced before a run."""
+
+    def test_updates_count_every_accumulation_window_including_the_final_partial_one(self):
+        from laya.train import optimizer_updates
+
+        # steps_per_epoch = ceil(N / micro_batch); one update per full window plus the final
+        # partial window of every epoch. typed-decisions and the #963 set are the reference points.
+        self.assertEqual(optimizer_updates(6000, 8, 8, 4), 376)
+        self.assertEqual(optimizer_updates(1100, 8, 8, 4), 72)
+        self.assertEqual(optimizer_updates(5, 2, 2, 2), 4)      # 3 micro-steps -> 2 updates/epoch
+        self.assertEqual(optimizer_updates(63, 8, 8, 4), 4)     # fewer micro-steps than a window
+        self.assertEqual(optimizer_updates(8, 8, 8, 1), 1)
+        self.assertEqual(optimizer_updates(9, 8, 8, 1), 1)      # 2 micro-steps -> 1 update
+        with self.assertRaises(ValueError):
+            optimizer_updates(0, 8, 8, 4)
+
+    def test_train_model_takes_exactly_optimizer_updates_steps(self):
+        from laya.train import optimizer_updates
+
+        class ScalarModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = torch.nn.Identity()
+                self.value = torch.nn.Parameter(torch.tensor(0.0))
+
+        steps = []
+
+        class CountingSGD(torch.optim.SGD):
+            def step(self, *args, **kwargs):
+                steps.append(1)
+                return super().step(*args, **kwargs)
+
+        tok = type("Tokenizer", (), {"pad_token_id": 0})()
+        item = {"q": {"t": "choice"}, "k": 2}
+        batch = {
+            "marker_mask": torch.ones((1, 1), dtype=torch.bool),
+            "target": torch.ones((1, 1)),
+        }
+        for n_items, micro_batch, grad_accum, epochs in [(5, 2, 2, 2), (3, 1, 2, 1),
+                                                         (7, 3, 2, 3), (8, 8, 8, 1)]:
+            with self.subTest(n_items=n_items, micro_batch=micro_batch, grad_accum=grad_accum):
+                model = ScalarModel()
+                steps.clear()
+                config = TrainConfig(
+                    epochs=epochs, micro_batch=micro_batch, grad_accum=grad_accum,
+                    head_lr=1.0, min_lr=1.0, weight_decay=0.0, grad_clip=100.0,
+                    loss="soft-ce", freeze_encoder=True, amp=False, log_every=0,
+                )
+                with patch("laya.train.encode_item", return_value={}), \
+                        patch("laya.train.collate_items", return_value=batch), \
+                        patch("laya.train._forward", side_effect=lambda current, *_args: current.value), \
+                        patch("laya.train.soft_ce_loss", side_effect=lambda logits, *_args: logits), \
+                        patch("laya.train.torch.optim.AdamW",
+                              side_effect=lambda groups, weight_decay: CountingSGD(
+                                  groups, weight_decay=weight_decay)):
+                    train_model(model, tok, [item] * n_items, config, torch.device("cpu"), 1, 1)
+
+                self.assertEqual(len(steps), optimizer_updates(n_items, micro_batch, grad_accum, epochs))
+
+    def test_dry_run_reports_the_post_calibration_budget(self):
+        import contextlib
+        import io
+
+        from laya.train import dry_run, optimizer_updates
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_checkpoint(root / "base", make_tokenizer())
+            config = TrainConfig(epochs=3, micro_batch=4, grad_accum=2, calib_frac=0.25, log_every=0)
+
+            buf = io.StringIO()
+            with patch("laya.train.read_data", return_value=rows(2)), contextlib.redirect_stdout(buf):
+                summary = dry_run("synthetic.jsonl", str(root / "base"), config)
+
+            # The budget must come from the post-calibration split, not the raw valid-item count.
+            self.assertGreater(summary["calibration_items"], 0)
+            self.assertEqual(summary["train_items"] + summary["calibration_items"], summary["valid_items"])
+            self.assertLess(summary["train_items"], summary["valid_items"])
+            self.assertEqual(summary["optimizer_updates"],
+                             optimizer_updates(summary["train_items"], 4, 2, 3))
+            self.assertIn("optimizer budget", buf.getvalue())
+            self.assertIn("%d optimizer updates" % summary["optimizer_updates"], buf.getvalue())
 
 
 if __name__ == "__main__":

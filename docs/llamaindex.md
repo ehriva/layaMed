@@ -117,10 +117,18 @@ Both synchronous `query()` and asynchronous `aquery()` are supported.
 
 ## 4. Confidence Threshold Gating
 
-Like Laya's LangChain integration, `LayaSingleSelector` and `LayaQueryRouter` read calibrated `answer_confidence` (`max(p)`):
+Like Laya's LangChain integration, `LayaSingleSelector` and `LayaQueryRouter` read `answer_confidence` (`max(p)`):
 
 - **Automatic Fallback:** Specify `fallback_index` (or `fallback_key`) to seamlessly divert uncertain queries to a safe default engine.
 - **Strict Guarding:** Set `raise_on_low_confidence=True` on `LayaSingleSelector` to raise `LayaLowConfidenceError` when input is ambiguous, allowing caller escalation.
+
+`answer_confidence` is the quantity temperature scaling fits and the one every calibration figure
+in the repository is computed on, which is why the threshold reads it rather than the entropy
+`confidence`. It is not calibrated as shipped: `laya-multilingual` ships no fitted temperatures at
+all (`temperature: [1.0, 1.0, 1.0]`, empty `temperature_by_options`), and english's `choice:11+` is
+refused by the loader's own clamp with a warning that says to treat it as uncalibrated. Fit and
+validate any threshold on held-out data at the option counts your workload uses -- see the
+README's [Calibration](https://github.com/NandhaKishorM/laya#calibration) section.
 
 ---
 
@@ -191,8 +199,13 @@ inference. The two budgets do travel to a remote node, in the request body, up t
 
 `lang` pins the language the query is routed and answered in -- selecting the answering
 checkpoint's per-language calibration instead of relying on built-in detection -- and
-`min_confidence` is core's abstention gate: a decision under it comes back as an abstention rather
-than a forced selection. Both are read by `Agent.predict` and `Router.predict` alike and accepted by
+`min_confidence` is core's abstention gate, and that gate marks rather than withholds: an answer
+under it comes back carrying `low_confidence: true`, `abstention: "abstained"` and
+`abstention_threshold` on the raw decision kept in `last_decision`, while the `ToolSelection` this
+selector returns is still the argmax. What gets selected is changed by `confidence_threshold` and
+the knobs in [Confidence Threshold Gating](#4-confidence-threshold-gating); a `min_confidence` on
+its own reports the abstention and selects anyway.
+Both are read by `Agent.predict` and `Router.predict` alike and accepted by
 `laya-serve` in the request body, so a selector forwards them on the local and the remote path. An
 unset one is omitted, not sent as `None`, so it cannot shadow the deployment's own default;
 `min_confidence=0.0` and `lang=""` are real values and are forwarded as given.
@@ -201,6 +214,6 @@ unset one is omitted, not sent as `None`, so it cannot shadow the deployment's o
 selector = LayaSingleSelector(
     instructions="Which tool or query engine is best suited to answer this query?",
     lang="de",             # answer German queries in German
-    min_confidence=0.3,    # abstain when no tool clears a 0.3 confidence
+    min_confidence=0.3,    # report an abstention below 0.3; the selection is still made
 )
 ```

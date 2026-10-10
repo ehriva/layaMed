@@ -101,12 +101,20 @@ except LayaTaskGuardError as e:
 
 ---
 
-## 3. Calibrated Confidence Gating
+## 3. Confidence Gating
 
-`LayaCrewRouter` gates on calibrated `answer_confidence` (`max(p)`):
+`LayaCrewRouter` gates on `answer_confidence` (`max(p)`):
 
 - **Automatic Fallback:** Specify `fallback_agent_index` to route ambiguous tasks to a human supervisor or general lead agent.
 - **Strict Guarding:** Set `raise_on_low_confidence=True` to raise `LayaLowConfidenceError` when a task cannot be matched to an agent role with sufficient confidence.
+
+`answer_confidence` is the quantity temperature scaling fits and the one every calibration figure
+in the repository is computed on, which is why the threshold reads it rather than the entropy
+`confidence`. It is not calibrated as shipped: `laya-multilingual` ships no fitted temperatures at
+all (`temperature: [1.0, 1.0, 1.0]`, empty `temperature_by_options`), and english's `choice:11+` is
+refused by the loader's own clamp with a warning that says to treat it as uncalibrated. Fit and
+validate any threshold on held-out data at the option counts your workload uses -- see the
+README's [Calibration](https://github.com/NandhaKishorM/laya#calibration) section.
 
 ---
 
@@ -183,8 +191,13 @@ inference. The two budgets do travel to a remote node, in the request body, up t
 
 `lang` pins the language the task is routed and answered in -- selecting the answering
 checkpoint's per-language calibration instead of relying on built-in detection -- and
-`min_confidence` is core's abstention gate: a decision under it comes back as an abstention rather
-than a forced delegation. Both are read by `Agent.predict` and `Router.predict` alike and accepted by
+`min_confidence` is core's abstention gate, and that gate marks rather than withholds: an answer
+under it comes back carrying `low_confidence: true`, `abstention: "abstained"` and
+`abstention_threshold` on the raw decision kept in `last_decision`, while the agent this router
+returns is still the argmax. Which agent is delegated to is changed by `confidence_threshold`, with
+`fallback_agent_index` or `raise_on_low_confidence`; a `min_confidence` on its own reports the
+abstention and delegates anyway.
+Both are read by `Agent.predict` and `Router.predict` alike and accepted by
 `laya-serve` in the request body, so a router or guard forwards them on the local and the remote
 path. An unset one is omitted, not sent as `None`, so it cannot shadow the deployment's own default;
 `min_confidence=0.0` and `lang=""` are real values and are forwarded as given.
@@ -193,6 +206,6 @@ path. An unset one is omitted, not sent as `None`, so it cannot shadow the deplo
 router = LayaCrewRouter(
     confidence_threshold=0.80,
     lang="fr",             # route a French-language crew in French
-    min_confidence=0.3,    # abstain on a delegation the model is not sure about
+    min_confidence=0.3,    # report an abstention below 0.3; the delegation is still made
 )
 ```

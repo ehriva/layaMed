@@ -26,8 +26,20 @@ from tokenizers.models import WordLevel  # noqa: E402
 from transformers import BertConfig, BertModel, PreTrainedTokenizerFast  # noqa: E402
 
 from laya import load  # noqa: E402
-from laya.calibrate import records_from_labeled  # noqa: E402
+from laya.calibrate import fit_temperature_map, records_from_labeled  # noqa: E402
 from laya.common import DecisionModel, QTYPES, TEMP_MIN, TEMP_MAX  # noqa: E402
+
+
+def _config_only_save_checkpoint(model, tok, cfg, path):
+    """`save_checkpoint`'s config write, without the weights it also owns.
+
+    This suite owns the shape of `rl_agent_config.json`, not `model.safetensors`. Binding the
+    notebook's own call to `save_checkpoint` is what still fails when it stops persisting the
+    config; reproducing how the dict is built here is what would miss a notebook regression.
+    """
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, "rl_agent_config.json"), "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
 
 
 def export_notebook_config(cfg, fitted_temps, output_dir):
@@ -38,14 +50,19 @@ def export_notebook_config(cfg, fitted_temps, output_dir):
     cells = json.loads(notebook.read_text(encoding="utf-8"))["cells"]
     script, = ["".join(c["source"]) for c in cells
                if "".join(c["source"]).startswith("%%writefile ")]
-    # This contiguous tail includes the temperature update AND the JSON write.
+    # This contiguous tail includes the temperature update AND the config write.
     # Do not reproduce the export logic here: that would miss notebook regressions.
-    start = script.index('        cfg["fine_tuned"] = True')
+    start = script.index('        out_cfg = dict(cfg,')
     end = script.index("\n    dist.destroy_process_group()", start)
     export = ast.parse(textwrap.dedent(script[start:end]))
     exec(compile(export, str(notebook), "exec"), {
-        "cfg": cfg, "fitted_temps": fitted_temps, "output_dir": str(output_dir),
-        "os": os, "json": json,
+        "cfg": cfg, "fitted_temps": fitted_temps,
+        # `fit_temperature_map` returns this shape; the caller passes only the scalar list.
+        "fitted": {"temperature": list(fitted_temps), "temperature_by_options": {}},
+        "max_len": cfg.get("max_len"), "head_max_len": cfg.get("head_max_len"),
+        "output_dir": str(output_dir), "os": os, "json": json,
+        "save_checkpoint": _config_only_save_checkpoint,
+        "model": None, "tok": None,
     })
     return json.loads((output_dir / "rl_agent_config.json").read_text())
 
@@ -221,30 +238,42 @@ class CalibrationPersistenceTests(unittest.TestCase):
         self.assertEqual(target.tolist(), [0.0, 1.0])
 
     def test_every_fine_tuning_fit_clamps_to_common_bounds(self):
-        # #642 fixed this for the Kaggle notebook, which still owns a fit of its own. The
+        # #642 fixed this for the Kaggle notebook, which owned a fit of its own. The
         # Apple Silicon script and research/scripts/finetune_single_device.py used to keep
         # `torch.clamp(..., 0.1, 10.0)` beside it, so a fit either of them persisted could
         # land outside `[TEMP_MIN, TEMP_MAX]` and be re-clamped when the checkpoint is loaded
         # -- the calibration measured during training is then not the one that gets served.
-        # Both now call `laya.train.finetune` and take those bounds from
-        # `laya.calibrate.fit_one_temperature`, so what is left to sweep is the fitter that
-        # is still hand-rolled. Derived from the tree rather than listed, so a script that
-        # copies the pattern is held too.
+        # All three now reach `laya.calibrate`, so what the tree sweep below still walks is a
+        # fit that copies the old pattern. Derived from the tree rather than listed, so a
+        # script that copies it is held too.
         fitters = _temperature_fitters()
-        # Non-vacuity: the loop below asserts nothing when the sweep matches nothing, and the
-        # sweep matching nothing is exactly the state a converging tree walks into. Name the
-        # one entry point that still owns a fit, so losing its clamp -- or superseding this
-        # guard outright -- is a failure to read, not a silent pass.
-        self.assertIn(
-            "notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb",
-            [rel for rel, _, _ in fitters],
-            "no hand-rolled clamped fit left to sweep; if every entry point now goes through "
-            "laya.calibrate, retire or redirect this sweep rather than leaving it matching nothing")
+        # Non-vacuity, redirected exactly as the sweep's own message asks for once no entry
+        # point owns a hand-rolled fit: pin that the notebook still reaches the canonical
+        # fitter and owns no fit of its own, so taking one back is a failure to read rather
+        # than a silent pass.
+        notebook_src = _runnable_source(
+            "notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb")
+        self.assertIn("fit_temperature_map", notebook_src,
+                      "the notebook no longer reaches laya.calibrate")
+        self.assertNotIn("fit_one_temp", notebook_src,
+                         "the notebook owns a private fit again")
 
         # These two drive the LBFGS solution past TEMP_MAX and below TEMP_MIN respectively,
         # so a range wider than the runtime's is caught in both directions.
         peaked = [([10.0, 0.0], [0.5, 0.5]) for _ in range(20)]
         dipped = [([0.0, 4.0], [0.0, 1.0]) for _ in range(20)]
+
+        # With no entry point owning a hand-rolled fit, the tree sweep below can match
+        # nothing, so drive the fit every entry point now reaches with the same two inputs:
+        # the bound this test exists for is asserted either way.
+        for label, sel in (("peaked", peaked), ("dipped", dipped)):
+            t_fit = fit_temperature_map(
+                [(QTYPES["choice"], z, t, len(z)) for z, t in sel]
+            )["temperature"][QTYPES["choice"]]
+            self.assertGreaterEqual(
+                t_fit, TEMP_MIN, "fit_temperature_map(%s) fitted %.4g" % (label, t_fit))
+            self.assertLessEqual(
+                t_fit, TEMP_MAX, "fit_temperature_map(%s) fitted %.4g" % (label, t_fit))
 
         for rel, name, body in fitters:
             with self.subTest(source=rel, function=name):

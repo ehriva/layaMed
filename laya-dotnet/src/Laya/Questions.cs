@@ -20,8 +20,13 @@ public enum QuestionType
 /// <remarks>
 /// <para>
 /// <c>Instructions</c> is <see cref="object"/> rather than <see cref="string"/> on purpose: Python
-/// accepts a non-string and runs it through <c>json.dumps</c>, which escapes non-ASCII, so the
-/// rendered prompt differs from the pass-through a string gets. Both paths are reproduced.
+/// accepts a non-string and runs it through <c>json.dumps(ins, ensure_ascii=False)</c>, so the
+/// model reads JSON punctuation -- braces, quotes and <c>", "</c> separators -- where a string
+/// passes through untouched. Both paths are reproduced. Non-ASCII is <em>not</em> escaped on
+/// either path: escaping it was the bug fixed by <c>ensure_ascii=False</c>, which
+/// <c>tests/test_criteria.py:229-251</c> pins after one German question answered noul=0.1652 as
+/// a dict against 0.2650 as the identical plain string. <see cref="PythonJson"/> matches with
+/// <c>escapeNonAscii: false</c>.
 /// </para>
 /// <para>
 /// Criteria order is load-bearing. Python reads choice labels positionally

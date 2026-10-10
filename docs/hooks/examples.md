@@ -187,29 +187,32 @@ misses the threshold, not only the first state's.
 
 ## Routing pin
 
-Force a checkpoint for a class of traffic.
+Force a checkpoint for a class of traffic. A routing hook is an object, not a plain callable:
+`on_predict_start=` / `on_predict_end=` are the only single-event parameters, so `hooks=` is the
+only way in and it reads for lifecycle method names.
 
 ```python
 from laya import Router
 from laya.router import RouteDecision
 
-def pin(ctx):
-    if "refund" in str(ctx.states[0]).lower():
-        ctx.decision = RouteDecision(
-            model="typed-decisions",
-            repo="convaiinnovations/laya/typed-decisions",
-            reason="refund workflow",
-            detection=None,
-            workflow=None,
-        )
+class Pin:
+    def on_route(self, ctx):
+        if "refund" in str(ctx.states[0]).lower():
+            ctx.decision = RouteDecision(
+                model="typed-decisions",
+                repo="convaiinnovations/laya/typed-decisions",
+                reason="refund workflow",
+                detection=None,
+                workflow=None,
+            )
 
-router = Router(hooks=[pin])
+router = Router(hooks=[Pin()])
 ```
 
 Per-call, without installing:
 
 ```python
-router.predict("refund request", QUESTIONS, hooks=[pin])
+router.predict("refund request", QUESTIONS, hooks=[Pin()])
 ```
 
 ## Lifecycle
@@ -275,7 +278,7 @@ agent.system_one(
 router.predict(
     state,
     questions,
-    hooks=[pin],                    # applies to on_route too
+    hooks=[Pin()],                  # applies to on_route too
     on_predict_end=audit,
 )
 ```
@@ -322,12 +325,16 @@ agent.system_one(state, questions)
 Attach, detach or scope hooks after construction.
 
 ```python
-agent.add_hook(Metrics())          # attach at runtime
-agent.remove_hook(Metrics())       # by identity
+metrics = Metrics()
+agent.add_hook(metrics)            # attach at runtime
+agent.remove_hook(metrics)         # by identity: keep the instance to remove it
 
 with agent.hooks_installed(DebugDump()):
     agent.system_one(state, questions)   # DebugDump only here
 ```
+
+`remove_hook` compares with `is`, so a fresh `Metrics()` matches nothing: it returns `False` and
+the installed hook keeps running.
 
 ## Base class and process-wide defaults
 

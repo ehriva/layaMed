@@ -51,6 +51,12 @@ services:
       # default (english); set `multilingual` for mostly-non-English traffic. An unresolvable
       # name stops the container at startup rather than serving a configuration nobody asked for.
       LAYA_DEFAULT_MODEL: "${LAYA_DEFAULT_MODEL:-}"
+      # Extra checkpoints beside the bundled ones, as a JSON object {name: source}. Empty registers
+      # nothing; a malformed value or bad name stops the container at startup.
+      LAYA_EXTRA_MODELS: "${LAYA_EXTRA_MODELS:-}"
+      # Unload resident checkpoints after this many idle seconds. Empty keeps the server default (0,
+      # disabled); the next request loads its checkpoint again.
+      LAYA_IDLE_UNLOAD_SECONDS: "${LAYA_IDLE_UNLOAD_SECONDS:-}"
       # Empty keeps Router's own default (2). Set 3 when LAYA_AUTO_TASK is on: that adds a
       # third checkpoint routing can choose on demand, and a cap below it reloads one per switch.
       LAYA_MAX_LOADED: "${LAYA_MAX_LOADED:-}"
@@ -62,6 +68,13 @@ services:
       # as 422. The SDK integrations quote 8192 because that is this service's default, so the
       # default here stays empty: an operator who sets nothing gets the number the docs print.
       LAYA_MAX_TOKEN_BUDGET: "${LAYA_MAX_TOKEN_BUDGET:-}"
+      # Tokens one `/v1/systemone/batch` forward pass may collate (states x questions x row width);
+      # a larger batch is split into several passes, not refused. Empty keeps the server default (131072).
+      LAYA_MAX_BATCH_TOKENS: "${LAYA_MAX_BATCH_TOKENS:-}"
+      # When set to 1, serve the strict Jev wire contract: no root `routing`, no per-answer
+      # `action` / `answer_confidence`, no `confidence` on noul answers, and `usage` reduced to
+      # `input_tokens` + `output_tokens`. Empty keeps the server default (0, full payload).
+      LAYA_JEV_STRICT: "${LAYA_JEV_STRICT:-}"
       LAYA_LOG_LEVEL: "${LAYA_LOG_LEVEL:-info}"
       # The supply-chain pair: LAYA_REVISION says which Hub commit a checkpoint may load from (a
       # commit, branch, tag, or `reviewed` for the SHAs in laya/revisions.py) and

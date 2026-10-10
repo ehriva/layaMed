@@ -1,0 +1,829 @@
+{
+  "states": [
+    "passed",
+    "abstained",
+    "unevaluated"
+  ],
+  "cases": [
+    {
+      "case": "ungated-writes-nothing",
+      "min_confidence": null,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        }
+      }
+    },
+    {
+      "case": "ungated-with-several",
+      "min_confidence": null,
+      "before": {
+        "a": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.333333,
+            "1": 0.333333,
+            "2": 0.333333
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.8
+        },
+        "b": {
+          "type": "noul",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "noul": 0.6,
+          "answer_confidence": 0.4,
+          "confidence": 0.4
+        }
+      },
+      "after": {
+        "a": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.333333,
+            "1": 0.333333,
+            "2": 0.333333
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.8
+        },
+        "b": {
+          "type": "noul",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "noul": 0.6,
+          "answer_confidence": 0.4,
+          "confidence": 0.4
+        }
+      }
+    },
+    {
+      "case": "scalar-abstains",
+      "min_confidence": 0.8,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5,
+          "low_confidence": true,
+          "abstention": "abstained",
+          "abstention_threshold": 0.8
+        }
+      }
+    },
+    {
+      "case": "scalar-passes",
+      "min_confidence": 0.8,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.5,
+          "abstention": "passed",
+          "abstention_threshold": 0.8
+        }
+      }
+    },
+    {
+      "case": "scalar-exactly-at-threshold",
+      "min_confidence": 0.8,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.8,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.8,
+          "confidence": 0.5,
+          "abstention": "passed",
+          "abstention_threshold": 0.8
+        }
+      }
+    },
+    {
+      "case": "scalar-zero-reports-passed",
+      "min_confidence": 0.0,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5,
+          "abstention": "passed",
+          "abstention_threshold": 0.0
+        }
+      }
+    },
+    {
+      "case": "scalar-one-abstains-everything",
+      "min_confidence": 1.0,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.99,
+          "confidence": 0.9
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.99,
+          "confidence": 0.9,
+          "low_confidence": true,
+          "abstention": "abstained",
+          "abstention_threshold": 1.0
+        }
+      }
+    },
+    {
+      "case": "falls-back-to-confidence",
+      "min_confidence": 0.5,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "confidence": 0.3
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "confidence": 0.3,
+          "low_confidence": true,
+          "abstention": "abstained",
+          "abstention_threshold": 0.5
+        }
+      }
+    },
+    {
+      "case": "prefers-answer-confidence",
+      "min_confidence": 0.5,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.1
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.1,
+          "abstention": "passed",
+          "abstention_threshold": 0.5
+        }
+      }
+    },
+    {
+      "case": "no-usable-confidence",
+      "min_confidence": 0.5,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0"
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "abstention": "unevaluated",
+          "abstention_threshold": 0.5
+        }
+      }
+    },
+    {
+      "case": "nan-is-not-a-confidence",
+      "min_confidence": 0.5,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": "__nan__",
+          "confidence": "__nan__"
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": "__nan__",
+          "confidence": "__nan__",
+          "abstention": "unevaluated",
+          "abstention_threshold": 0.5
+        }
+      }
+    },
+    {
+      "case": "bool-is-not-a-confidence",
+      "min_confidence": 0.5,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": true
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": true,
+          "abstention": "unevaluated",
+          "abstention_threshold": 0.5
+        }
+      }
+    },
+    {
+      "case": "map-by-bucket",
+      "min_confidence": {
+        "choice:2": 0.9,
+        "choice:3-5": 0.1
+      },
+      "before": {
+        "two": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        },
+        "five": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.2,
+            "1": 0.2,
+            "2": 0.2,
+            "3": 0.2,
+            "4": 0.2
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "two": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5,
+          "low_confidence": true,
+          "abstention": "abstained",
+          "abstention_threshold": 0.9
+        },
+        "five": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.2,
+            "1": 0.2,
+            "2": 0.2,
+            "3": 0.2,
+            "4": 0.2
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5,
+          "abstention": "passed",
+          "abstention_threshold": 0.1
+        }
+      }
+    },
+    {
+      "case": "map-default-for-unnamed-bucket",
+      "min_confidence": {
+        "choice:2": 0.9,
+        "default": 0.95
+      },
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.083333,
+            "1": 0.083333,
+            "2": 0.083333,
+            "3": 0.083333,
+            "4": 0.083333,
+            "5": 0.083333,
+            "6": 0.083333,
+            "7": 0.083333,
+            "8": 0.083333,
+            "9": 0.083333,
+            "10": 0.083333,
+            "11": 0.083333
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.083333,
+            "1": 0.083333,
+            "2": 0.083333,
+            "3": 0.083333,
+            "4": 0.083333,
+            "5": 0.083333,
+            "6": 0.083333,
+            "7": 0.083333,
+            "8": 0.083333,
+            "9": 0.083333,
+            "10": 0.083333,
+            "11": 0.083333
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5,
+          "low_confidence": true,
+          "abstention": "abstained",
+          "abstention_threshold": 0.95
+        }
+      }
+    },
+    {
+      "case": "map-unnamed-bucket-no-default",
+      "min_confidence": {
+        "choice:2": 0.9
+      },
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.083333,
+            "1": 0.083333,
+            "2": 0.083333,
+            "3": 0.083333,
+            "4": 0.083333,
+            "5": 0.083333,
+            "6": 0.083333,
+            "7": 0.083333,
+            "8": 0.083333,
+            "9": 0.083333,
+            "10": 0.083333,
+            "11": 0.083333
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.083333,
+            "1": 0.083333,
+            "2": 0.083333,
+            "3": 0.083333,
+            "4": 0.083333,
+            "5": 0.083333,
+            "6": 0.083333,
+            "7": 0.083333,
+            "8": 0.083333,
+            "9": 0.083333,
+            "10": 0.083333,
+            "11": 0.083333
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.7,
+          "confidence": 0.5,
+          "abstention": "passed",
+          "abstention_threshold": 0.0
+        }
+      }
+    },
+    {
+      "case": "map-noul-bucket",
+      "min_confidence": {
+        "noul:2": 0.8
+      },
+      "before": {
+        "q": {
+          "type": "noul",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "noul": 0.6,
+          "answer_confidence": 0.6,
+          "confidence": 0.6
+        }
+      },
+      "after": {
+        "q": {
+          "type": "noul",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "noul": 0.6,
+          "answer_confidence": 0.6,
+          "confidence": 0.6,
+          "low_confidence": true,
+          "abstention": "abstained",
+          "abstention_threshold": 0.8
+        }
+      }
+    },
+    {
+      "case": "map-score-bucket",
+      "min_confidence": {
+        "score:6-10": 0.8
+      },
+      "before": {
+        "q": {
+          "type": "score",
+          "probabilities": {
+            "0": 0.142857,
+            "1": 0.142857,
+            "2": 0.142857,
+            "3": 0.142857,
+            "4": 0.142857,
+            "5": 0.142857,
+            "6": 0.142857
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "score": 1.0,
+          "legend": {
+            "0": "level 0",
+            "1": "level 1",
+            "2": "level 2",
+            "3": "level 3",
+            "4": "level 4",
+            "5": "level 5",
+            "6": "level 6"
+          },
+          "answer_confidence": 0.6,
+          "confidence": 0.6
+        }
+      },
+      "after": {
+        "q": {
+          "type": "score",
+          "probabilities": {
+            "0": 0.142857,
+            "1": 0.142857,
+            "2": 0.142857,
+            "3": 0.142857,
+            "4": 0.142857,
+            "5": 0.142857,
+            "6": 0.142857
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "score": 1.0,
+          "legend": {
+            "0": "level 0",
+            "1": "level 1",
+            "2": "level 2",
+            "3": "level 3",
+            "4": "level 4",
+            "5": "level 5",
+            "6": "level 6"
+          },
+          "answer_confidence": 0.6,
+          "confidence": 0.6,
+          "low_confidence": true,
+          "abstention": "abstained",
+          "abstention_threshold": 0.8
+        }
+      }
+    },
+    {
+      "case": "reflagging-clears-a-stale-flag",
+      "min_confidence": 0.5,
+      "before": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.5,
+          "low_confidence": true
+        }
+      },
+      "after": {
+        "q": {
+          "type": "choice",
+          "probabilities": {
+            "0": 0.5,
+            "1": 0.5
+          },
+          "action": {
+            "act_probability": 0.5
+          },
+          "choice": "0",
+          "answer_confidence": 0.9,
+          "confidence": 0.5,
+          "abstention": "passed",
+          "abstention_threshold": 0.5
+        }
+      }
+    }
+  ],
+  "refusals": [
+    {
+      "input": "1.5",
+      "error": "min_confidence must be a float in [0.0, 1.0], got 1.5"
+    },
+    {
+      "input": "-0.1",
+      "error": "min_confidence must be a float in [0.0, 1.0], got -0.1"
+    },
+    {
+      "input": "True",
+      "error": "min_confidence must be a float in [0.0, 1.0], got True"
+    },
+    {
+      "input": "'0.5'",
+      "error": "min_confidence must be a float in [0.0, 1.0], got '0.5'"
+    },
+    {
+      "input": "nan",
+      "error": "min_confidence must be a float in [0.0, 1.0], got nan"
+    },
+    {
+      "input": "{}",
+      "error": "a min_confidence map must be a non-empty dict of bucket -> float, got {}"
+    },
+    {
+      "input": "{'choice:2': 2.0}",
+      "error": "min_confidence must be a float in [0.0, 1.0], got 2.0"
+    },
+    {
+      "input": "{1: 0.5}",
+      "error": "min_confidence map keys must be a bucket like 'choice:3-5' or 'default', got 1"
+    }
+  ]
+}

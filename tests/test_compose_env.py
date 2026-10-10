@@ -537,7 +537,9 @@ if server_doc:
         _env = env_blocks(read("compose.http.yaml")).get(_service, {})
         check_true("compose/compose.http.yaml defines the %s service" % _service,
                    _service in env_blocks(read("compose.http.yaml")), sorted(_env))
-        for _name in ("LAYA_MAX_CONCURRENT", "LAYA_MAX_TOKEN_BUDGET", "LAYA_REVISION"):
+        for _name in ("LAYA_MAX_CONCURRENT", "LAYA_MAX_TOKEN_BUDGET", "LAYA_REVISION",
+                      "LAYA_EXTRA_MODELS", "LAYA_IDLE_UNLOAD_SECONDS",
+                      "LAYA_MAX_BATCH_TOKENS", "LAYA_JEV_STRICT"):
             check_true("compose/compose.http.yaml/%s forwards the %s this change adds"
                        % (_service, _name), _name in _env,
                        "it is documented and read by the runtime, and the service that needs it "
@@ -579,9 +581,9 @@ if server_doc:
                     _const_pinned += 1
                     check("docs/docker.md prints the same %s default as laya/serve.py" % _name,
                           _cell.strip("`"), _defaults[_const])
-        check_true("core/both knobs this change forwards have a module default to pin",
-                   _const_pinned == 2, _const_pinned)
-        for _name in ("LAYA_MAX_CONCURRENT", "LAYA_MAX_TOKEN_BUDGET"):
+        check_true("core/knobs this change forwards have a module default to pin",
+                   _const_pinned == 3, _const_pinned)
+        for _name in ("LAYA_MAX_CONCURRENT", "LAYA_MAX_TOKEN_BUDGET", "LAYA_MAX_BATCH_TOKENS"):
             check_true("docs/docker.md keeps the %s row in the server table" % _name,
                        re.search(r"^\| `%s` \|" % _name, _body, re.M) is not None,
                        "the two sections above derive their demand from this table, so a row "
@@ -610,8 +612,11 @@ if shutil.which("docker"):
     # container is the failure the textual checks above are reasoning about. Both arms: set, and
     # left alone. The unset arm is the one an operator actually boots, and it must show the empty
     # default arriving as empty rather than as the literal `${LAYA_MAX_CONCURRENT:-}`.
-    _KN = ("LAYA_MAX_CONCURRENT", "LAYA_MAX_TOKEN_BUDGET", "LAYA_REVISION")
-    _arms = [(dict(zip(_KN, ("4", "16384", "reviewed"))), dict(zip(_KN, ("4", "16384", "reviewed")))),
+    _KN = ("LAYA_MAX_CONCURRENT", "LAYA_MAX_TOKEN_BUDGET", "LAYA_REVISION",
+           "LAYA_EXTRA_MODELS", "LAYA_IDLE_UNLOAD_SECONDS",
+           "LAYA_MAX_BATCH_TOKENS", "LAYA_JEV_STRICT")
+    _VALS = ("4", "16384", "reviewed", '{"custom":"./model"}', "30", "65536", "1")
+    _arms = [(dict(zip(_KN, _VALS)), dict(zip(_KN, _VALS))),
              ({}, dict.fromkeys(_KN, ""))]
     for _set, _expect in _arms:
         proc = subprocess.run(["docker", "compose", "-f", "compose.yaml", "-f", "compose.http.yaml",

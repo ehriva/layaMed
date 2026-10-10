@@ -333,12 +333,43 @@ function reportHookFailure(hook: Hook, event: HookEvent, err: unknown): void {
  * such as the synchronous `Router.route`; a rejection can then only be reported as a warning.
  * `dispatchAsync` waits and applies `raiseErrors` to it.
  */
+
+/** Run a promise with a timeout, returning void if it completes or throwing on timeout. */
+async function runWithTimeout(
+  promise: unknown,
+  timeoutMs: number | null,
+  operationName: string,
+): Promise<void> {
+  if (timeoutMs === null || timeoutMs === undefined) {
+    await promise;
+    return;
+  }
+  
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), timeoutMs);
+  
+  try {
+    await Promise.race([
+      Promise.resolve(promise),
+      new Promise<never>((_, reject) => {
+        abortController.signal.addEventListener("abort", () => {
+          reject(new Error(`hook ${operationName} timed out after ${timeoutMs}ms`));
+        });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export function dispatch(
   hooks: Hook[],
   event: HookEvent,
   ctx: PredictContext,
-  opts: { raiseErrors?: boolean } = {},
+  opts: { raiseErrors?: boolean; timeoutMs?: number | null; hook?: Hook } = {},
 ): void {
+  const timeoutMs = opts.timeoutMs ?? null;
+  const operationName = `${((opts.hook as object | undefined)?.constructor?.name ?? "hook")}.`;
   const raiseErrors = opts.raiseErrors ?? true;
   for (const hook of hooks) {
     const method = hook?.[event];
@@ -361,14 +392,16 @@ export async function dispatchAsync(
   hooks: Hook[],
   event: HookEvent,
   ctx: PredictContext,
-  opts: { raiseErrors?: boolean } = {},
+  opts: { raiseErrors?: boolean; timeoutMs?: number | null; hook?: Hook } = {},
 ): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? null;
+  const operationName = `${((opts.hook as object | undefined)?.constructor?.name ?? "hook")}.`;
   const raiseErrors = opts.raiseErrors ?? true;
   for (const hook of hooks) {
     const method = hook?.[event];
     if (typeof method !== "function") continue;
     try {
-      await method.call(hook, ctx);
+      await runWithTimeout(method.call(hook, ctx), timeoutMs, operationName);
     } catch (err) {
       if (raiseErrors) throw err;
       reportHookFailure(hook, event, err);

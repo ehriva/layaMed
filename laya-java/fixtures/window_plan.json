@@ -1,0 +1,6672 @@
+{
+  "by": {
+    "english": {
+      "default_max_len": 512,
+      "default_head_max_len": 192,
+      "state_room": [
+        {
+          "options": 1,
+          "room": 482,
+          "room_tight": 226
+        },
+        {
+          "options": 2,
+          "room": 462,
+          "room_tight": 206
+        },
+        {
+          "options": 5,
+          "room": 402,
+          "room_tight": 146
+        },
+        {
+          "options": 20,
+          "room": 342,
+          "room_tight": 146
+        },
+        {
+          "options": 40,
+          "room": 342,
+          "room_tight": 86
+        },
+        {
+          "options": 60,
+          "room": 262,
+          "room_tight": 6
+        },
+        {
+          "options": 100,
+          "room": 102,
+          "room_tight": 0
+        },
+        {
+          "options": 150,
+          "room": 0,
+          "room_tight": 0
+        }
+      ],
+      "option_counts": {
+        "roomy": 2,
+        "mild": 48,
+        "hard": 88
+      },
+      "cases": [
+        {
+          "case": "no-questions",
+          "rooms": [],
+          "options": [],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 312,
+            "stride": 156,
+            "room": 312
+          },
+          "warnings": []
+        },
+        {
+          "case": "no-questions-explicit-window",
+          "rooms": [],
+          "options": [],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 128,
+          "stride": null,
+          "result": {
+            "window": 128,
+            "stride": 64,
+            "room": 128
+          },
+          "warnings": []
+        },
+        {
+          "case": "no-questions-explicit-stride",
+          "rooms": [],
+          "options": [],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 128,
+          "stride": 32,
+          "result": {
+            "window": 128,
+            "stride": 32,
+            "room": 128
+          },
+          "warnings": []
+        },
+        {
+          "case": "roomy-default",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 312,
+            "stride": 156,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "roomy-explicit-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100,
+          "stride": null,
+          "result": {
+            "window": 100,
+            "stride": 50,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "roomy-explicit-stride",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100,
+          "stride": 25,
+          "result": {
+            "window": 100,
+            "stride": 25,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-equals-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100,
+          "stride": 100,
+          "result": {
+            "window": 100,
+            "stride": 100,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-one",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100,
+          "stride": 1,
+          "result": {
+            "window": 100,
+            "stride": 1,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "explicit-window-over-room",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            88
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100000,
+          "stride": null,
+          "result": {
+            "window": 150,
+            "stride": 75,
+            "room": 150
+          },
+          "warnings": [
+            "laya: predict_long: window=100000 is wider than the 150 state tokens these questions leave inside max_len=512, so every window would be truncated to 150 on the way to the model; scanning with window=150 instead"
+          ]
+        },
+        {
+          "case": "explicit-window-over-room-mild",
+          "rooms": [
+            "mild"
+          ],
+          "options": [
+            48
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100000,
+          "stride": null,
+          "result": {
+            "window": 310,
+            "stride": 155,
+            "room": 310
+          },
+          "warnings": [
+            "laya: predict_long: window=100000 is wider than the 310 state tokens these questions leave inside max_len=512, so every window would be truncated to 310 on the way to the model; scanning with window=310 instead"
+          ]
+        },
+        {
+          "case": "default-clamped-mild",
+          "rooms": [
+            "mild"
+          ],
+          "options": [
+            48
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 310,
+            "stride": 155,
+            "room": 310
+          },
+          "warnings": []
+        },
+        {
+          "case": "default-clamped-hard",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            88
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 150,
+            "stride": 75,
+            "room": 150
+          },
+          "warnings": [
+            "laya: predict_long: these questions leave only 150 of max_len=512 for the state (their heads take the rest), so the scan window is capped 312 -> 150 and roughly 2.1x as many windows -- each a full forward pass -- are needed to read the document. Fewer or shorter options, a larger max_len, or laya.shortlist.predict_shortlist for a large label set will all cost less than scanning at this width"
+          ]
+        },
+        {
+          "case": "stride-valid-for-requested-window",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            88
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100000,
+          "stride": 50000,
+          "result": {
+            "window": 150,
+            "stride": 75,
+            "room": 150
+          },
+          "warnings": [
+            "laya: predict_long: window=100000 is wider than the 150 state tokens these questions leave inside max_len=512, so every window would be truncated to 150 on the way to the model; scanning with window=150 instead",
+            "laya: predict_long: stride=50000 was a 50% step for the window=100000 you asked for, but the window was reduced to 150 to fit the room these questions leave; scanning with stride=75 instead"
+          ]
+        },
+        {
+          "case": "stride-past-requested-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100,
+          "stride": 150,
+          "error": "predict_long: stride=150 steps past the 100-token window, so 50 tokens between every pair of windows would be read by no window at all; pass stride <= 100",
+          "warnings": []
+        },
+        {
+          "case": "stride-past-default-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": null,
+          "stride": 100000,
+          "error": "predict_long: stride=100000 steps past the 312-token window, so 99688 tokens between every pair of windows would be read by no window at all; pass stride <= 312",
+          "warnings": []
+        },
+        {
+          "case": "window-zero-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 0,
+          "stride": null,
+          "result": {
+            "window": 312,
+            "stride": 156,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "window-negative-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": -5,
+          "stride": null,
+          "result": {
+            "window": 312,
+            "stride": 156,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-zero-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100,
+          "stride": 0,
+          "result": {
+            "window": 100,
+            "stride": 50,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-negative-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": 100,
+          "stride": -3,
+          "result": {
+            "window": 100,
+            "stride": 50,
+            "room": 462
+          },
+          "warnings": []
+        },
+        {
+          "case": "smallest-room-decides",
+          "rooms": [
+            "roomy",
+            "hard"
+          ],
+          "options": [
+            2,
+            88
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 150,
+            "stride": 75,
+            "room": 150
+          },
+          "warnings": [
+            "laya: predict_long: these questions leave only 150 of max_len=512 for the state (their heads take the rest), so the scan window is capped 312 -> 150 and roughly 2.1x as many windows -- each a full forward pass -- are needed to read the document. Fewer or shorter options, a larger max_len, or laya.shortlist.predict_shortlist for a large label set will all cost less than scanning at this width"
+          ]
+        },
+        {
+          "case": "smallest-room-decides-reversed",
+          "rooms": [
+            "hard",
+            "roomy"
+          ],
+          "options": [
+            88,
+            2
+          ],
+          "max_len": 512,
+          "head_max_len": 192,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 150,
+            "stride": 75,
+            "room": 150
+          },
+          "warnings": [
+            "laya: predict_long: these questions leave only 150 of max_len=512 for the state (their heads take the rest), so the scan window is capped 312 -> 150 and roughly 2.1x as many windows -- each a full forward pass -- are needed to read the document. Fewer or shorter options, a larger max_len, or laya.shortlist.predict_shortlist for a large label set will all cost less than scanning at this width"
+          ]
+        },
+        {
+          "case": "no-room-at-all",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            88
+          ],
+          "max_len": 220,
+          "head_max_len": 512,
+          "window": null,
+          "stride": null,
+          "error": "predict_long: the questions' options fill the whole sequence (max_len=220, head_max_len=512), leaving no room for the state; no window can carry any of it. A label set this large is what laya.shortlist.predict_shortlist is for",
+          "warnings": []
+        },
+        {
+          "case": "no-room-at-all-roomy-question",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 8,
+          "head_max_len": 512,
+          "window": null,
+          "stride": null,
+          "error": "predict_long: the questions' options fill the whole sequence (max_len=8, head_max_len=512), leaving no room for the state; no window can carry any of it. A label set this large is what laya.shortlist.predict_shortlist is for",
+          "warnings": []
+        },
+        {
+          "case": "tiny-max-len",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 96,
+          "head_max_len": 32,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 64,
+            "stride": 32,
+            "room": 70
+          },
+          "warnings": []
+        }
+      ]
+    },
+    "multilingual": {
+      "default_max_len": 1024,
+      "default_head_max_len": 256,
+      "state_room": [
+        {
+          "options": 1,
+          "room": 992,
+          "room_tight": 224
+        },
+        {
+          "options": 2,
+          "room": 970,
+          "room_tight": 202
+        },
+        {
+          "options": 5,
+          "room": 904,
+          "room_tight": 136
+        },
+        {
+          "options": 20,
+          "room": 774,
+          "room_tight": 146
+        },
+        {
+          "options": 40,
+          "room": 774,
+          "room_tight": 86
+        },
+        {
+          "options": 60,
+          "room": 774,
+          "room_tight": 6
+        },
+        {
+          "options": 100,
+          "room": 614,
+          "room_tight": 0
+        },
+        {
+          "options": 150,
+          "room": 414,
+          "room_tight": 0
+        }
+      ],
+      "option_counts": {
+        "roomy": 2,
+        "mild": 64,
+        "hard": 160
+      },
+      "cases": [
+        {
+          "case": "no-questions",
+          "rooms": [],
+          "options": [],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 760,
+            "stride": 380,
+            "room": 760
+          },
+          "warnings": []
+        },
+        {
+          "case": "no-questions-explicit-window",
+          "rooms": [],
+          "options": [],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 128,
+          "stride": null,
+          "result": {
+            "window": 128,
+            "stride": 64,
+            "room": 128
+          },
+          "warnings": []
+        },
+        {
+          "case": "no-questions-explicit-stride",
+          "rooms": [],
+          "options": [],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 128,
+          "stride": 32,
+          "result": {
+            "window": 128,
+            "stride": 32,
+            "room": 128
+          },
+          "warnings": []
+        },
+        {
+          "case": "roomy-default",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 760,
+            "stride": 380,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "roomy-explicit-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100,
+          "stride": null,
+          "result": {
+            "window": 100,
+            "stride": 50,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "roomy-explicit-stride",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100,
+          "stride": 25,
+          "result": {
+            "window": 100,
+            "stride": 25,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-equals-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100,
+          "stride": 100,
+          "result": {
+            "window": 100,
+            "stride": 100,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-one",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100,
+          "stride": 1,
+          "result": {
+            "window": 100,
+            "stride": 1,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "explicit-window-over-room",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            160
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100000,
+          "stride": null,
+          "result": {
+            "window": 374,
+            "stride": 187,
+            "room": 374
+          },
+          "warnings": [
+            "laya: predict_long: window=100000 is wider than the 374 state tokens these questions leave inside max_len=1024, so every window would be truncated to 374 on the way to the model; scanning with window=374 instead"
+          ]
+        },
+        {
+          "case": "explicit-window-over-room-mild",
+          "rooms": [
+            "mild"
+          ],
+          "options": [
+            64
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100000,
+          "stride": null,
+          "result": {
+            "window": 758,
+            "stride": 379,
+            "room": 758
+          },
+          "warnings": [
+            "laya: predict_long: window=100000 is wider than the 758 state tokens these questions leave inside max_len=1024, so every window would be truncated to 758 on the way to the model; scanning with window=758 instead"
+          ]
+        },
+        {
+          "case": "default-clamped-mild",
+          "rooms": [
+            "mild"
+          ],
+          "options": [
+            64
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 758,
+            "stride": 379,
+            "room": 758
+          },
+          "warnings": []
+        },
+        {
+          "case": "default-clamped-hard",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            160
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 374,
+            "stride": 187,
+            "room": 374
+          },
+          "warnings": [
+            "laya: predict_long: these questions leave only 374 of max_len=1024 for the state (their heads take the rest), so the scan window is capped 760 -> 374 and roughly 2.0x as many windows -- each a full forward pass -- are needed to read the document. Fewer or shorter options, a larger max_len, or laya.shortlist.predict_shortlist for a large label set will all cost less than scanning at this width"
+          ]
+        },
+        {
+          "case": "stride-valid-for-requested-window",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            160
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100000,
+          "stride": 50000,
+          "result": {
+            "window": 374,
+            "stride": 187,
+            "room": 374
+          },
+          "warnings": [
+            "laya: predict_long: window=100000 is wider than the 374 state tokens these questions leave inside max_len=1024, so every window would be truncated to 374 on the way to the model; scanning with window=374 instead",
+            "laya: predict_long: stride=50000 was a 50% step for the window=100000 you asked for, but the window was reduced to 374 to fit the room these questions leave; scanning with stride=187 instead"
+          ]
+        },
+        {
+          "case": "stride-past-requested-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100,
+          "stride": 150,
+          "error": "predict_long: stride=150 steps past the 100-token window, so 50 tokens between every pair of windows would be read by no window at all; pass stride <= 100",
+          "warnings": []
+        },
+        {
+          "case": "stride-past-default-window",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": null,
+          "stride": 100000,
+          "error": "predict_long: stride=100000 steps past the 760-token window, so 99240 tokens between every pair of windows would be read by no window at all; pass stride <= 760",
+          "warnings": []
+        },
+        {
+          "case": "window-zero-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 0,
+          "stride": null,
+          "result": {
+            "window": 760,
+            "stride": 380,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "window-negative-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": -5,
+          "stride": null,
+          "result": {
+            "window": 760,
+            "stride": 380,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-zero-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100,
+          "stride": 0,
+          "result": {
+            "window": 100,
+            "stride": 50,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "stride-negative-is-unset",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": 100,
+          "stride": -3,
+          "result": {
+            "window": 100,
+            "stride": 50,
+            "room": 970
+          },
+          "warnings": []
+        },
+        {
+          "case": "smallest-room-decides",
+          "rooms": [
+            "roomy",
+            "hard"
+          ],
+          "options": [
+            2,
+            160
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 374,
+            "stride": 187,
+            "room": 374
+          },
+          "warnings": [
+            "laya: predict_long: these questions leave only 374 of max_len=1024 for the state (their heads take the rest), so the scan window is capped 760 -> 374 and roughly 2.0x as many windows -- each a full forward pass -- are needed to read the document. Fewer or shorter options, a larger max_len, or laya.shortlist.predict_shortlist for a large label set will all cost less than scanning at this width"
+          ]
+        },
+        {
+          "case": "smallest-room-decides-reversed",
+          "rooms": [
+            "hard",
+            "roomy"
+          ],
+          "options": [
+            160,
+            2
+          ],
+          "max_len": 1024,
+          "head_max_len": 256,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 374,
+            "stride": 187,
+            "room": 374
+          },
+          "warnings": [
+            "laya: predict_long: these questions leave only 374 of max_len=1024 for the state (their heads take the rest), so the scan window is capped 760 -> 374 and roughly 2.0x as many windows -- each a full forward pass -- are needed to read the document. Fewer or shorter options, a larger max_len, or laya.shortlist.predict_shortlist for a large label set will all cost less than scanning at this width"
+          ]
+        },
+        {
+          "case": "no-room-at-all",
+          "rooms": [
+            "hard"
+          ],
+          "options": [
+            160
+          ],
+          "max_len": 220,
+          "head_max_len": 512,
+          "window": null,
+          "stride": null,
+          "error": "predict_long: the questions' options fill the whole sequence (max_len=220, head_max_len=512), leaving no room for the state; no window can carry any of it. A label set this large is what laya.shortlist.predict_shortlist is for",
+          "warnings": []
+        },
+        {
+          "case": "no-room-at-all-roomy-question",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 8,
+          "head_max_len": 512,
+          "window": null,
+          "stride": null,
+          "error": "predict_long: the questions' options fill the whole sequence (max_len=8, head_max_len=512), leaving no room for the state; no window can carry any of it. A label set this large is what laya.shortlist.predict_shortlist is for",
+          "warnings": []
+        },
+        {
+          "case": "tiny-max-len",
+          "rooms": [
+            "roomy"
+          ],
+          "options": [
+            2
+          ],
+          "max_len": 96,
+          "head_max_len": 32,
+          "window": null,
+          "stride": null,
+          "result": {
+            "window": 64,
+            "stride": 32,
+            "room": 70
+          },
+          "warnings": []
+        }
+      ]
+    }
+  },
+  "batch_cap": [
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 1,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 2,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 3,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 5,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": 4
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": 4
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": 4
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 3
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 3
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 3
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 4
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 4
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 4
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 3
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 3
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 3
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 11,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": 10
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": 10
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": 10
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 3
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 3
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 3
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 4
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 4
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 4
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 3
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 3
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 3
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 6
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 6
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 6
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 4
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 4
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 4
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 10
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 10
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 10
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 6
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 6
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 6
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 29,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": 13
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": 13
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": 13
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 3
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 3
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 3
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 2
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 2
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 2
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 5
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 5
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 5
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 3
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 3
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 3
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 5
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 5
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 5
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 12
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 12
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 12
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 36,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": 35
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": 35
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": 35
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 5
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 5
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 5
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 14
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 14
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 14
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 9
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 9
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 9
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 21
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 21
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 21
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 13
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 13
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 13
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 33
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 33
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 33
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 21
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 21
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 21
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 100,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": 142
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": 142
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": 142
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 30
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 30
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 30
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 19
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 19
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 19
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 23,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 56
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 56
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 56
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 35
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 35
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 35
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 43,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 85
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 85
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 85
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 53
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 53
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 53
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 64,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": 136
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": 136
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": 136
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": 84
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": 84
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": 84
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 102,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 312,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 64,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 312,
+      "batch_size": 8,
+      "cap": 8
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": null,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 0,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": -1,
+      "cap": null
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 1,
+      "cap": 1
+    },
+    {
+      "n_windows": 413,
+      "window": 504,
+      "config_budget": 504,
+      "batch_size": 8,
+      "cap": 8
+    }
+  ]
+}
