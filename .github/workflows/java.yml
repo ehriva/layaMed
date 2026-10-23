@@ -80,13 +80,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       # For resolving the dependency tree only; nothing here compiles the module.
-      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "17"
@@ -117,7 +117,7 @@ jobs:
     continue-on-error: true   # advisory: see the header
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # `gradle/wrapper/gradle-wrapper.jar` is a binary that executes at build time, so it is
       # the one file in this tree a reviewer cannot read. This validates it against Gradle's
       # published checksums before anything runs it. The jar in the tree today is the genuine
@@ -129,8 +129,8 @@ jobs:
       # executing an unverified binary. release-java.yml's `central` job is the
       # reason it matters -- it runs the wrapper holding the signing key and the
       # Maven Central credentials, and Central is append-only.
-      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
-      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "17"
@@ -138,7 +138,7 @@ jobs:
 
       # The model-free families need no checkpoint, so their drift is checked here. The rest are
       # left alone by the generator and reported as unverified; the parity job checks those.
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install the Python toolchain the fixtures were recorded with
@@ -154,17 +154,18 @@ jobs:
       # Without LAYA_CHECKPOINTS the checkpoint-backed factories abort by assumption and the rest
       # run. `--min-tests` is what stops an aborted suite from looking like a pass.
       #
-      # Measured on the merged tree: 1025 register here, 1007 run, 18 abort on a checkpoint this
-      # lane does not have. Exact, not padded -- the floor stood at 680 long enough for the real
-      # figure to pass it by, which is how a floor stops being one. ONE below the JDK-matrix
-      # lane's floor on purpose: that lane passes `-PtestJavaVersion`, which is what makes
-      # `TestJvmVersionTest` run instead of skip, so it executes 1008. Same suite, one more test,
-      # because the flag enables it. The step below is where the number is justified.
+      # Measured on the merged tree (main 68804629, release 0.4.2): 1192 register here, 1168 run,
+      # 24 abort on a checkpoint this lane does not have -- the floor counts what ran, so 1168.
+      # Exact, not padded -- the floor stood at 680 long enough for the real figure to pass it by,
+      # which is how a floor stops being one. ONE below the JDK-matrix lane's floor on purpose:
+      # that lane passes `-PtestJavaVersion`, which is what makes `TestJvmVersionTest` run instead
+      # of skip, so it executes 1169. Same suite, one more test, because the flag enables it. The
+      # step below is where the number is justified.
       - name: Tests that need no model
         working-directory: laya-java
         run: ./gradlew --no-daemon test
-      # Measured on the merged tree, Corretto 17, no checkpoints: 1025 registered, 18 abort,
-      # 1007 RUN -- the floor counts what ran, so the aborted checkpoint-backed cases are not in
+      # Measured on the merged tree, Corretto 17, no checkpoints: 1192 registered, 24 abort,
+      # 1168 RUN -- the floor counts what ran, so the aborted checkpoint-backed cases are not in
       # it. The floor is EXACT, with no margin, which is a change from the margin-of-4 this
       # replaced. A margin only binds classes larger than itself, and three classes in this lane
       # run exactly ONE test (`DecoderTest`, `TypedDecisionsParityTest`, `WindowPlanTest`), so no
@@ -175,16 +176,20 @@ jobs:
       #
       # This floor and the jdk-matrix one differ by one ON PURPOSE -- see that lane for why a
       # shared number let a whole five-test class be deleted there.
-      # 1007/1008 is the pre-#1061 measurement, kept on purpose. #1057, #1059, #1060 and
-      # #1061 were each branched off main independently, so every one measured its own
-      # count and none measured the merged tree, which carries all four. The real figure
-      # is higher. The lower verified number keeps the floor binding and the lane green;
-      # an unmeasured figure in a gate is how a gate goes red for the wrong reason.
+      # 1007/1008 was the pre-#1061 measurement, kept on purpose because #1057, #1059, #1060 and
+      # #1061 were each branched off main independently and none measured the merged tree, which
+      # carries all four. That measurement now exists: on merged main 68804629 (release 0.4.2),
+      # Actions run 38041041968, this lane's job
+      # https://github.com/NandhaKishorM/laya/actions/runs/38041041968/job/114182848558
+      # registered 1192, aborted 24, ran 1168, and failed 0; the jdk-matrix lane on the same
+      # run (job 114182848539) registered 1192, aborted 23, ran 1169, and failed 0. So the floor
+      # is 1168, not 1007 -- the pre-#1061 number sat 161 below what actually runs, which is
+      # silent loss this step exists to see.
       - name: Model-free suite was not vacuous
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 1007 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 1168 --allow-aborted
 
       # The samples are single-file source programs, deliberately NOT a Gradle module: a
       # `samples` subproject would inherit the root build's MavenPublication and
@@ -243,7 +248,7 @@ jobs:
       # The pre-tokenizer's letter/number classes are probed from the reference tokenizer, so this
       # one needs a checkpoint and runs in the parity lane instead -- see that job.
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ failure() }}
         with:
           name: java-build-diagnostics
@@ -286,13 +291,13 @@ jobs:
         # DISAGREES. 17 and 24 passed. A two-version matrix would not have found it.
         jdk: ["17", "21", "24"]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Validate the wrapper jar BEFORE anything can execute it. See this file's
       # header for why every job that runs ./gradlew needs this, not just one.
-      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       # For check_test_results.py only -- it is standard library, so there is nothing to install.
       # Pinned rather than relying on whatever `python` the runner image happens to expose.
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       # Both: 17 for the compiler toolchain, the matrix JDK for the test JVM. setup-java puts
@@ -312,7 +317,7 @@ jobs:
       # fails the build outright -- "Cannot find a Java installation on your machine matching:
       # {languageVersion=N}" -- instead of quietly running on the compile JDK. Verified both
       # ways: without `fromEnv` the build exits 1 with that message; with it, 0.
-      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: |
@@ -340,7 +345,7 @@ jobs:
       # dropped, Gradle exits 0 and the floor alone exits 0 on 488 tests, having run JDK 17 twice
       # and reported it as two JDKs. With `--require-passed` it exits 1.
       #
-      # 1008, not the build lane's 1007, and the one is the point: this lane runs one test MORE
+      # 1169, not the build lane's 1168, and the one is the point: this lane runs one test MORE
       # than that one, because `TestJvmVersionTest` is `@EnabledIfSystemProperty` and only
       # enabled here. Both are EXACT, with no margin, for the reason the build lane gives --
       # three classes here run exactly one test, so no positive margin can bind them.
@@ -361,9 +366,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python laya-java/scripts/check_test_results.py
-          laya-java/laya-java/build/test-results/test --min-tests 1008 --allow-aborted
+          laya-java/laya-java/build/test-results/test --min-tests 1169 --allow-aborted
           --require-passed TestJvmVersionTest
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ failure() }}
         with:
           name: java-jdk${{ matrix.jdk }}-diagnostics
@@ -512,14 +517,14 @@ jobs:
             min-tests: 14
             timeout: 75
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Validate the wrapper jar BEFORE anything can execute it. See this file's
       # header for why every job that runs ./gradlew needs this, not just one.
-      - uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "17"
@@ -629,7 +634,7 @@ jobs:
           python laya-java/scripts/check_test_results.py
           laya-java/laya-java/build/test-results/test --min-tests ${{ matrix.min-tests }}
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ failure() }}
         with:
           name: java-parity-${{ matrix.name }}-diagnostics

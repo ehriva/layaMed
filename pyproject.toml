@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "laya"
-version = "0.4.2"
+version = "0.4.14"
 description = "Fast, non-autoregressive System 1 decision engine with calibrated probabilities"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -88,6 +88,11 @@ llamaindex = [
 # `pip install laya[crewai]` adds the CrewAI multi-agent delegation router (laya.integrations).
 crewai = [
     "crewai>=0.28.0",
+]
+
+# `pip install laya[agno]` adds the Agno multi-agent team routing and guardrail integration (laya.integrations).
+agno = [
+    "agno>=1.1.14,<2",
 ]
 
 [project.scripts]

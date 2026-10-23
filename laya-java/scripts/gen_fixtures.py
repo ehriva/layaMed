@@ -5328,6 +5328,9 @@ def main(argv=None):
                         help="do not write; exit 1 if a committed fixture would change")
     parser.add_argument("--only", action="append", metavar="FILE",
                         help="restrict to one fixture file (repeatable)")
+    parser.add_argument("--out", metavar="DIR",
+                        help="read and write fixtures in DIR instead of laya-java/fixtures, so a "
+                             "port that keeps its own copy can regenerate without touching this one")
     parser.add_argument("--strict", action="store_true",
                         help="treat a family that cannot be regenerated as an error, for a lane "
                              "that is supposed to have the checkpoints")
@@ -5343,18 +5346,21 @@ def main(argv=None):
                   % (", ".join(unknown), ", ".join(sorted(FAMILIES))), file=sys.stderr)
             return 2
 
+    target_dir = os.path.abspath(args.out) if args.out else FIXTURES
     if not args.check:
-        os.makedirs(FIXTURES, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
     stale, written, unverified = [], [], []
     examined = 0
     for filename, build in sorted(FAMILIES.items()):
         if args.only and filename not in args.only:
             continue
         examined += 1
-        path = os.path.join(FIXTURES, filename)
+        path = os.path.join(target_dir, filename)
         payload = build()
         fresh = render(payload)
-        if unverifiable(payload) and os.path.exists(path):
+        # A fresh --out directory holds nothing to protect, so "left alone" there would leave the
+        # file absent and look like success; under --strict it is the error it is everywhere else.
+        if unverifiable(payload) and (os.path.exists(path) or (args.out and args.strict)):
             unverified.append(filename)
             continue
         if args.check:

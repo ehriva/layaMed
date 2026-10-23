@@ -1,9 +1,9 @@
 """`docs/structured.md`'s tables must be the compiler's behavior, in both directions.
 
-The page promises a "documented subset" (`laya/structured.py:146` says the mapping is one), and the
-subset table is what a reader trusts. It had drifted both ways at once: it promised `title` as an
-"option label", which no code path reads at all (weight-free proof: the compiled plan is
-byte-identical with and without the key), while `Optional[X]` -- the `anyOf`/`oneOf` unwrap and the
+The page promises a "documented subset" -- `laya/structured.py::questions_from_json_schema` calls it
+one -- and the subset table is what a reader trusts. It had drifted both ways at once: it promised
+`title` as an "option label", which no code path reads at all (weight-free proof: the compiled plan
+is byte-identical with and without the key), while `Optional[X]` -- the `anyOf`/`oneOf` unwrap and
 `type: ["x", "null"]` list form -- had been supported for months and appeared nowhere. 13 of the
 module's 19 `SchemaError` messages were also undocumented, the three limits collapsed into one row
 that said only "the limit is named in the message".
@@ -291,7 +291,7 @@ def main() -> int:
     check_true("subset table/parsed rows", len(subset) == 11, "got %d" % len(subset))
     check_true("subset table/every row has three cells",
                all(len(r) == 3 for r in subset), [len(r) for r in subset])
-    check_true("rejections table/parsed rows", len(props) == 13, "got %d" % len(props))
+    check_true("rejections table/parsed rows", len(props) == 14, "got %d" % len(props))
     check_true("rejections table/every row has two cells",
                all(len(r) == 2 for r in props), [len(r) for r in props])
     check_true("entry point table/parsed rows", len(calls) == 7, "got %d" % len(calls))

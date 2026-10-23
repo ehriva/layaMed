@@ -87,12 +87,16 @@ def predict_shortlist(
     choice and non-choice questions keep theirs.
 
     The returned dict is the model result plus a ``shortlist`` entry. Probabilities
-    on a shortlisted choice are over the kept labels only. ``shortlist[qid]`` holds
-    ``labels``, ``scores``, ``k``, ``n``, and ``passthrough``. ``labels`` is the rank
-    order a shortlist produced, or the criteria order itself when ``passthrough`` is
-    set and no ranking ran; ``scores`` is the signed cosine of each kept label in that
-    order -- negative included, never clamped to 0 -- or ``None`` when nothing was
-    dropped.
+    on a shortlisted choice are over the kept labels only. ``shortlist`` has an entry
+    for each choice question; a non-choice id is absent, because no ranking ran for it.
+    Each entry holds ``labels``, ``scores``, ``k``, ``n``, and ``passthrough``.
+    ``labels`` is the rank order a shortlist produced, or the criteria order itself when
+    ``passthrough`` is set and no ranking ran, and it always holds ``min(k, n)`` labels;
+    ``scores`` is the signed cosine of each kept label in that order -- negative
+    included, never clamped to 0 -- or ``None`` when nothing was dropped. Neither
+    ``k`` nor ``n`` counts what ``labels`` kept: ``k`` is the cap the caller asked
+    for, which a question with fewer labels than that does not reach, and ``n`` is
+    the caller's label count before any narrowing.
 
     Extra keyword arguments are forwarded to ``predict`` / ``system_one`` (for
     example ``model=`` on a ``Router``).
@@ -127,10 +131,6 @@ def predict_shortlist(
         reduced[qid] = _drop_stale_order(qid, updated, len(labels), warned)
 
     result = _call_predict(agent, state, reduced, **predict_kwargs)
-    if not isinstance(result, dict):
-        raise TypeError(
-            "predict/system_one must return a dict, got %s" % type(result).__name__
-        )
     out = dict(result)
     out["shortlist"] = meta
     return out
@@ -164,11 +164,20 @@ def predict_tournament(
     onto them would silently move options between slots, so it is dropped instead. A
     choice that needed no round keeps its order.
 
-    The returned dict is the final call's result plus a ``tournament`` entry.
-    ``tournament[qid]`` holds ``labels`` (the finalists, in criteria order), ``n`` (the
-    label count) and ``rounds`` for each choice question. Probabilities, confidences and
-    ``usage`` come from the final call, so a tournament choice's probabilities are over its
+    The returned dict is the final call's result plus a ``tournament`` entry. It has
+    an entry for each choice question -- a non-choice id is absent, since such a
+    question plays no round -- holding ``labels`` (the finalists, in criteria order),
+    ``n`` and ``rounds``. ``n`` is the caller's label count before the first round,
+    the same meaning as in ``predict_shortlist``'s metadata: it says how wide the
+    field was, not how many finalists came out of it, so on a choice that played a
+    round it is larger than ``len(labels)``. Probabilities, confidences and ``usage``
+    come from the final call, so a tournament choice's probabilities are over its
     finalists only.
+
+    Every call's reply is checked against the same shape, the elimination rounds included: a reply
+    that is not a dict, and one whose ``answers`` is not a dict, each raise that contract by name
+    instead of an indexing error or a bare ``KeyError`` from inside the module. What an answer holds
+    is not checked: the final call's answers go to the caller as the agent wrote them.
 
     Extra keyword arguments are forwarded to every call (for example ``model=`` on a ``Router``).
     """
@@ -200,7 +209,7 @@ def predict_tournament(
         if not groups:
             break
         round_questions = {str(i): cut(qid, labels) for i, (qid, labels) in enumerate(groups)}
-        answers = _call_predict(agent, state, round_questions, **predict_kwargs)["answers"]
+        answers = _round_answers(_call_predict(agent, state, round_questions, **predict_kwargs))
         winners: Dict[str, List[Any]] = {}
         for i, (qid, _labels) in enumerate(groups):
             winners.setdefault(qid, []).append(answers[str(i)]["choice"])
@@ -213,10 +222,6 @@ def predict_tournament(
         if entry["rounds"]:
             final[qid] = cut(qid, entry["labels"])
     result = _call_predict(agent, state, final, **predict_kwargs)
-    if not isinstance(result, dict):
-        raise TypeError(
-            "predict/system_one must return a dict, got %s" % type(result).__name__
-        )
     out = dict(result)
     out["tournament"] = meta
     return out
@@ -292,15 +297,22 @@ def cached_embed_fn(
 
         embed_fn = cached_embed_fn(embed_fn_from_agent(agent))
 
-    leaves the first call unchanged and reduces each repeat call to embedding the new
-    query alone.
+    leaves the first call's embedder work unchanged and reduces each repeat call to
+    embedding the new query alone.
 
     Lookups are exact string matches. Texts missing from the cache are deduplicated and
     embedded in a single ``embed_fn`` call, so a cold cache costs the same number of
     batched calls as the unwrapped function. Rows are stored as float32; the cache holds
     at most ``maxsize`` strings and then evicts the least recently used entry, bounding
     memory at about ``maxsize * dim * 4`` bytes. Nothing is cached when ``embed_fn``
-    raises or returns a bad shape.
+    raises or returns a bad shape. A non-finite value is not a bad shape: ``NaN``,
+    ``inf`` and ``-inf`` become ``0.0`` on the way in, the same replacement
+    :func:`_embeddings` makes for an unwrapped embedder, and the repaired row is then
+    *cached*. One transient ``NaN`` in an option's embedding therefore ranks that option
+    as a zero vector on every later request until ``cache_clear()``, while the unwrapped
+    embedder would simply re-embed it -- shortlist membership can differ between the two
+    on the second call. The float32 storage shows in the scores too: a wrapped first
+    call can differ from the unwrapped one in its last digits.
 
     The wrapper is safe to share between threads: the lock covers only cache reads and
     writes, never the embedding call. The returned callable carries ``cache_info()`` --
@@ -343,21 +355,23 @@ def cached_embed_fn(
                     % (len(missing), tuple(fresh.shape))
                 )
             fresh = np.nan_to_num(fresh, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
-            if rows_by_text:
-                # Rows stored under one dimensionality cannot be stacked against rows of
-                # another: a changed embedder (or one whose dimension drifts between calls)
-                # would otherwise surface rows of mixed width, which `_rank` reads as one
-                # matrix. Deciding by identity is what the docstring already asks of the
-                # caller ("clear the cache if the model changes") -- this refuses the call
-                # instead of returning a matrix that silently mixes both.
-                want = next(iter(rows_by_text.values())).shape[0]
-                if fresh.shape[1] != want:
-                    raise ValueError(
-                        "embed_fn returned dim %d, but the cache holds dim %d; "
-                        "call cache_clear() if the model behind embed_fn changed"
-                        % (fresh.shape[1], want)
-                    )
             with lock:
+                if rows_by_text:
+                    # Rows stored under one dimensionality cannot be stacked against rows of
+                    # another: a changed embedder (or one whose dimension drifts between calls)
+                    # would otherwise surface rows of mixed width, which `_rank` reads as one
+                    # matrix. Deciding by identity is what the docstring already asks of the
+                    # caller ("clear the cache if the model changes") -- this refuses the call
+                    # instead of returning a matrix that silently mixes both. It is inside the
+                    # lock because a concurrent insert, eviction or `cache_clear()` mutates the
+                    # OrderedDict this reads.
+                    want = next(iter(rows_by_text.values())).shape[0]
+                    if fresh.shape[1] != want:
+                        raise ValueError(
+                            "embed_fn returned dim %d, but the cache holds dim %d; "
+                            "call cache_clear() if the model behind embed_fn changed"
+                            % (fresh.shape[1], want)
+                        )
                 for key, row in zip(missing, fresh):
                     rows_by_text[key] = row
                     rows_by_text.move_to_end(key)
@@ -506,12 +520,41 @@ def _cosine(query: np.ndarray, docs: np.ndarray) -> np.ndarray:
 
 
 def _call_predict(agent, state, questions, **predict_kwargs):
+    """One ``predict``/``system_one`` call, checked against the shape every caller here reads.
+
+    Both public functions return that reply to their caller, and ``predict_tournament`` indexes
+    into it between rounds, so the check belongs to the call rather than to a call site: an agent
+    that answers with a list or ``None`` fails here, naming the contract, instead of raising a
+    bare indexing error from inside the module.
+    """
     fn = getattr(agent, "predict", None)
     if fn is None:
         fn = getattr(agent, "system_one", None)
     if fn is None:
         raise TypeError("agent must provide predict or system_one")
-    return fn(state, questions, **predict_kwargs)
+    result = fn(state, questions, **predict_kwargs)
+    if not isinstance(result, dict):
+        raise TypeError(
+            "predict/system_one must return a dict, got %s" % type(result).__name__
+        )
+    return result
+
+
+def _round_answers(result):
+    """The answers mapping of one elimination round, which this module indexes by group number.
+
+    ``predict_tournament`` numbers its own group questions, so the keys it indexes here are keys the
+    caller never wrote. A group a reply leaves out still raises the plain ``KeyError`` for its
+    number: ``laya-java/fixtures/tournament.json`` records that as the cross-language contract, for
+    the Java and TypeScript ports read the same reply, so naming it here would move three ports
+    rather than one module.
+    """
+    answers = result.get("answers")
+    if not isinstance(answers, dict):
+        raise TypeError(
+            "predict/system_one must return an answers dict, got %s" % type(answers).__name__
+        )
+    return answers
 
 
 def _hidden_size(encoder) -> int:

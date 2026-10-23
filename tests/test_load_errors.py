@@ -366,13 +366,20 @@ check_true("39/what it reports is the question, as the page says",
            "'q'" in SECTION.get(3, ""), SECTION.get(3, "")[:120])
 
 # case 4 quotes the guard as an expression, so the expression has to be the code's -- under any
-# name `render_options` is bound to, and any name its count is stored in.
-_assign = re.search(r"(\w+) = len\(render_options\((\w+)\)\)", AGENT_SRC)
+# name the option count is read from, and any name it is stored in. #1231 moved the right-hand
+# side from `len(render_options(q))` to the count `build_head` already returned, so the pattern
+# reads the assignment rather than naming one source.
+_assign = re.search(r"(\w+) = (stats\[.options.\]|len\(render_options\(\w+\)\))", AGENT_SRC)
 check_true("39/the guard it quotes is the guard the code compares",
            _assign is not None and "len(markers) != %s:" % _assign.group(1) in AGENT_SRC,
            AGENT_SRC[AGENT_SRC.find("len(markers)"):][:60] if "len(markers)" in AGENT_SRC else "")
+# Quote style is the example's to choose: it prints the expression inside a double-quoted
+# `print`, so `stats['options']` there is the same expression as `stats["options"]` here.
+_bare = lambda text: text.replace('"', "").replace("'", "")
 check_true("39/quoted rather than paraphrased",
-           "len(markers)" in PROSE and "render_options" in PROSE, "")
+           "len(markers)" in PROSE and _assign is not None
+           and _bare(_assign.group(2)) in _bare(PROSE),
+           PROSE[PROSE.find("len(markers)"):][:90] if "len(markers)" in PROSE else "")
 
 # the crash class, statically: `MODELS` values can be `(repo, subfolder)` (witnessed above), so no
 # filesystem call may take one, and the missing-path case must come from `LOCAL_MODELS`.

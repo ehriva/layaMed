@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from .confidence import GATE_ABSTAINED
 from .evals import EvalError
 
 
@@ -23,14 +24,23 @@ def _text(value: Any, where: str) -> None:
 
 
 def _json(value: Any, where: str) -> str:
-    """Strict JSON, preserving object order because it can change model inputs."""
+    """Strict JSON, preserving object order because it can change model inputs.
+
+    Containers are matched by `isinstance`, scalars by exact type. `json.dumps` writes a `dict` or
+    `list` subclass as the very object or array it wraps -- an `OrderedDict`, a `defaultdict`, a
+    `Counter`, or anything read back with `object_pairs_hook=OrderedDict`, the way a caller keeps the
+    key order this module fingerprints -- encodes byte-for-byte as the mapping it equals and hashes to
+    the same fingerprint, so matching the encoder here refuses nothing the encoder would have taken.
+    Scalars are matched by exact type: `numpy.float64` and `numpy.str_` do encode, but as a type the
+    writer did not declare, and `numpy.int64` and `numpy.bool_` raise `TypeError` in the encoder.
+    """
     def check(item):
-        if type(item) is dict:
+        if isinstance(item, dict):
             for key, child in item.items():
                 if not isinstance(key, str):
                     raise ValueError("object keys must be strings")
                 check(child)
-        elif type(item) is list:
+        elif isinstance(item, list):
             for child in item:
                 check(child)
         elif type(item) not in (str, int, float, bool, type(None)):
@@ -282,6 +292,12 @@ def evaluate_agreement(runner: Any, reference: Dict, repeat: Dict, *,
 
     Provenance describes the caller's runner; no checkpoint revision is inferred or fabricated.
     The runner receives copied inputs and its exceptions propagate without dropping cases.
+
+    An abstention reaches this through the gate's own vocabulary: an answer carrying
+    ``abstention`` equal to ``laya.confidence.GATE_ABSTAINED`` becomes a null, which is what
+    `student_coverage` then counts as uncovered. The gate's two other states do not. `passed` is
+    a clearance, and `unevaluated` means the gate had no usable confidence to compare -- the
+    student still answered, so the choice is kept.
     """
     _controls(bootstrap_samples, seed)
     ref, rep = _teachers(reference, repeat)
@@ -304,7 +320,11 @@ def evaluate_agreement(runner: Any, reference: Dict, repeat: Dict, *,
             choice = answer.get("choice")
             if not isinstance(choice, str) or choice not in _labels(question, where):
                 raise EvalError("%s returned an invalid choice label" % where)
-            choices[qid] = None if answer.get("abstention") == "abstained" else choice
+            # The marker belongs to the gate's vocabulary, not to this module: of the three states
+            # `laya.confidence` can write, only GATE_ABSTAINED means the student declined. A caller
+            # that read the field instead of the value ("if answer.get(...)") would drop the
+            # `unevaluated` answers -- gated with no usable confidence, choice intact -- from coverage.
+            choices[qid] = None if answer.get("abstention") == GATE_ABSTAINED else choice
         cases.append(dict(deepcopy(case), answers=choices))
     run_id, suffix = "student", 0
     while run_id in (reference["run_id"], repeat["run_id"]):

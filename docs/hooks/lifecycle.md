@@ -48,7 +48,9 @@ predict_batch(states, questions, batch_size=..., hooks=..., ...)
   │                                                     │
   │   finally:                                          │
   │     ctx.elapsed_ms = now - ctx.started_at           │
-  │     if ctx.results: ctx.usage = aggregate_usage(...)│
+  │     if ctx.results is not None:                     │
+  │         ctx.usage = aggregate_usage(...)            │
+  │         apply_confidence_gate(..., min_confidence)  │
   │     on_predict_end ─────────────────────────────────┘
   │
   └─ return ctx.results
@@ -56,6 +58,14 @@ predict_batch(states, questions, batch_size=..., hooks=..., ...)
 
 The same `ctx` object flows through start, error and end, so `run_id` correlates them and an end
 hook can read `ctx.error`.
+
+The `finally` guard is `ctx.results is not None`, not truthiness, and the empty batch is the only
+case where they differ: `predict_batch([])` sets `ctx.results = []` (`laya/agent.py::Agent.predict_batch`),
+so the guard passes, `ctx.usage` becomes `{"input_tokens": 0, "output_tokens": 0}`, and the confidence
+gate still runs over the (empty) result list. A call that raised before any result leaves
+`ctx.results` and `ctx.usage` both `None`. So for an end hook `usage is None` means "this call
+produced nothing", and it is not the same signal as "this call was empty" -- an audit hook that
+treats the second as the first reports every empty batch as a failure.
 
 ## Agent.system_one / predict
 
@@ -216,14 +226,17 @@ See [`examples/hooks/cache.py`](../../examples/hooks/cache.py) for a working cac
 
 Hooks still fire so audit sees every call:
 
-| input | `ctx.results` at end |
-|---|---|
-| `predict_batch([])` | `[]` |
-| `predict_batch(states, {})` (no questions) | one empty-answer payload per state |
-| `system_one(state, {})` | a single empty-answer payload |
+| input | `ctx.results` at end | `ctx.usage` at end |
+|---|---|---|
+| `predict_batch([])` | `[]` | `{"input_tokens": 0, "output_tokens": 0}` |
+| `predict_batch(states, {})` (no questions) | one empty-answer payload per state | zeros, summed over those payloads |
+| `system_one(state, {})` | a single empty-answer payload | `{"input_tokens": 0, "output_tokens": 0}` |
 
 No tokenization or forward pass happens in these cases, but `on_predict_start` and
-`on_predict_end` run.
+`on_predict_end` run. The third `usage` column is the point of the table: every one of these calls
+leaves an end hook with a *real* usage dict, because the guard that fills it is
+`ctx.results is not None` and `[]` passes it. Only a call that raised before producing results
+leaves `ctx.usage` as `None`.
 
 ## Ordering rules
 

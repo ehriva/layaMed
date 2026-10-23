@@ -3,7 +3,77 @@ namespace Laya;
 /// <summary>Token accounting for one <c>Predict</c> call. Laya emits no tokens, so output is 0.</summary>
 /// <param name="InputTokens">Non-padding tokens across every question in the batch.</param>
 /// <param name="OutputTokens">Always 0: a System 1 pass generates nothing.</param>
-public readonly record struct Usage(int InputTokens, int OutputTokens);
+public readonly record struct Usage(int InputTokens, int OutputTokens)
+{
+    /// <summary>Windows scored by PredictLong; null for a plain Predict call.</summary>
+    public int? Windows { get; init; }
+
+    /// <summary>State tokens read across scan windows, before per-question truncation.</summary>
+    public int? StateTokens { get; init; }
+
+    /// <summary>Sum of each window's worst per-question dropped-state count.</summary>
+    public int? StateTokensDropped { get; init; }
+
+    /// <summary>Number of scan windows with any truncated question (0 or 1 for a single window).</summary>
+    public int? Truncated { get; init; }
+
+    /// <summary>The last window's truncated question ids, matching Python's scan aggregation.</summary>
+    public IReadOnlyList<string>? TruncatedQuestions { get; init; }
+
+    /// <summary>Collapsed option spans, merged by question id across scan windows; null if none.</summary>
+    public IReadOnlyDictionary<string, OptionUsage>? Options { get; init; }
+
+    /// <summary>Value equality, including the contents of <see cref="TruncatedQuestions"/> and <see cref="Options"/>.</summary>
+    public bool Equals(Usage other) =>
+        InputTokens == other.InputTokens && OutputTokens == other.OutputTokens
+        && Windows == other.Windows && StateTokens == other.StateTokens
+        && StateTokensDropped == other.StateTokensDropped && Truncated == other.Truncated
+        && SameList(TruncatedQuestions, other.TruncatedQuestions) && SameMap(Options, other.Options);
+
+    /// <inheritdoc/>
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(InputTokens);
+        hash.Add(OutputTokens);
+        hash.Add(Windows);
+        hash.Add(StateTokens);
+        hash.Add(StateTokensDropped);
+        hash.Add(Truncated);
+        if (TruncatedQuestions is { } ids)
+            foreach (var id in ids) hash.Add(id, StringComparer.Ordinal);
+        // Order-independent, so equal maps hash equally whatever their enumeration order.
+        if (Options is { } options)
+            hash.Add(options.Aggregate(options.Count,
+                (acc, pair) => acc ^ HashCode.Combine(StringComparer.Ordinal.GetHashCode(pair.Key), pair.Value)));
+        return hash.ToHashCode();
+    }
+
+    private static bool SameList(IReadOnlyList<string>? a, IReadOnlyList<string>? b) =>
+        ReferenceEquals(a, b) || (a is not null && b is not null && a.SequenceEqual(b, StringComparer.Ordinal));
+
+    // Keys compare ordinally whatever comparer either map was built with, so equality stays
+    // symmetric and agrees with GetHashCode's ordinal key hashes.
+    private static bool SameMap(IReadOnlyDictionary<string, OptionUsage>? a, IReadOnlyDictionary<string, OptionUsage>? b) =>
+        ReferenceEquals(a, b) || (a is not null && b is not null && a.Count == b.Count
+            && a.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Zip(b.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                .All(pairs => string.Equals(pairs.First.Key, pairs.Second.Key, StringComparison.Ordinal)
+                    && pairs.First.Value == pairs.Second.Value));
+}
+
+/// <summary>Option-span diagnostics from Python's common.collapsed_options.</summary>
+/// <param name="Total">Number of declared options.</param>
+/// <param name="Distinct">Number of distinct capped token spans.</param>
+/// <param name="TokensPerOption">Cap including the marker, or null when no head-budget cap was needed.</param>
+public readonly record struct OptionUsage(int Total, int Distinct, int? TokensPerOption);
+
+/// <summary>The deciding window in the tokenized state; offsets are exclusive-end token indices.</summary>
+/// <param name="Index">Zero-based deciding window index.</param>
+/// <param name="TokenStart">First state token in the window.</param>
+/// <param name="TokenEnd">One past the last state token in the window.</param>
+/// <param name="Count">Total windows scored.</param>
+public readonly record struct WindowInfo(int Index, int TokenStart, int TokenEnd, int Count);
 
 /// <summary>
 /// The action head's read on whether the answer can be acted on directly.
@@ -47,6 +117,19 @@ public abstract class Answer
 
     /// <summary>The action head's output.</summary>
     public ActionInfo Action { get; }
+
+    /// <summary>
+    /// Deciding scan window, or null for Predict and the single-window PredictLong fast path.
+    /// Probabilities describe this window, not a calibrated whole-document probability.
+    /// </summary>
+    public WindowInfo? Window { get; private set; }
+
+    internal Answer WithWindow(WindowInfo window)
+    {
+        var answer = (Answer)MemberwiseClone();
+        answer.Window = window;
+        return answer;
+    }
 
     /// <summary>This answer as a choice answer.</summary>
     /// <exception cref="InvalidOperationException">If the question was not a choice question.</exception>

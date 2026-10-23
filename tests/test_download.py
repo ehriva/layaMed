@@ -10,6 +10,7 @@ import inspect
 import inspect
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -396,6 +397,63 @@ class DownloadTests(unittest.TestCase):
                     with self.assertRaises(FileNotFoundError):
                         ONNXAgent("test/private-model", onnx_path=str(self.repo / "absent.onnx"))
                     self.assertEqual(download.call_args.kwargs["token"], "env-token")
+
+    def test_load_routes_onnx_to_onnxagent_and_everything_else_to_agent(self):
+        # The reference page called `laya.load` "a shortcut for `Agent(...)`" without
+        # qualification. It is one for every backend except "onnx", which builds an
+        # `ONNXAgent` -- and that is a `HookRegistry`, not an `Agent`, so the two objects
+        # are not interchangeable and `isinstance()` cannot be used to paper over it.
+        # Pin the dispatch, the class relationship behind it, and the page's wording.
+        built = []
+
+        def _record(*args, **kwargs):
+            built.append((args, kwargs))
+            return "onnx-object"
+
+        # `Agent` is patched to raise, so a `load()` that took the wrong branch is an
+        # error here rather than a confusing assertion about which object came back.
+        with patch("laya.onnx_agent.ONNXAgent", side_effect=_record), \
+                patch("laya.agent.Agent", side_effect=AssertionError("Agent was built")):
+            self.assertEqual(load(str(self.repo), backend="onnx",
+                                  onnx_path=str(self.repo / "model.onnx")), "onnx-object")
+            # The graph to load is the caller's `onnx_path`...
+            self.assertEqual(built[0][1]["onnx_path"], str(self.repo / "model.onnx"))
+            # ... and "laya.onnx" is load()'s default for it, which is what finds the
+            # graph a `--quantize` export writes beside `laya.onnx`.
+            load(str(self.repo), backend="onnx")
+            self.assertEqual(built[1][1]["onnx_path"], "laya.onnx")
+
+        # The other branch: no backend, or any non-ONNX backend, is an `Agent`.
+        agent = load(str(self.repo), device="cpu")
+        self.assertIsInstance(agent, Agent)
+        self.assertNotIsInstance(agent, ONNXAgent)
+        eager = load(str(self.repo), device="cpu", backend="eager")
+        self.assertIsInstance(eager, Agent)
+        self.assertNotIsInstance(eager, ONNXAgent)
+
+        # What makes the two branches visible to a caller: neither class contains the other.
+        self.assertFalse(issubclass(ONNXAgent, Agent))
+        self.assertFalse(issubclass(Agent, ONNXAgent))
+        # The practical consequence of that, read off the classes: the object `load()` hands
+        # back for backend="onnx" has none of the PyTorch-side control surface a signature
+        # annotated `Agent` would let a caller assume.
+        for torch_side in ("set_backend", "backend", "accelerate", "warmup"):
+            self.assertTrue(hasattr(Agent, torch_side), torch_side)
+            self.assertFalse(hasattr(ONNXAgent, torch_side), torch_side)
+
+        # The annotation the API reference renders, and the page that states the shortcut.
+        self.assertIn("ONNXAgent", str(inspect.signature(load).return_annotation))
+        head = (Path(__file__).resolve().parents[1] / "docs" / "reference" / "agent.md"
+                ).read_text(encoding="utf-8").split(":::")[0]
+        # Scope the qualification to the sentence that makes the claim: the page's closing
+        # example names `backend="onnx"` as well, so a whole-page `in` would pass on
+        # prose that never qualifies the shortcut.
+        shortcut = [s for s in re.split(r"(?<=\.)\s+", head) if "shortcut" in s]
+        self.assertEqual(len(shortcut), 1, "exactly one sentence calls load() a shortcut")
+        self.assertRegex(shortcut[0], r'except\s+`backend="onnx"`',
+                         "and it names the one backend that is not an Agent")
+        self.assertIn("not an `Agent` subclass", head,
+                      "and the page says plainly that the ONNX object is not an Agent")
 
 
 if __name__ == "__main__":

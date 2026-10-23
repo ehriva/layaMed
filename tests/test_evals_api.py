@@ -199,6 +199,157 @@ for line in _PAGE.splitlines():
                     if flag not in _options[match.group(1)]]
 check("docs/evals.md advertises only options the parser defines", sorted(_advertised), [])
 
+# --------------------------------------------------------------- run identity per route
+# `docs/evals.md`'s "Run identity" table and `docs/staged-adoption.md`'s "four of those six" both
+# promise `config.revisions`. What each route puts in that block is a property of the writer, not of
+# the prose: the torch run reports `Router.loaded_revisions`, the `--onnx` run one entry keyed by the
+# `--model` value (its default when `--model` is left out), and neither has a commit for a checkpoint
+# given as a local directory. These run the real CLI on three arms against fakes -- no download, no
+# onnxruntime -- so what the block holds is what the code printed here, and the two pages are then
+# held to that.
+import ast  # noqa: E402
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import json  # noqa: E402
+import tempfile  # noqa: E402
+
+import laya  # noqa: E402
+import laya.onnx_agent as _onnx_agent_module  # noqa: E402  (numpy-only at import time)
+
+_IDENTITY_Q = {"intent": {"type": "choice", "instructions": "i", "criteria": {"billing": "b"}}}
+_SHA = "55cf4c4e" + "0" * 32
+
+
+class _RouteRouter:
+    """Router-shaped: answers from two checkpoints, one Hub-pinned, one a local path."""
+
+    def __init__(self, *a, **kw):
+        self.loaded_revisions = {"english": _SHA, "multilingual": None}
+
+    def predict(self, state, questions, **kw):
+        return {"model": "english",
+                "answers": {qid: {"type": "choice", "choice": "billing", "answer_confidence": 0.9}
+                            for qid in questions},
+                "usage": {"input_tokens": 3, "output_tokens": 0}}
+
+
+class _RouteOnnxAgent:
+    """`ONNXAgent` holds the source it was given and a commit only when it downloaded one
+    (`laya/onnx_agent.py:101`, `:107`, `:126`), which is the pair the report block is read from."""
+
+    def __init__(self, model_id_or_path, onnx_path=None, **kw):
+        self.model_id = model_id_or_path
+        self.revision = None
+
+    def predict(self, state, questions, **kw):
+        return {"model": self.model_id,
+                "answers": {qid: {"type": "choice", "choice": "billing", "answer_confidence": 0.9}
+                            for qid in questions},
+                "usage": {"input_tokens": 3, "output_tokens": 0}}
+
+
+_identity_tmp = tempfile.mkdtemp(prefix="laya_evals_identity_")
+_identity_dataset = os.path.join(_identity_tmp, "data.jsonl")
+with open(_identity_dataset, "w") as f:
+    for _state in ("charged twice, refund me", "billed again after cancelling"):
+        f.write(json.dumps({"state": _state, "questions": _IDENTITY_Q,
+                            "expected": {"intent": "billing"}}) + "\n")
+
+
+def _route_report(extra_args):
+    global _route_n
+    _route_n += 1
+    path = os.path.join(_identity_tmp, "report_%d.json" % _route_n)
+    label = "onnx" if "--onnx" in extra_args else "torch Router"
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = evals_cli.main(["run", _identity_dataset, "--json", path] + extra_args)
+    check_true("run on the %s route exits 0" % label, rc == 0)
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)["config"]
+
+
+_route_n = 0
+_real_router, _real_agent = laya.Router, _onnx_agent_module.ONNXAgent
+try:
+    laya.Router = _RouteRouter
+    _router_cfg = _route_report(["--device", "cpu"])
+    _onnx_agent_module.ONNXAgent = _RouteOnnxAgent
+    _onnx_cfg = _route_report(["--onnx", os.path.join(_identity_tmp, "laya.onnx"),
+                               "--model", "english-ckpt"])
+    _onnx_default_cfg = _route_report(["--onnx", os.path.join(_identity_tmp, "laya.onnx")])
+finally:
+    laya.Router, _onnx_agent_module.ONNXAgent = _real_router, _real_agent
+
+check("the torch Router run records one entry per checkpoint it loaded",
+      _router_cfg.get("revisions"), {"english": _SHA, "multilingual": None})
+check("an `--onnx` run records one entry keyed by the `--model` value",
+      _onnx_cfg.get("revisions"), {"english-ckpt": None})
+check("an `--onnx` run with no `--model` keys the default source",
+      _onnx_default_cfg.get("revisions"), {"convaiinnovations/laya": None})
+check("and its `model` stays null while the block names that default",
+      _onnx_default_cfg.get("model"), None)
+check("both routes record the dataset, question and gate identity",
+      sorted(k for k in _onnx_cfg if k in ("dataset_sha256", "questions_sha256", "thresholds")),
+      sorted(k for k in _router_cfg if k in ("dataset_sha256", "questions_sha256", "thresholds")))
+check_true("a local-path checkpoint is recorded as null, not dropped",
+           _router_cfg.get("revisions", {"multilingual": "ABSENT"})["multilingual"] is None)
+check_true("an `--onnx` run from a local checkpoint directory is null too",
+           "revisions" in _onnx_cfg and _onnx_cfg["revisions"]["english-ckpt"] is None)
+
+
+def _revisions_writes():
+    """`(writes, writes nested inside an `if`)` for the `revisions=` keyword in `_cmd_run`.
+
+    The block has to be written once for every route. It used to be read off
+    `Router.loaded_revisions` under `if router is not None`, which left the `--onnx` report with no
+    attribution at all, so the shape that keeps both routes honest is one write at the top level of
+    the function -- not a count that a guard added back would leave alone.
+    """
+    tree = ast.parse(inspect.getsource(evals_cli._cmd_run))
+    found = []
+
+    def walk(node, depth):
+        for child in ast.iter_child_nodes(node):
+            if (isinstance(child, ast.keyword) and child.arg == "revisions"
+                    and isinstance(child.value, ast.Name)):
+                found.append(depth)
+            walk(child, depth + (1 if isinstance(child, ast.If) else 0))
+
+    walk(tree, 0)
+    return (len(found), sum(1 for depth in found if depth))
+
+
+check("the CLI writes the revisions block once, at the top level of the run",
+      _revisions_writes(), (1, 0))
+
+_ROW = {line.split("|")[1].strip().strip("`"): line.split("|")[2]
+        for line in _PAGE.splitlines() if line.startswith("| `") and line.count("|") >= 3}
+check("docs/evals.md's `revisions` row covers both routes and the `--model` key",
+      [s in _ROW.get("revisions", "") for s in ("--onnx", "torch run", "`--model`")],
+      [True, True, True])
+check_true("docs/evals.md's `revisions` row names the local-path null",
+           "`null`" in _ROW.get("revisions", ""))
+_BLOCK_PARA = [p for p in _PAGE.split("\n\n") if "Both routes write the `revisions` block" in p]
+check("exactly one paragraph states what each route records", len(_BLOCK_PARA), 1)
+check_true("that paragraph names the default the `--onnx` run is keyed by",
+           bool(_BLOCK_PARA) and "convaiinnovations/laya" in _BLOCK_PARA[0]
+           and "`--model`" in _BLOCK_PARA[0])
+check_true("that paragraph says a local directory is recorded as null, not dropped",
+           bool(_BLOCK_PARA) and "local directory" in _BLOCK_PARA[0]
+           and "recorded as `null`" in _BLOCK_PARA[0])
+# The paragraph cites the two `revision` attributes the null comes from; both files still hold them.
+_defaults = []
+for _rel in ("laya/agent.py", "laya/onnx_agent.py"):
+    _src = open(os.path.join(_ROOT, _rel), encoding="utf-8").read()
+    _defaults.append("self.revision: Optional[str] = None" in _src)
+check("both cited files leave `revision` None before any download", _defaults, [True, True])
+_STAGED = [p for p in open(os.path.join(_ROOT, "docs", "staged-adoption.md"),
+                           encoding="utf-8").read().split("\n\n")
+           if "Four of those six" in p]
+check("exactly one paragraph claims the four harness keys", len(_STAGED), 1)
+check_true("docs/staged-adoption.md keeps the null caveat and drops the route claim",
+           bool(_STAGED) and "`null`" in _STAGED[0] and "builds no Router" not in _STAGED[0])
+
 # --------------------------------------------------------------- report
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for name in FAIL:

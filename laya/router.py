@@ -1183,16 +1183,22 @@ class Router(HookRegistry):
         hooks=None,
         hooks_raise: Optional[bool] = None,
         hooks_timeout: Optional[float] = None,
+        *,
+        explain: bool = False,
     ) -> RouteDecision:
         """Decide which checkpoint to use, then let `on_route` hooks observe or replace it.
 
         `ctx.decision` is the `RouteDecision`; a hook may replace it (for example to pin a
         checkpoint) and the replacement is what gets returned and used. `hooks` are per-call
         hooks, appended after any installed on the Router.
+
+        `explain=True` adds language diagnostics when built-in detection runs. Explicit routing
+        overrides still skip it. A hook can replace the decision, including its diagnostics.
         """
         if questions is not None and not isinstance(questions, dict):
             raise TypeError("questions must be a dict of question id -> definition, got %s" % type(questions).__name__)
-        decision = self._route(state, questions, model=model, task=task, lang=lang, lang_guess=lang_guess)
+        decision = self._route(state, questions, model=model, task=task, lang=lang, lang_guess=lang_guess,
+                               **({"explain": True} if explain else {}))
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
         active = compose_hooks(self.hooks, hooks)
         timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
@@ -1208,6 +1214,8 @@ class Router(HookRegistry):
         task: Optional[str] = None,
         lang: Optional[str] = None,
         lang_guess: Optional[Any] = None,
+        *,
+        explain: bool = False,
     ) -> RouteDecision:
         """Decide which checkpoint to use, without loading or running anything.
 
@@ -1261,7 +1269,7 @@ class Router(HookRegistry):
                         source, "English" if resolved else "non-English"),
                     detection=None, workflow=workflow)
 
-        det = analyse(state)
+        det = analyse(state, explain=True) if explain else analyse(state)
         if det["script"] == "unknown":
             key = self.default
             reason = "no letters detected in state; using default (%s)" % key
@@ -1534,6 +1542,7 @@ class Router(HookRegistry):
         *,
         hooks=None,
         hooks_raise: Optional[bool] = None,
+        explain: bool = False,
     ) -> List[RouteDecision]:
         """Route a heterogeneous request batch without loading any checkpoints.
 
@@ -1551,6 +1560,7 @@ class Router(HookRegistry):
                 every request's ``on_route`` dispatch, as on :meth:`route`.
             hooks (HookArg): Per-call hook or sequence of hooks for this call.
             hooks_raise: Override the Router's ``hooks_raise`` policy for this call.
+            explain: Include built-in language diagnostics for each request that uses detection.
         """
         if not isinstance(requests, SequenceABC) or isinstance(requests, (str, bytes)):
             raise TypeError("requests must be a sequence of request dictionaries")
@@ -1561,6 +1571,8 @@ class Router(HookRegistry):
                 raise TypeError("request %d must be a dict, got %s" % (i, type(request).__name__))
             if "state" not in request:
                 raise ValueError("request %d is missing required key 'state'" % i)
+            if request["state"] is None:
+                raise TypeError("request %d 'state' must not be None; pass a string, dict, or list" % i)
             if "questions" not in request:
                 raise ValueError("request %d is missing required key 'questions'" % i)
 
@@ -1582,6 +1594,7 @@ class Router(HookRegistry):
                     hooks=hooks,
                     hooks_raise=hooks_raise,
                     hooks_timeout=hooks_timeout,
+                    **({"explain": True} if explain else {}),
                 )
             )
 
@@ -1599,6 +1612,7 @@ class Router(HookRegistry):
         on_predict_start=None,
         on_predict_end=None,
         hooks_raise: Optional[bool] = None,
+        diagnostics: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Route and execute a heterogeneous request batch with minimal model churn.
 
@@ -1641,6 +1655,13 @@ class Router(HookRegistry):
             on_predict_start (PredictHookArg): Plain callable or sequence of callables for start events.
             on_predict_end (PredictHookArg): Plain callable or sequence of callables for end events.
             hooks_raise: Override the Router's ``hooks_raise`` policy for this call.
+            diagnostics: Optional dict that receives the per-group sort outcome under the key
+                ``"sort_by_length"`` once the batch has run: how many question groups actually
+                reached an agent, how many of those could reorder, and the smallest / largest
+                group size. The reorder switches per group inside this call, so a caller that
+                wants to say whether the knob did anything (#1111) reads this instead of
+                guessing from the request count beforehand. Untouched when ``sort_by_length``
+                is false or no group reached an agent.
 
         Returns:
             One normal Router prediction result per request, in the same order as the input.
@@ -1664,6 +1685,11 @@ class Router(HookRegistry):
         # `predict` returns as it is.
         results: List[Any] = [None] * len(requests)
         answered = 0
+        # The per-group sort outcome, kept only for a caller that asked for it (#1111): the
+        # reorder switches per question group inside the loop below, and no caller outside
+        # this method can see the group sizes it forms.
+        sort_report = ({"groups": 0, "reordered": 0, "smallest": None, "largest": None}
+                       if sort_by_length and diagnostics is not None else None)
         # `compose_hooks`, not `list(self.hooks)`: the composition `predict` uses. It merges
         # `set_default_hooks` defaults, then installed hooks, then this call's `hooks`,
         # `on_predict_start` and `on_predict_end`. Reading the instance list alone silently
@@ -1698,6 +1724,8 @@ class Router(HookRegistry):
                 # checkpoint group again on what the start hooks left, so a rewritten question
                 # set or `ctx.max_len` only applies to its own request.
                 question_groups: List[Dict[str, Any]] = []
+                last_questions = None
+                last_schema = None
                 for i, ctx in zip(indices, started):
                     if ctx.results is not None:
                         # A cache hit short-circuits inference; keep the `routing` key predict adds.
@@ -1707,9 +1735,12 @@ class Router(HookRegistry):
                         continue
                     # Pass token-budget overrides only when set, as `predict` does, so an
                     # Agent-like object that does not accept them still works.
-                    overrides = {key: value for key, value in (("max_len", ctx.max_len),
-                                                               ("head_max_len", ctx.head_max_len))
-                                 if value is not None}
+                    if ctx.max_len is None and ctx.head_max_len is None:
+                        overrides = {}
+                    else:
+                        overrides = {key: value for key, value in (("max_len", ctx.max_len),
+                                                                   ("head_max_len", ctx.head_max_len))
+                                     if value is not None}
                     # `predict` forwards the language of the request so the agent can apply its
                     # per-language temperatures; the batched path forwarded only the token
                     # budgets, so the same request scored differently depending on the entry
@@ -1724,7 +1755,12 @@ class Router(HookRegistry):
                             lang_key = detection.get("language")
                     # Order-sensitive at every nesting level (#166): options are positional, so two
                     # equal schemas with different key orders must not share a group.
-                    schema = _question_schema(ctx.questions)
+                    if ctx.questions is last_questions:
+                        schema = last_schema
+                    else:
+                        schema = _question_schema(ctx.questions)
+                        last_questions = ctx.questions
+                        last_schema = schema
                     for group in question_groups:
                         if (group["schema"] == schema and group["overrides"] == overrides
                                 and group["lang"] == lang_key):
@@ -1783,6 +1819,22 @@ class Router(HookRegistry):
                             % (len(batch_results), len(items))
                         )
 
+                    if sort_report is not None:
+                        # What this group actually did with the knob: the agent reorders only
+                        # when `batch_size` clears its own `1 < chunk < len(states)` gate
+                        # (agent.py:1519, onnx_agent.py:761) over this group's states. A group
+                        # whose agent predates the knob (#294) reports as unsorted, not as an
+                        # error -- the run answered, just at one state's width.
+                        n = len(items)
+                        reorders = bool("sort_by_length" in batch_kwargs and batch_size
+                                        and batch_size > 1 and batch_size < n)
+                        sort_report["groups"] += 1
+                        sort_report["reordered"] += int(reorders)
+                        if sort_report["smallest"] is None or n < sort_report["smallest"]:
+                            sort_report["smallest"] = n
+                        if sort_report["largest"] is None or n > sort_report["largest"]:
+                            sort_report["largest"] = n
+
                     for (i, ctx), result in zip(items, batch_results):
                         result["routing"] = dict(decisions[i])
                         ctx.results = [result]
@@ -1821,6 +1873,8 @@ class Router(HookRegistry):
         if answered != len(requests):
             raise RuntimeError("internal error: batch execution did not produce every result")
 
+        if sort_report is not None:
+            diagnostics["sort_by_length"] = sort_report
         return results
 
     predict_many = predict_batch

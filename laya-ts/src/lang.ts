@@ -31,7 +31,18 @@ const SCRIPT_RANGES: ScriptRanges = [
 const STOP: Record<string, Set<string>> = {
   en: new Set(["the", "and", "is", "are", "was", "were", "to", "of", "in", "for", "with", "that",
     "this", "it", "you", "have", "has", "not", "but", "on", "at", "be", "as", "from",
-    "will", "can", "would", "there", "their", "what", "which", "please", "we", "i"]),
+    "will", "can", "would", "there", "their", "what", "which", "please", "we", "i",
+    // Question words, auxiliaries, pronouns and connectives, so a plain request such as "Why hasn't
+    // my card been delivered?" is not left undecided. See _STOP["en"] in laya/lang.py for how they
+    // were chosen and which words stay out.
+    "how", "why", "when", "where", "who", "whom", "does", "done", "doing", "been", "being",
+    "could", "should", "might", "must", "shall", "doesn", "didn", "isn", "aren", "wasn",
+    "weren", "haven", "hasn", "couldn", "wouldn", "won", "dont", "wont", "didnt", "doesnt",
+    "isnt", "wasnt", "havent", "ive", "youre", "thats", "whats", "any", "some", "many",
+    "much", "every", "each", "these", "those", "both", "few", "they", "them", "she", "him",
+    "his", "our", "your", "yours", "into", "onto", "between", "after", "before", "through",
+    "during", "without", "within", "down", "if", "nor", "than", "then", "because", "while",
+    "until", "here", "only", "very", "too", "ever", "never", "always", "already", "yet"]),
   fr: new Set(["le", "la", "les", "des", "une", "est", "pour", "dans", "que", "qui", "avec", "sur",
     "pas", "plus", "nous", "vous", "être", "cette", "mais", "sont", "ont", "aux", "ce",
     "et", "du", "au", "ou", "je", "tu", "il", "elle", "ils", "elles", "mon", "ton",

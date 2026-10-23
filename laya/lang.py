@@ -57,7 +57,26 @@ _SCRIPT_RANGES = [
 _STOP = {
     "en": {"the", "and", "is", "are", "was", "were", "to", "of", "in", "for", "with", "that",
            "this", "it", "you", "have", "has", "not", "but", "on", "at", "be", "as", "from",
-           "will", "can", "would", "there", "their", "what", "which", "please", "we", "i"},
+           "will", "can", "would", "there", "their", "what", "which", "please", "we", "i",
+           # Question words, auxiliaries, pronouns and connectives. Without them a plain request
+           # such as "Why hasn't my card been delivered?" matched no word above, stayed undecided
+           # and took the router default, the multilingual checkpoint. Each one, added alone,
+           # moved none of the 101,650 non-English MASSIVE validation rows to the English
+           # checkpoint. Words that did stay out: `over` (Dutch, Danish, Norwegian), `just` and
+           # `under` (Swedish), `still` (Norwegian), `he` (Spanish, Afrikaans, Finnish), `had`
+           # (Dutch), `or` and `cant` (Welsh), `us` (`us dollar`), and `about`, `up`, `out`
+           # (English titles and loanwords inside other languages). `also` is German, so it
+           # stays out too.
+           # `doesn`, `isn` and the rest are what `_WORD` leaves of a contraction; `doesnt` is how
+           # it is typed without the apostrophe.
+           "how", "why", "when", "where", "who", "whom", "does", "done", "doing", "been", "being",
+           "could", "should", "might", "must", "shall", "doesn", "didn", "isn", "aren", "wasn",
+           "weren", "haven", "hasn", "couldn", "wouldn", "won", "dont", "wont", "didnt", "doesnt",
+           "isnt", "wasnt", "havent", "ive", "youre", "thats", "whats", "any", "some", "many",
+           "much", "every", "each", "these", "those", "both", "few", "they", "them", "she", "him",
+           "his", "our", "your", "yours", "into", "onto", "between", "after", "before", "through",
+           "during", "without", "within", "down", "if", "nor", "than", "then", "because", "while",
+           "until", "here", "only", "very", "too", "ever", "never", "always", "already", "yet"},
     "fr": {"le", "la", "les", "des", "une", "est", "pour", "dans", "que", "qui", "avec", "sur",
            "pas", "plus", "nous", "vous", "être", "cette", "mais", "sont", "ont", "aux", "ce",
            "et", "du", "au", "ou", "je", "tu", "il", "elle", "ils", "elles", "mon", "ton",
@@ -239,7 +258,8 @@ _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 _IDENTIFIER = re.compile(r"(?<![\w-])[\w-]*(?:[.@][\w-]+)+", re.UNICODE)
 
 
-def _iter_text(state: Union[str, bytes, Mapping, list, None], _depth: int = 0) -> List[str]:
+def _iter_text(state: Union[str, bytes, Mapping, list, None], _depth: int = 0,
+               _paths=None, _path=()) -> List[str]:
     """Collect the string leaves of a state, so detection sees real content.
 
     Keys are ignored: they are usually English field names. Any mapping counts, not only
@@ -249,21 +269,35 @@ def _iter_text(state: Union[str, bytes, Mapping, list, None], _depth: int = 0) -
     if _depth > 6 or state is None:
         return []
     if isinstance(state, str):
+        if _paths is not None:
+            _paths.append(_path)
         return [state]
     if isinstance(state, (bytes, bytearray)):
         try:
-            return [bytes(state).decode("utf-8")]
+            text = bytes(state).decode("utf-8")
         except UnicodeDecodeError:
             return []
+        if _paths is not None:
+            _paths.append(_path)
+        return [text]
     if isinstance(state, Mapping):
         out = []
-        for v in state.values():
-            out.extend(_iter_text(v, _depth + 1))
+        if _paths is None:
+            for v in state.values():
+                out.extend(_iter_text(v, _depth + 1))
+        else:
+            for key, v in state.items():
+                # Do not stringify arbitrary keys or copy an unbounded field name into a report.
+                bounded = ((type(key) is str and len(key) <= 128)
+                           or (type(key) is int and key.bit_length() <= 63))
+                path = _path + (key,) if _path is not None and bounded else None
+                out.extend(_iter_text(v, _depth + 1, _paths, path))
         return out
     if isinstance(state, (list, tuple)):
         out = []
-        for v in state:
-            out.extend(_iter_text(v, _depth + 1))
+        for i, v in enumerate(state):
+            path = _path + (i,) if _paths is not None and _path is not None else _path
+            out.extend(_iter_text(v, _depth + 1, _paths, path))
         return out
     return []
 
@@ -442,6 +476,10 @@ def latin_profile(text: str) -> Dict[str, object]:
     A non-English language is only named when it matched at least one word that no other list
     claims: shared function words alone (`la`, `e`, `o`) identify no particular language.
     """
+    return _latin_profile(text)
+
+
+def _latin_profile(text: str, diagnostic=None) -> Dict[str, object]:
     # 'İ'.lower() is 'i' + a combining dot, which matches no word list
     words = _WORD.findall(_IDENTIFIER.sub(" ", text).replace("İ", "i").lower())
     lowered = text.lower()
@@ -450,9 +488,13 @@ def latin_profile(text: str) -> Dict[str, object]:
     non_english = diac_rate >= NON_EN_DIACRITIC_RATE
     nordic_overlap = bool(set(words) & _NORDIC_OVERLAP_WORDS) and not bool(set(words) & _EN_ONLY_WORDS)
     if 1 < len(words) < 4 and set(words) & _SHORT_SWEDISH_WORDS:
+        if diagnostic is not None:
+            diagnostic["reason"] = "short_swedish"
         return {"language": "sv", "english_hits": 0, "diacritic_rate": diac_rate,
                 "looks_non_english": non_english}
     if len(words) < 4:
+        if diagnostic is not None:
+            diagnostic["reason"] = "insufficient_words"
         return {"language": None, "english_hits": 0, "diacritic_rate": diac_rate,
                 "looks_non_english": non_english or nordic_overlap}
 
@@ -486,6 +528,8 @@ def latin_profile(text: str) -> Dict[str, object]:
         lang = best_lg
     elif en and (not non_english or _english_rescued_by_words(words, diac_rate)):
         lang = "en"
+    if diagnostic is not None:
+        diagnostic["reason"] = "language_evidence" if lang else "no_language_evidence"
     return {"language": lang, "english_hits": en, "diacritic_rate": diac_rate,
             "looks_non_english": non_english or (lang is None and nordic_overlap)}
 
@@ -639,7 +683,8 @@ def _named_prose_language(segment: str):
     return lang
 
 
-def _non_english_segment(state: Union[str, bytes, Mapping, list, None], max_chars: int = 4000):
+def _non_english_segment(state: Union[str, bytes, Mapping, list, None], max_chars: int = 4000,
+                         diagnostic=None):
     """First line or field that, read on its own, is named a non-English language, else None.
 
     Returns (language, segment). A segment needs the evidence a whole state needs -- at least four
@@ -650,19 +695,28 @@ def _non_english_segment(state: Union[str, bytes, Mapping, list, None], max_char
     longer English part from outvoting a foreign one. Reads at most `max_chars` characters in all.
     """
     seen = 0
-    for leaf in _iter_text(state):
-        for seg in leaf.split("\n"):
+    paths = [] if diagnostic is not None else None
+    for index, leaf in enumerate(_iter_text(state, _paths=paths)):
+        for line, seg in enumerate(leaf.split("\n"), 1):
             if seen >= max_chars:
                 return None
             seg = seg[:max_chars - seen]
             seen += len(seg)
             lang = _named_prose_language(seg)
             if lang:
+                if diagnostic is not None:
+                    diagnostic.update(stage="segment", reason="named_segment",
+                                      source=_diagnostic_source(paths, index, line))
                 return lang, seg.strip()
     return None
 
 
-def _analyse_text(text: str) -> Dict[str, object]:
+def _diagnostic_source(paths, index, line):
+    path = paths[index]
+    return {"leaf_index": index, "path": list(path) if path is not None else None, "line": line}
+
+
+def _analyse_text(text: str, diagnostic=None) -> Dict[str, object]:
     """Detection result for one already-flattened string.
 
     Does not look for a foreign line inside mostly-English text. `analyse` does that, because it
@@ -677,14 +731,18 @@ def _analyse_text(text: str) -> Dict[str, object]:
             and _non_latin_carries(non_latin, n_non_latin)):
         script = max((s for s in prof if s != "latin"), key=prof.get)
     if script == "unknown":
+        if diagnostic is not None:
+            diagnostic["reason"] = "no_letters"
         return {"script": "unknown", "script_profile": prof, "language": None,
                 "is_english": True, "language_undecided": True, "diacritic_rate": 0.0,
                 "non_latin_fraction": 0.0, "mixed_segment": None}
     if script != "latin":
+        if diagnostic is not None:
+            diagnostic["reason"] = "non_latin_script"
         return {"script": script, "script_profile": prof, "language": None,
                 "is_english": False, "language_undecided": True, "diacritic_rate": 0.0,
                 "non_latin_fraction": non_latin, "mixed_segment": None}
-    prof_lat = latin_profile(text)
+    prof_lat = _latin_profile(text, diagnostic)
     lang = prof_lat["language"]
     # The acronym bar belongs here too, not only in the segment scan. The scan runs only once a
     # state already reads English overall, so a state that is *nothing but* an acronym line --
@@ -707,6 +765,8 @@ def _analyse_text(text: str) -> Dict[str, object]:
             if not _shouted_evidence(_WORD.findall(text), lang,
                                      float(prof_lat["diacritic_rate"])):
                 lang = None
+                if diagnostic is not None:
+                    diagnostic["reason"] = "caps_veto"
         else:
             # Mixed-case text: the segment scan has always held that an acronym is not a word,
             # but the whole-state verdict never applied that rule, so the acronyms voted in it.
@@ -734,19 +794,23 @@ def _analyse_text(text: str) -> Dict[str, object]:
                     lambda m: " " if m.group().isupper() else m.group(), text)
                 if blanked != text:
                     lang = latin_profile(blanked)["language"]
+                    if diagnostic is not None:
+                        diagnostic["reason"] = "caps_filtered"
     # Undecided is not English. Treating it as English sent every Latin-script language we hold no
     # stopwords for to the checkpoint that cannot read it, silently. When nothing identifies the
     # language, non-English letters or a shared Swedish-Danish marker can still prefer the
     # multilingual checkpoint; text with neither signal still goes to the English one.
     undecided = lang is None
     english = lang == "en" or (undecided and not prof_lat["looks_non_english"])
+    if diagnostic is not None and undecided and not english:
+        diagnostic["reason"] = "non_english_markers"
     return {"script": "latin", "script_profile": prof, "language": lang,
             "is_english": english, "language_undecided": undecided,
             "diacritic_rate": round(float(prof_lat["diacritic_rate"]), 4),
             "non_latin_fraction": non_latin, "mixed_segment": None}
 
 
-def _leaf_non_english(leaf: str) -> Optional[Dict[str, object]]:
+def _leaf_non_english(leaf: str, diagnostic=None) -> Optional[Dict[str, object]]:
     """A string value that is itself not safe for the English checkpoint, else None.
 
     A one-word name ("José") and a capitalised non-Latin name stay out: the same rules
@@ -758,7 +822,7 @@ def _leaf_non_english(leaf: str) -> Optional[Dict[str, object]]:
     """
     best_n = -1
     best: Optional[Dict[str, object]] = None
-    for line in leaf.split("\n"):
+    for line_number, line in enumerate(leaf.split("\n"), 1):
         # A line this short cannot be selected, so skip it before the slice, `strip`,
         # `_CODE_LINE` and a full `_analyse_text` pass. Each branch below needs four `_WORD`
         # tokens or NON_LATIN_MIN_LETTERS letters. `_WORD` matches maximal runs of letters and
@@ -802,23 +866,38 @@ def _leaf_non_english(leaf: str) -> Optional[Dict[str, object]]:
         if n_alpha > best_n:
             best_n = n_alpha
             best = det
+            if diagnostic is not None:
+                diagnostic.update(line=line_number, reason=("named_value" if named else
+                    "non_latin_value" if det["script"] not in ("latin", "unknown") else "diacritic_value"))
     return best
 
 
-def analyse(state: Union[str, bytes, Mapping, list, None]) -> Dict[str, object]:
+def analyse(state: Union[str, bytes, Mapping, list, None], *, explain: bool = False) -> Dict[str, object]:
     """Full detection result for a state.
 
     Returns `script`, `script_profile`, `language` (best effort, may be None),
-    `is_english`, `non_latin_fraction` and `mixed_segment` (the line or field that made a mostly
-    English state non-English, else None).
+    `is_english`, `non_latin_fraction` and `mixed_segment`. `mixed_segment` names the line or field
+    the segment scan itself singled out, else None: a state flipped non-English by the per-value
+    read below is reported with `mixed_segment` still None, because that read keeps the offending
+    value in its own local and never writes it back.
 
     String values are what get read. When a state has several of them, one non-English value is
     enough: joining every value into one window let a long English note fill the 4000 characters,
     or outvote a short German message, and that message was then sent to the English checkpoint
     (#384). The segment scan still stops at 4000 characters, which is what keeps a huge field
     cheap; a value it did not reach is read on its own afterwards.
+
+    With `explain=True`, adds `diagnostic`: the selected analysis stage, its reason and, for a
+    segment or value override, the source leaf index, path and 1-based line. Paths retain string
+    keys (up to 128 characters), integers (up to 63 bits) and sequence indices. Other keys make
+    the path None; the leaf index remains available. No input text is added to the diagnostic.
+    The original fields and detection rules are unchanged. These are heuristic reasons, not
+    calibrated confidence or the router's final model choice.
     """
-    result = _analyse_text(state_text(state))
+    diagnostic = {"stage": "whole_state", "reason": None, "source": None} if explain else None
+    result = _analyse_text(state_text(state), diagnostic)
+    if diagnostic is not None:
+        result["diagnostic"] = diagnostic
     if result["script"] == "latin" and result["is_english"]:
         # A Portuguese ticket with an English stack trace, error payload or form template reads as
         # English as a whole, because the English part is longer -- yet the part a question is about
@@ -829,7 +908,7 @@ def analyse(state: Union[str, bytes, Mapping, list, None]) -> Dict[str, object]:
         leaves = _iter_text(state)
         # a single line has no other part to be outvoted by, and was just read whole
         if len(leaves) > 1 or any("\n" in leaf for leaf in leaves):
-            found = _non_english_segment(state)
+            found = _non_english_segment(state, diagnostic=diagnostic)
             if found:
                 lang, mixed = found
                 result = dict(result)
@@ -843,20 +922,29 @@ def analyse(state: Union[str, bytes, Mapping, list, None]) -> Dict[str, object]:
         return result
     best_n = -1
     best: Optional[Dict[str, object]] = None
-    for leaf in _iter_text(state):
-        det = _leaf_non_english(leaf)
+    paths = [] if explain else None
+    best_source = None
+    best_reason = None
+    for index, leaf in enumerate(_iter_text(state, _paths=paths)):
+        leaf_diagnostic = {} if explain else None
+        det = _leaf_non_english(leaf, leaf_diagnostic)
         if det is None:
             continue
         n_alpha = sum(ch.isalpha() for ch in leaf[:4000])
         if n_alpha > best_n:
             best_n = n_alpha
             best = det
+            if explain:
+                best_source = _diagnostic_source(paths, index, leaf_diagnostic["line"])
+                best_reason = leaf_diagnostic["reason"]
     if best is None:
         return result
     updated = dict(result)
     updated["language"] = best["language"]
     updated["is_english"] = False
     updated["language_undecided"] = best["language_undecided"]
+    if diagnostic is not None:
+        diagnostic.update(stage="value", reason=best_reason, source=best_source)
     return updated
 
 

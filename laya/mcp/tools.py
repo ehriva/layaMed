@@ -700,6 +700,14 @@ def laya_shortlist(
     ``task``/``lang``/``lang_guess`` reach the route that chose the checkpoint
     (``lang_guess`` only routes, so like ``task`` it is stripped before the answering pass);
     ``min_confidence`` flags a kept-label answer the checkpoint is unsure of.
+
+    A question that actually narrows cannot keep the caller's ``option_order``: the
+    order covers every option, the answer covers the kept labels only, and remapping
+    it onto them would silently move options between slots, so core drops it. An MCP
+    client never sees core's ``RuntimeWarning`` about the drop, so the response
+    reports it itself as ``option_order_dropped``, per question, with the old and kept
+    option counts. A question answered as given (``n <= k``), a non-choice question
+    and a call without an order keep the response they had before.
     """
     # Before the heavy imports below: a remote router has no in-process encoder to embed with,
     # and the refusal should not cost the MCP process a torch import on the way to saying so.
@@ -753,17 +761,6 @@ def laya_shortlist(
         k = DEFAULT_SHORTLIST_K
     if isinstance(k, bool) or not isinstance(k, int) or k < 1:
         raise ToolError("invalid_k", f"k must be a positive integer, got {k!r}")
-    # A choice with more than k labels is answered over the k it keeps, in rank order, so an
-    # `option_order` over all of its options no longer describes the question -- the agent
-    # rejects the stale order. A choice of at most k labels is answered as given and keeps it.
-    for name, spec in questions_d.items():
-        if spec["type"] == "choice" and "option_order" in spec and len(spec["criteria"]) > k:
-            raise ToolError(
-                "invalid_questions",
-                f"questions[{name}].option_order orders all {len(spec['criteria'])} options, but "
-                f"laya_shortlist answers it over the {k} it keeps, in rank order; omit option_order, "
-                f"or raise k to at least {len(spec['criteria'])}",
-            )
 
     routing: dict[str, Any]
     if model_name == "auto":
@@ -821,17 +818,263 @@ def laya_shortlist(
     if not isinstance(result, dict):
         raise ToolError("internal_error", "predict returned non-object")
     answers = _normalize_answers(result["answers"])
+    # A narrowed choice no longer fits the caller's full-length order -- core drops the order
+    # rather than remapping it onto the kept labels, which would silently move options between
+    # slots (#1063), and says so with a RuntimeWarning that stays inside the Python process.
+    # An MCP client reads JSON, so the drop is reported here instead, per question, derived
+    # from the original question and the returned shortlist meta. Capturing core's warning
+    # would be the other route, but warnings are process-global and a concurrent tool call
+    # could supply the drop this call reports. Only a valid order reaches this point:
+    # validate_questions refuses anything that is not a permutation up front.
+    shortlist_meta = result.get("shortlist") or {}
+    dropped_orders: dict[str, Any] = {}
+    for name, spec in questions_d.items():
+        if spec["type"] != "choice" or "option_order" not in spec:
+            continue
+        entry = shortlist_meta.get(name)
+        if not entry or entry.get("passthrough"):
+            continue
+        dropped_orders[name] = {"n": len(spec["criteria"]), "kept": len(entry["labels"])}
     # The answering checkpoint is the embedding checkpoint in every branch.
     device = agent_device(embed_agent)
     out: dict[str, Any] = {
         "answers": answers,
         "routing": routing,
-        "shortlist": result.get("shortlist") or {},
+        "shortlist": shortlist_meta,
+        "latency_ms": round(latency_ms, 3),
+    }
+    # Present only when an order was actually dropped: every other response is unchanged.
+    if dropped_orders:
+        out["option_order_dropped"] = dropped_orders
+    if device:
+        out["device"] = device
+    return out
+
+
+def laya_tournament(
+    state: Any,
+    questions: Any,
+    model: Any = "auto",
+    group_size: Any = 16,
+    *,
+    task: Any = None,
+    lang: Any = None,
+    lang_guess: Any = None,
+    max_len: Any = None,
+    head_max_len: Any = None,
+    min_confidence: Any = None,
+    router: Any = None,
+    agent: Any = None,
+) -> dict:
+    """Answer large choices with core's balanced tournament in-process.
+
+    Select the checkpoint from the original request, then pin it for every round.
+    Each round uses ``laya_predict``'s validation, answer shape and device reporting.
+    Probabilities and confidence describe the final call's finalists; ``tournament``
+    adds their ``labels``, the original option count ``n`` and elimination ``rounds``.
+    Small choices report zero rounds; non-choice questions reach the final call.
+    ``latency_ms`` covers routing and all rounds. A narrowed question's discarded
+    ``option_order`` is reported with its original and kept option counts.
+
+    Remote callers use ``laya_predict`` with the HTTP server's tournament enabled;
+    its probability and usage contract differs from this core helper's contract.
+    """
+    if router is not None and agent is None and hasattr(router, "base_url") and hasattr(router, "health"):
+        raise ToolError(
+            "unsupported_remote",
+            "laya_tournament runs core tournament rounds in-process; it is not available when "
+            "LAYA_BASE_URL points at laya-serve. Use laya_predict with LAYA_TOURNAMENT_GROUP "
+            "enabled on that server, or run the MCP server without LAYA_BASE_URL.",
+        )
+    state_d = validate_state(state)
+    questions_d = validate_questions(questions)
+    model_name = validate_model(model)
+    if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size < 2:
+        raise ToolError("invalid_group_size", f"group_size must be an integer of at least 2, got {group_size!r}")
+    routing_overrides = _overrides(validate_task(task), validate_lang(lang), None, None)
+    hint = validate_lang_guess(lang_guess)
+    if hint is not None:
+        routing_overrides["lang_guess"] = hint
+    forward = _overrides(None, None, validate_budget(max_len, "max_len"),
+                         validate_budget(head_max_len, "head_max_len"))
+    min_conf = validate_min_confidence(min_confidence)
+    if min_conf is not None:
+        forward["min_confidence"] = min_conf
+    for name in ("task", "lang_guess"):
+        if model_name != AUTO and name in routing_overrides:
+            raise ToolError(f"invalid_{name}",
+                            f"{name} routes between checkpoints; with a pinned model there is nothing to route")
+    if "lang" in routing_overrides:
+        forward["lang"] = routing_overrides["lang"]
+
+    from laya.shortlist import predict_tournament
+
+    started = time.perf_counter()
+    routing = None
+    predict_agent = agent
+    if model_name == AUTO and router is not None:
+        if not hasattr(router, "route"):
+            raise ToolError("internal_error", "router has no route() method")
+        decision = router.route(state_d, questions_d, **routing_overrides)
+        routing = _decision_to_dict(decision)
+        model_name = routing["model"]
+        if not isinstance(model_name, str) or not model_name:
+            raise ToolError("internal_error", "router.route returned no model")
+        detection = (decision.get("detection") if isinstance(decision, dict)
+                     else getattr(decision, "detection", None))
+        detected = _detected_language(detection)
+        if detected is not None and "lang" not in forward:
+            forward["lang"] = detected
+        predict_agent = None
+
+    class Predictor:
+        def predict(self, round_state, round_questions):
+            result = laya_predict(round_state, round_questions, model=model_name,
+                                  router=router, agent=predict_agent, **forward)
+            for name, spec in round_questions.items():
+                if spec["type"] != "choice":
+                    continue
+                answer = result["answers"].get(name)
+                if (not isinstance(answer, dict) or not isinstance(answer.get("choice"), str)
+                        or answer["choice"] not in spec["criteria"]):
+                    raise ToolError("internal_error",
+                                    f"tournament prediction for question {name!r} must return a choice from its criteria")
+            return result
+
+    out = predict_tournament(Predictor(), state_d, questions_d, group_size=group_size)
+    if routing is not None:
+        out["routing"] = routing
+    out["latency_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    dropped_orders = {
+        name: {"n": entry["n"], "kept": len(entry["labels"])}
+        for name, entry in out["tournament"].items()
+        if entry["rounds"] and "option_order" in questions_d[name]
+    }
+    if dropped_orders:
+        out["option_order_dropped"] = dropped_orders
+    return out
+
+
+
+
+def laya_predict_long(
+    state: Any,
+    questions: Any,
+    model: Any = "auto",
+    *,
+    window: Any = None,
+    stride: Any = None,
+    task: Any = None,
+    lang: Any = None,
+    router: Any = None,
+    agent: Any = None,
+) -> dict:
+    """Scan a state longer than the context window, then answer.
+
+    The in-process ``predict_long`` pattern over MCP: the state is tokenized once, scored in
+    overlapping windows in shared forward passes, and aggregated per question (strongest window
+    for ``noul``, most-confident window for ``choice``/``score``). Use this instead of
+    ``laya_predict`` when the state does not fit one window -- ``laya_predict`` answers from
+    its first window and never reads the rest.
+
+    ``router`` is used when model == "auto"; ``agent`` for a direct checkpoint. ``task``/``lang``
+    are the router's own overrides (an explicit ``model`` outranks an explicit ``task``, which
+    outranks an explicit ``lang``); ``window``/``stride`` size the scan the way core's
+    ``predict_long`` sizes it, and only set values are forwarded, so a checkpoint that predates
+    those keywords keeps working. ``max_len``/``head_max_len``/``min_confidence`` are not
+    accepted here because core's ``predict_long`` takes none of them: a window is sized by
+    ``window`` or the checkpoint budget, and there is no abstention gate on the scan.
+
+    Each answer carries the deciding window's ``window`` attribution (index and token offsets
+    into the tokenized state), and ``windows`` counts the windows the model scored.
+    """
+    state_d = validate_state(state)
+    questions_d = validate_questions(questions)
+    model_name = validate_model(model)
+    # Only what the caller actually set is forwarded: `_overrides` is not reused because its keys
+    # are the single-window budgets, and `predict_long` rejects those -- the scan is sized by
+    # `window`/`stride` or the checkpoint budget instead.
+    scan = {name: value for name, value in (
+        ("task", validate_task(task)),
+        ("lang", validate_lang(lang)),
+        ("window", validate_budget(window, "window")),
+        ("stride", validate_budget(stride, "stride")),
+    ) if value is not None}
+    # `task` picks a checkpoint by saying what the work is, so it means nothing once one is pinned:
+    # same rule as `laya_predict` -- the router checks an explicit `model` first and never reaches
+    # the task, and a checkpoint's `predict_long` does not accept the keyword at all.
+    if model_name != AUTO and "task" in scan:
+        raise ToolError(
+            "invalid_task",
+            "task routes between checkpoints; with a pinned model there is nothing to route",
+        )
+    auto_without_router = False
+
+    def _run() -> Any:
+        if model_name == "auto":
+            if router is None:
+                if agent is None:
+                    raise ToolError("models_not_ready", "Router is not loaded (auto mode)")
+                # An Agent answers but does not route: run it directly and report
+                # a null model below, instead of echoing 'auto' (#444). `Agent.predict_long`
+                # has no `task` parameter -- only a Router routes between checkpoints -- so the
+                # keyword is dropped here exactly as `laya_predict` drops it (`tools.py:415`);
+                # forwarding it would surface as a raw TypeError, not an actionable refusal.
+                nonlocal auto_without_router
+                auto_without_router = True
+                return _scan(agent, state_d, questions_d,
+                             **{k: v for k, v in scan.items() if k != "task"})
+            return _scan(router, state_d, questions_d, **scan)
+        if agent is not None:
+            return _scan(agent, state_d, questions_d, **scan)
+        if router is None:
+            raise ToolError("models_not_ready", "no agent/router loaded")
+        return _scan(router, state_d, questions_d, model=model_name, **scan)
+
+    started = time.perf_counter()
+    result = _run()
+    latency_ms = (time.perf_counter() - started) * 1000.0
+
+    if not isinstance(result, dict):
+        raise ToolError("internal_error", "predict_long returned non-object")
+    answers = _normalize_answers(result.get("answers"))
+    usage = result.get("usage") or {}
+    windows = usage.get("windows", 0) if isinstance(usage, dict) else 0
+    if auto_without_router:
+        routing = {"model": None, "repo": None, "reason": "auto routing without router"}
+    elif model_name == "auto":
+        # A bare agent's scan carries no 'routing' key because the Agent itself does no
+        # routing; 'auto' is a routing directive, not a checkpoint name (#444). A Router's
+        # scan carries the decision it routed with.
+        routing = (result.get("routing") or {"model": None, "repo": None,
+                                             "reason": "auto routing without router"})
+    else:
+        routing = {"model": model_name, "repo": None, "reason": "explicit model"}
+    device = None if auto_without_router else _reading_device(router, agent, model_name,
+                                                              result.get("routing"))
+    out: dict[str, Any] = {
+        "answers": answers,
+        "routing": routing,
+        "windows": windows,
         "latency_ms": round(latency_ms, 3),
     }
     if device:
         out["device"] = device
     return out
+
+
+def _scan(target: Any, state: Any, questions: Any, **kwargs: Any) -> Any:
+    """Call ``predict_long`` on a router or agent, refusing clearly without it.
+
+    A checkpoint old enough to predate the scan (or a hand-rolled stand-in) has no
+    ``predict_long``; falling back to ``predict`` would silently answer from the first
+    window, which is exactly what this tool exists to avoid.
+    """
+    fn = getattr(target, "predict_long", None)
+    if not callable(fn):
+        raise ToolError("internal_error", "%s has no predict_long() method"
+                        % type(target).__name__)
+    return fn(state, questions, **kwargs)
 
 
 def laya_preset(
@@ -1075,9 +1318,10 @@ def _validate_hooks_timeout(value: Any) -> float | None:
     # ``validate_timeout`` decides what counts as a real deadline. Wrapping
     # its ValueError as a ToolError keeps a bad arg from surfacing as
     # ``internal_error: ValueError`` at the MCP boundary. Bools are refused
-    # here the same way _validate_batch_size refuses them -- core's
-    # float(True) == 1.0 would silently turn "True" into a one-second
-    # deadline, which is the kind of wrong-that-needs-to-shout.
+    # here the same way _validate_batch_size refuses them, so a wrong type
+    # reaches the caller as `invalid_hooks_timeout` instead of whichever of
+    # core's two refusals happens to fire. Core refuses a bool as well now:
+    # float(True) == 1.0 is no longer silently read as a one-second deadline.
     if value is None:
         return None
     if isinstance(value, bool):

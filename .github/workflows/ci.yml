@@ -35,7 +35,7 @@ jobs:
         node: ["20", "22"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -119,9 +119,9 @@ jobs:
         run: python -m unittest discover -s research/benchmarks/zh_short_commands/tests -v
 
   # The `test` job above deliberately stays free of `onnx`: this is the lane that
-  # installs it, so the exporter's quantization suite runs for real instead of
-  # skip-guarding into a trivial pass. Weight-free -- it builds tiny synthetic
-  # graphs, no checkpoint download.
+  # installs it, so the exporter's suites run for real instead of skip-guarding into a
+  # trivial pass. Weight-free -- it builds tiny synthetic graphs and a tiny stand-in
+  # model, no checkpoint download.
   onnx-export:
     name: onnx export (quantization, weight-free)
     runs-on: ubuntu-latest
@@ -137,11 +137,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e .
-          pip install onnx onnxruntime
+          # The declared extra rather than a hand-listed pair: it also brings onnxscript, which
+          # torch.onnx.export needs for the torch.export path it takes by default.
+          pip install -e ".[onnx]"
 
       - name: Quantized-export tests
         run: python tests/test_onnx_quantize.py
+
+      # The only step that exports a graph and then runs it. tests/test_onnx_batch.py and
+      # tests/test_onnx_long.py drive ONNXAgent with a stub session, so neither can see an
+      # exporter that bakes the traced batch size into the graph -- which is what it did.
+      - name: Batch-dynamic export tests
+        run: python tests/test_onnx_export_batch.py
 
   # The eval harness needs numpy and laya only, so it stays a separate, weight-free job: metric
   # math, dataset parsing, the CLI and the API guard. The real-checkpoint gate is the scheduled
@@ -232,67 +239,22 @@ jobs:
         run: python -c "import laya; print(laya.__version__); print(sorted(laya.__all__))"
         shell: bash
 
-      # Same suites as the Linux job. Guarded with -f so a suite added by another open branch
-      # cannot make this job red on a tree that does not have it yet.
-      - name: Routing and language-detection tests
-        run: |
-          for t in test_router test_criteria test_batch test_predict_long \
-                   test_structured test_structured_api test_onnx_lang_parity \
-                   test_download test_verify_checkpoints test_shortlist test_decision_model \
-                   test_head_checkpointing test_packaging test_doc_tables \
-                   test_tokenizer_cache test_tokenizer_concurrency test_lazy_import \
-                   test_runtime_fixes test_lang_guess test_identifier_complexity \
-                   test_lang_stats test_calibration_persistence test_calibrate test_context_manager \
-                   test_criteria_normalization test_docker_entrypoint \
-                   test_empty_questions test_router_memory test_shortlist_cosine \
-                   test_temperature_loading test_confidence test_cli test_mcp \
-                   test_mcp_device \
-                   test_langchain test_portability test_training test_train \
-                   test_example_server_limits test_blank_lang_routing \
-                   test_export_onnx_safety test_load_errors test_revision_pinning; do
-            if [ -f "tests/$t.py" ]; then python "tests/$t.py"; fi
-          done
-        shell: bash
-
-      - name: Prediction hook tests
-        run: |
-          python tests/test_hooks.py
-          python tests/test_hooks_api.py
-        shell: bash
-
-      - name: Question token reuse tests
-        run: python tests/test_question_token_reuse.py
-        shell: bash
-
-      # Same pytest suites as the Linux job. They are named explicitly rather than added to
-      # the loop above, because the loop runs each file as a script and that is exactly what does
-      # not execute a pytest suite (#374).
-      - name: Pytest suites (serve, batch, system-one, audit regressions, truncation, compile)
-        run: |
-          python -m pytest tests/test_serve.py \
-                           tests/test_router_batch.py \
-                           tests/test_predict_batch.py \
-                           tests/test_system_one_lang.py \
-                           tests/test_audit_regressions.py \
-                           tests/test_truncation_direction.py \
-                           tests/test_compile.py \
-                           -q
-        shell: bash
-
       # The Linux job's guard, repeated here: the install is what makes test_mcp.py and
       # test_langchain.py exercise their real base classes, and nothing else proves it took. mcp
-      # and httpx are asserted the same way because their suites skip instead of failing.
+      # and httpx are asserted the same way because their suites skip instead of failing. Run
+      # this before the shared list so a missing extra cannot make the suites silently skip.
       - name: Integrations run on their real base classes
         run: |
           python -c "import mcp, httpx, langchain_core"
           python -c "from laya.integrations.langchain import RunnableSerializable; \
             assert RunnableSerializable is not object, \
             'langchain-core is missing: laya.integrations.langchain fell back to a plain object'"
-          python tests/test_langchain_real_mode.py
         shell: bash
 
-      - name: Email cleaning tests
-        run: python tests/test_email.py
+      # The same canonical list as Linux and the release gate: an inline Windows copy had
+      # omitted 32 suites, and the -f guard silently accepted missing suite files.
+      - name: Test suites
+        run: python scripts/test_suites.py
         shell: bash
 
   lint:
@@ -315,10 +277,59 @@ jobs:
         # second. Widen the second list to the first's rule set once that debt is paid.
         run: |
           ruff check laya/ --select=E9,F63,F7,F82,F401,F811 --line-length=120
+          ruff check sdk/python/ --select=E9,F63,F7,F82,F401,F811 --line-length=120
           ruff check laya-java/scripts/ laya-dotnet/tools/ laya-ts/scripts/ \
-            --select=E9,F63,F7,F82 --line-length=120
+            laya-go/scripts/ --select=E9,F63,F7,F82 --line-length=120
       - name: Byte-compile every module
-        run: python -m compileall -q laya/ tests/
+        run: python -m compileall -q laya/ tests/ sdk/python/
+
+  python-sdk:
+    name: Python SDK (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build standalone distributions
+        run: |
+          python -m pip install --upgrade build setuptools wheel
+          python -m build --no-isolation sdk/python
+      - name: Verify installed wheel and sdist without inference dependencies
+        run: python sdk/python/tests/verify_package.py sdk/python/dist
+
+  python-sdk-integration:
+    name: Python SDK (live HTTP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 697d788e1c16e9cb7f736471897ab758a79c1df7 # v0.4.7
+          path: .sdk-server-0.4.7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install server and build tools
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[serve]' build setuptools wheel
+          python -m build --no-isolation sdk/python
+      - name: Real inference from an isolated client environment
+        run: |
+          python sdk/python/tests/verify_package.py sdk/python/dist \
+            --server-python "$(command -v python)" \
+            --legacy-server-fixture .sdk-server-0.4.7/tests/sdk_server_fixture.py
 
   typescript-sdk:
     name: TypeScript SDK (node${{ matrix.node }})
@@ -329,7 +340,7 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -373,7 +384,7 @@ jobs:
           pkg=$(python -c "import re;print(re.search(r'version = \"(.*)\"', open('pyproject.toml').read()).group(1))")
           tag="${GITHUB_REF_NAME#v}"
           test "$pkg" = "$tag" || { echo "pyproject $pkg != tag $tag"; exit 1; }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/

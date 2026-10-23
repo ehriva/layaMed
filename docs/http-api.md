@@ -5,6 +5,10 @@ against Jev -- `hs-jev`, `typesafe-sdk`, or your own -- can point its base URL a
 keep working: Laya's `predict()` output is already schema-compatible, and the server adds only the
 HTTP surface: one decision route, a health probe, an optional bearer check and request limits.
 
+The [Python HTTP client](https://github.com/NandhaKishorM/laya/blob/main/sdk/python/README.md)
+provides synchronous `predict` and `health` calls with no runtime dependencies. Install it
+from `sdk/python` in the application environment to keep the inference stack on the server.
+
 A client that targets `laya-serve` rather than the Jev API exists for PHP:
 [`marcreichel/laya-php`](https://github.com/marcreichel/laya-php) is a Composer SDK (PHP 8.4+)
 that maps a class of enums and attributes onto questions and returns an instance, reads `GET /health`
@@ -36,13 +40,14 @@ Everything is environment variables, so one image serves a laptop dev run and a 
 | `LAYA_IDLE_UNLOAD_SECONDS` | unload resident checkpoints after this many idle seconds; the next request loads its checkpoint again. Zero disables unloading | `0` |
 | `LAYA_MAX_LOADED` | checkpoints kept resident at once; a cap below what routing chooses rebuilds one per switch, and `preload()` raises it to hold whatever it builds | `2` |
 | `LAYA_MAX_TOKEN_BUDGET` | server-side ceiling on the per-request `max_len` and `head_max_len` overrides; a larger value is a `422`. Unparseable or non-positive input logs a warning and falls back | `8192` |
-| `LAYA_DEFAULT_MODEL` | checkpoint a state with no language evidence falls back to; aliases such as `ml` resolve the way core resolves them, and an unresolvable name stops the server at startup | `english` |
+| `LAYA_DEFAULT_MODEL` | checkpoint a state with no language evidence falls back to; aliases such as `ml` resolve the way core resolves them, and an unresolvable name stops the server at startup | `multilingual` |
 | `LAYA_EXTRA_MODELS` | JSON object `{name: source}` registering extra checkpoints beside the bundled ones: a Hub repo id or local checkpoint directory as a string, or a `["repo", "subfolder"]` pair. Names get the same `model=` pin a built-in does; a malformed value or bad name stops the server at startup | none |
 | `LAYA_API_KEY` | if set, require `Authorization: Bearer <key>` | none |
 | `LAYA_LOG_LEVEL` | uvicorn log level | `info` |
 | `LAYA_MAX_CONCURRENT` | requests admitted past auth at once; excess gets `503` | `16` |
 | `LAYA_MAX_BATCH_TOKENS` | tokens one `/v1/systemone/batch` FORWARD PASS may collate (`states` x questions x row width); a larger batch is split into several passes, not refused | `131072` |
 | `LAYA_JEV_STRICT` | serve the strict Jev wire contract: no root `routing`, no per-answer `action` / `answer_confidence`, no `confidence` on noul answers, and `usage` reduced to `input_tokens` + `output_tokens`. For clients that validate the response against the Jev contract with no extra fields | `0` |
+| `LAYA_TOURNAMENT_GROUP` | answer a `choice` with more options than this by elimination, in groups of this size, on `/v1/systemone` and `/v1/systemone/batch`, and raise their option cap from 100 to 255. See [Large choices](#large-choices-laya_tournament_group). Unset, or outside 2 to 100, is off | `0` |
 
 For a deployment published under a prefix such as `/laya`, set `LAYA_ROOT_PATH=/laya`.
 FastAPI uses it when generating OpenAPI and Swagger UI URLs. Configure the reverse proxy to
@@ -185,6 +190,11 @@ The sample is one answer this server gave, verbatim: the request above, the cach
 checkpoint on CPU. `answers` and `usage` are the keys Jev clients decode; `model` is the constant
 name of the decision head, and the checkpoint that answered is in `routing`.
 
+`probabilities` on `choice` and `score` answers are rounded independently to four decimal places
+and need not sum exactly to 1, just as in the [in-process API](questions-and-answers.md#probability-precision).
+For strict unit-sum validation, allow a rounding tolerance that accounts for the number of options,
+or normalize a copy of the distribution.
+
 | answer type | keys |
 |---|---|
 | `choice` | `choice` (the argmax option), `probabilities` per option, `x_jev_confidence` |
@@ -252,6 +262,10 @@ before the question ids are read.
   and `score` answers only (a Jev `noul` answer has no confidence). It uses TypeSafe's own
   formulas: `(p_max - 1/n)/(1 - 1/n)` for `choice`, and for `score` one minus the probability-weighted
   distance from the most likely level, scaled by the same distance for a uniform distribution.
+  The formula is the library's own, not the server's: `laya.jev_confidence(answer)` takes one
+  answer dict -- the shape this route returns and the shape `Agent.predict` returns -- and gives
+  the unrounded number, so a caller running Laya in-process filters on the same quantity the
+  served field carries without an HTTP round trip.
 
 Never compare them against one threshold. When porting from Jev, a threshold carried over from a
 Jev deployment gates differently on Laya's entropy `confidence` (#302); read it against
@@ -285,6 +299,49 @@ stringifies its own criteria may not match byte for byte.
 
 Successful responses also carry `Server-Timing: inference;dur=<ms>` and `X-Inference-Time-Ms`.
 
+### Large choices: `LAYA_TOURNAMENT_GROUP`
+
+One pass reads every option of a `choice` inside one option budget, so past a few dozen options
+they stop getting a token span each (`usage.options` reports when that happens), and past about 100
+the request is refused. Jev accepts up to 255. With `LAYA_TOURNAMENT_GROUP=16`, both decision routes
+answer a choice with more than 16 options the way `laya.predict_tournament` does: the options are
+cut into groups of at most 16, each group is answered in one shared call, and the group winners go
+to a final call. Their option cap becomes 255. A choice of 16 or fewer, and every other question,
+takes the usual path unchanged. The group size is limited to 2 to 100, the one-pass cap, so every
+choice the raised cap newly admits is always narrowed rather than read in one pass it cannot fit.
+A larger group is not a better one: each group is still read in one pass, and one pass loses
+accuracy as its options grow (the measurement below), so keep the group small; 16 is what was
+measured.
+
+The answer keeps the Jev shape, so the official SDK parses it:
+
+- `probabilities` names every option, in criteria order. The finalists carry the final round's
+  probabilities and an option eliminated in an earlier round carries `0.0`, so `choice` is still
+  the argmax, but the rounded values need not sum exactly to 1;
+- `x_tournament` lists the `finalists` and the number of `rounds`, so a caller can tell an
+  eliminated option from one the final round scored. Under `LAYA_JEV_STRICT` it is not sent;
+- `confidence` and `answer_confidence` are the final round's, over the finalists;
+- `usage.input_tokens` is summed over every call; the other `usage` keys are the final call's.
+
+Narrowing drops an `option_order`, since an order over the full label set no longer fits a group
+(#1062). So a choice that sets one keeps the one-pass path while one pass can read it. Once a
+request has a choice over 100 options, which only the raised cap admits, it is narrowed, and a
+narrowed choice that carried an order reports `x_tournament.option_order_dropped: true`. A label
+that is not a string cannot be mapped back onto the answer: such a choice keeps one pass, and a
+request that has to be narrowed is refused with a `422` naming it.
+
+On `/v1/systemone/batch` the question set is shared, so the decision is made once: a batch with
+nothing to narrow is the single batched pass it has always been, and one with a large choice runs
+the elimination state by state. `batch_size` and `sort_by_length` shape one batched pass, so they
+do not apply on that path; `total_usage` still sums every call.
+
+Measured on the `english` checkpoint (CPU) with one test query per intent from CLINC150 (150
+intents, `random_state=0`), the question listing every intent and the instruction "Which intent does
+this request express?": with the flag off the request is refused (`150 > 100`); with
+`LAYA_TOURNAMENT_GROUP=16` it is answered at 86.7% accuracy (130/150), median 0.77 s per request. On
+50-option subsets of the same queries, the tournament scored 94.0% against 82.7% for one pass. That
+is one dataset and one sample; measure on your own labels before relying on it.
+
 ## Limits
 
 Request guardrails are checked before tokenization, so an oversized request costs the server
@@ -298,7 +355,7 @@ it answers `503` with `Retry-After: 1`.
 | `state` | 50,000 characters of the text the model is given -- the string itself for a string state, `json.dumps(state, ensure_ascii=False)` for an object or array |
 | questions per request | 64 |
 | `states` per batch request | 64 |
-| options per `choice` question | 100 |
+| options per `choice` question | 100; 255 with `LAYA_TOURNAMENT_GROUP` set |
 | levels per `score` question | 32 |
 | options across all questions | 512 |
 | concurrent admitted requests (`503`, not `413`) | `LAYA_MAX_CONCURRENT` (16) |
@@ -321,10 +378,49 @@ work. What this does not bound is how long one request occupies the server; that
 `LAYA_MAX_CONCURRENT` and the single inference worker, and is already true of one `/v1/systemone`
 request over a 50,000-character state.
 
-The option caps are HTTP-only amplification guards; the model itself fits option tokens into a
-`head_max_len=192` window, so a question inside the HTTP caps can still be refused as a `422` when
-the option texts together exceed that budget. The [Evaluation harness](evals.md) runs the same
-requests in-process without the HTTP layer.
+The option caps are HTTP-only amplification guards -- `MAX_CHOICE_OPTIONS` per question (100, or
+`MAX_TOURNAMENT_CHOICE_OPTIONS` = 255 with `LAYA_TOURNAMENT_GROUP` set) and `MAX_TOTAL_OPTIONS`
+across the request (512). The model's own budget does not refuse a question that is inside them for
+having long option text; it truncates that text. Measured on the `laya` checkpoint (CPU, offline)
+with one choice question of 100 options, each one `opt<i>` plus the same 15-word description: at the
+default `head_max_len=192` the head caps every option at `tokens_per_option=4`, still keeps all 100
+markers in 411 tokens, and `max_len=512` answers it (`input_tokens=423`, the state's 11 tokens
+among them) -- while the response says nothing about the cap. `usage` gains an `options` entry only
+when the cap makes two options share a token span, and the truncation keys it does carry
+(`truncated`, `state_tokens_dropped`) are about the state. What the `422` reports is option *markers*
+running past `max_len`, and because `head_max_len` is spent *out of* `max_len` rather than on top of
+it, raising `head_max_len` is how a caller gets there: the same question at `head_max_len=1024` gives
+each option 10 tokens, the head grows to 1014, and `max_len=512` refuses it with `only 50 of its 100
+option markers fit in max_len=512 with head_max_len=1024 spent on the question; lower head_max_len,
+raise max_len, or use fewer options`, which `max_len=1024` then answers. The message names both
+levers because either can be the fix; `laya/agent.py::_encode_state` keeps a comment recording that
+naming only `head_max_len` "pointed at the wrong knob in both directions".
+
+How many options fit at all is set by that same pair *and* by their text *and* by the question's own
+`instructions`. With no description on the options and a three-token instruction (`Which queue?`), at
+`max_len=512` and `head_max_len=192` the largest single choice question that is not refused carries
+168 options when each label is `T <i>` and 126 when each is `Tickets routed to queue <i>`; at
+`max_len=1024` those become 339 and 254. Each of those four boundaries was met through the public call:
+it answers at the ceiling and refuses one option above it. Change the instruction and they move -- a
+two-token one gives 169, 127, 339 and 255, an eight-token one gives 168, 126, 338 and 254 -- because
+`laya/common.py::build_head` truncates the encoded `choice question: <instructions>` prefix to
+`max(8, opt_budget)` tokens, so the first `[MASK]` lands at position 7, 8 or 10 for those three
+wordings and every marker after it shifts with it. The ceiling stops moving once the instruction
+reaches the cap: the same seventeen-token wording returns the eight-token numbers exactly. The state
+does not move it either -- at `max_len=1024` with the eight-token instruction, 338 options answer and
+339 refuse whether the state is one word or the eleven-token sentence this section has been using.
+Those 126 sentence labels carry a second lesson -- the answered call reports
+`options: {"q": {"total": 126, "distinct": 1, "tokens_per_option": 4}}`, because the 4-token cap left
+every option the same span, so the question could not tell its 126 choices apart, and only a
+collision like that puts `options` in the response. Both default ceilings sit above
+`MAX_CHOICE_OPTIONS=100`, so a one-pass caller meets the count cap first -- a `413`, never a budget
+refusal -- and reaches a budget refusal only by raising `max_len` or `head_max_len` itself, each of
+which is accepted up to `LAYA_MAX_TOKEN_BUDGET`, 8192 by default. (`LAYA_TOURNAMENT_GROUP` raises the
+count cap to 255 but narrows those choices into groups, so they never reach the one-pass budget.) A
+caller comparing this endpoint with another server's stated "maximum N options" therefore has to quote
+the budget it sent, the option text and the instruction, not just N. The [Evaluation harness](evals.md)
+runs the same requests in-process without the HTTP layer, so there the 168/126 ceiling is the one that
+binds.
 
 ## Errors
 

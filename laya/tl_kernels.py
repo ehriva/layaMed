@@ -2,9 +2,12 @@
 
 GPU kernels take 16-bit activations (bf16 by default, fp16 with dtype="float16"), accumulate in fp32.
 Row count M is a runtime symbol so one compiled kernel serves every batch/sequence bucket: the
-caller in `laya.backends.base.pad_batch` pads the batch dim to the next power of two
-(`bucket_rows`, so a single question stays one row) and the sequence dim to a 16-token bucket
-up to `DYNAMIC_MAX_L` and a 64-token bucket beyond (`bucket_tokens`). M is the flattened
+caller, `laya.fast.FastLaya._forward_unlocked`, pads the batch dim to the next power of two
+(`laya.backends.base.bucket_rows`, so a single question stays one row) and the sequence dim to a
+16-token bucket up to `DYNAMIC_MAX_L` and a 64-token bucket beyond -- the policy
+`laya.backends.base.bucket_tokens` implements, which `_forward_unlocked` repeats against its own
+`FastLaya.DYNAMIC_MAX_L`/`LONG_BUCKET` instead of calling it. `laya.backends.base.pad_batch` applies
+that policy for the compile route, which never reaches these kernels. M is the flattened
 `rows * tokens`, so the multiple-of-16 comes from the token dim, not the row dim; out-of-bounds
 rows are predicated by TileLang's `T.ceildiv(M, bm)`, so the kernels themselves place no
 constraint on M. Use compile_cpu for an explicit fp32 CPU specialization; the GPU defaults are unchanged.

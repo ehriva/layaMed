@@ -299,12 +299,30 @@ The server reports the same thing, which is the quickest way to confirm a deploy
 the checkpoint you think it is:
 
 ```bash
-curl -s localhost:8000/health | jq '.revisions'
+curl -s -H "Authorization: Bearer $LAYA_API_KEY" localhost:8000/health | jq '.revisions'
 # {"english": "55cf4c4e…"}
+
+# The same request with no header, on a deployment that set LAYA_API_KEY: still 200, no revision.
+curl -s localhost:8000/health | jq '.revisions'
+# null
 ```
 
-`/health` returns seven top-level fields, documented in [the HTTP API page](http-api.md);
-this section filters to the one it is about.
+The header is the part that is easy to lose. Liveness is deliberately open, because every shipped
+probe reads `/health` without a credential — including `compose.http.yaml`'s healthcheck — so on a
+deployment that set `LAYA_API_KEY` an unauthenticated request answers `{"status": "ok"}` and nothing
+else. Then the second arm above prints `null` and exits 0: a check that confirms nothing, in the one
+deployment where the checkpoint really needed confirming. A wrong key gives the same body, so `null`
+says the header did not carry the deployment's key — which is easy, since `LAYA_API_KEY` usually
+lives in the container's environment or the `.env` file compose reads rather than in the operator's
+shell. With no key set the header is ignored, so always sending it is safe.
+
+`{}` is also a correct answer, and the more common one. `revisions` has an entry only for a
+*resident* checkpoint, and the containers here run `LAYA_PRELOAD=0`, so a freshly started server
+reports none until a request routes one in. Post an inference first.
+
+`/health` has seven top-level fields, or nine with `LAYA_IDLE_UNLOAD_SECONDS` set, which adds
+`idle_unload_seconds` and `idle_seconds`. All of them are documented in
+[the HTTP API page](http-api.md); this section filters to the one it is about.
 
 ## laya-ts
 

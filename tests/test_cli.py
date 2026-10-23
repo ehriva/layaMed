@@ -1,4 +1,5 @@
 """CLI tests. No model weights are loaded: the Router is stubbed throughout."""
+import builtins
 import io
 import os
 import sys
@@ -82,6 +83,85 @@ code, out, err, stub = run_cli(["some text"], router=BrokenRouter())
 check("error: exit code 2", code == 2, "got %r" % code)
 check("error: names the failure", "could not run Laya" in err, err)
 check("error: points at the fix", "Hugging Face hub" in err, err)
+
+# --------------------------------------------------------------------- interactive session
+# The page promises exit code 2 for a handled failure, and the interactive loop has to keep it:
+# `laya < requests.txt` is a script, so the session owes the code its requests earned.
+def run_session(lines, argv, router=None):
+    """Drive the interactive loop with `lines` as what gets typed, then Ctrl-D."""
+    stub = router or StubRouter()
+    original_router, original_input = cli.make_router, builtins.input
+    typed = iter(list(lines) + [None])
+
+    def fake_input(_prompt=""):
+        item = next(typed)
+        if item is None:
+            raise EOFError
+        return item
+
+    cli.make_router = lambda args: stub
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        builtins.input = fake_input
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(argv)
+    finally:
+        cli.make_router = original_router
+        builtins.input = original_input
+    return code, out.getvalue(), err.getvalue(), stub
+
+
+class AlwaysBrokenRouter:
+    """Fails every request but counts them, so a session cut short by one is visible."""
+
+    def __init__(self):
+        self.count = 0
+
+    def route(self, state, **kwargs):
+        self.count += 1
+        raise OSError("connection failed")
+
+
+class SecondRequestFails(AlwaysBrokenRouter):
+    def route(self, state, **kwargs):
+        if self.count:
+            raise OSError("connection failed")
+        self.count += 1
+        return StubDecision()
+
+
+class FirstRequestFails(SecondRequestFails):
+    def route(self, state, **kwargs):
+        if self.count:
+            self.count += 1
+            return StubDecision()
+        self.count += 1
+        raise OSError("connection failed")
+
+
+broken = AlwaysBrokenRouter()
+code, out, err, stub = run_session(["first request", "second request"], [], router=broken)
+check("interactive: a handled failure exits 2, not 0", code == 2, "got %r" % code)
+check("interactive: a handled failure keeps the session up",
+      broken.count == 2 and "could not run Laya" in err, "%d calls, err %r" % (broken.count, err))
+
+code, out, err, stub = run_session(["first request", "second request"], [])
+check("interactive: a clean session exits 0", code == 0, "got %r" % code)
+check("interactive: a clean session routes both lines",
+      [c[0] for c in stub.route_calls] == [{"text": "first request"}, {"text": "second request"}],
+      str(stub.route_calls))
+
+mixed = SecondRequestFails()
+code, out, err, stub = run_session(["ok", "bad"], [], router=mixed)
+check("interactive: one failed request is enough for exit 2", code == 2, "got %r" % code)
+
+mixed = FirstRequestFails()
+code, out, err, stub = run_session(["bad", "ok"], [], router=mixed)
+check("interactive: a later success does not erase an earlier failure",
+      code == 2 and mixed.count == 2, "code %r, %d calls" % (code, mixed.count))
+
+code, out, err, stub = run_session(["quit"], [], router=AlwaysBrokenRouter())
+check("interactive: leaving the prompt before a request exits 0", code == 0, "got %r" % code)
 
 # --------------------------------------------------------------------- explicit flags
 code, out, err, stub = run_cli(["--model", "english", "charged twice"])
@@ -408,6 +488,68 @@ check("sort: batch routing is untouched by a forward-pass knob",
       code == 0 and stub.predict_batch_calls == [] and len(stub.route_batch_calls) == 1,
       "predict=%r route=%r" % (stub.predict_batch_calls, len(stub.route_batch_calls)))
 
+# #1111: the two denominators split when routing groups. Six lines that route to two checkpoints
+# reach `Agent.predict_batch` as groups of 4 and 2 with the same `--batch-size` forwarded to each,
+# so the reorder switches per group while the note used to read the file -- a batch wider than a
+# group reordered nothing, silently. This router splits the way core does and reports the per-group
+# outcome the way core now does, so the post-run note is checkable without checkpoints.
+class GroupingRouter:
+    """One agent-sized call per checkpoint group, plus core's sort report."""
+
+    def __init__(self, sizes):
+        self.sizes = sizes
+        self.calls = []
+
+    def route_batch(self, requests):
+        return [StubDecision() for _ in requests]
+
+    def predict_batch(self, requests, batch_size=None, sort_by_length=False, diagnostics=None):
+        report = {"groups": 0, "reordered": 0, "smallest": None, "largest": None}
+        start = 0
+        for size in self.sizes:
+            n = len(requests[start:start + size])
+            self.calls.append((n, batch_size, sort_by_length))
+            reorders = bool(sort_by_length and batch_size and batch_size > 1 and batch_size < n)
+            report["groups"] += 1
+            report["reordered"] += int(reorders)
+            report["smallest"] = n if report["smallest"] is None else min(report["smallest"], n)
+            report["largest"] = n if report["largest"] is None else max(report["largest"], n)
+            start += size
+        if diagnostics is not None:
+            diagnostics["sort_by_length"] = report
+        return [{"model": "laya-rl", "answers": {"difficulty": {"score": float(i)}}, "usage": {}}
+                for i in range(len(requests))]
+
+
+six = os.path.join(tmp, "six.txt")
+with open(six, "w", encoding="utf-8") as handle:
+    handle.write("one\ntwo\nthree\nfour\nfive\nsix\n")
+
+code, out, err, stub = run_batch_cli(["--batch", six, "--predict", "--batch-size", "5",
+                                      "--sort-by-length"], router=GroupingRouter([4, 2]))
+check("sort: a split batch that reorders nothing is not silent any more",
+      code == 0 and stub.calls == [(4, 5, True), (2, 5, True)]
+      and "2 of 2 batches (2-4 states)" in err,
+      "code %r calls %r err %r" % (code, stub.calls, err))
+check("sort: the per-group note does not quote the file as the denominator",
+      "1 < N < 6" not in err, err)
+
+code, out, err, stub = run_batch_cli(["--batch", six, "--predict", "--batch-size", "3",
+                                      "--sort-by-length"], router=GroupingRouter([4, 2]))
+check("sort: a batch between the group sizes says which half missed out",
+      code == 0 and "1 of 2 batches (2-4 states)" in err, "err %r" % err)
+
+code, out, err, stub = run_batch_cli(["--batch", six, "--predict", "--batch-size", "2",
+                                      "--sort-by-length"], router=GroupingRouter([3, 3]))
+check("sort: a batch below every group reorders everywhere and stays quiet",
+      code == 0 and err == "" and stub.calls == [(3, 2, True), (3, 2, True)],
+      "code %r calls %r err %r" % (code, stub.calls, err))
+
+code, out, err, stub = run_batch_cli(["--batch", six, "--predict", "--batch-size", "6",
+                                      "--sort-by-length"], router=GroupingRouter([6]))
+check("sort: one group keeps the file-wide wording, sized by the group core saw",
+      code == 0 and "1 < N < 6" in err, "err %r" % err)
+
 # A flag nobody can find is a flag nobody uses. README is where `laya --batch` and `/predict/batch`
 # are taught, so the same pages that teach `--batch-size` have to teach the grouping that makes a
 # bounded pass cheap -- including the condition it needs, since a run without it changes nothing.
@@ -470,6 +612,38 @@ code, out, err, stub = run_cli(["hello", "--questions", KEYED_PATH], router=Ques
 check("questions: declared state_key used", stub.states[0] == {"body": "hello"}, str(stub.states[0]))
 check("questions: questions unwrapped",
       sorted(stub.questions) == ["spam"], str(sorted(stub.questions or {})))
+
+# A bare mapping containing a question id named "questions" must not be mistaken for a wrapper
+# object: both single-question and multi-question bare mappings keep the question id intact.
+bare_questions_only = {"questions": {"type": "choice", "instructions": "Any questions?",
+                                     "options": ["y", "n"]}}
+bare_questions_path = write_json("bare_questions.json", bare_questions_only)
+code, out, err, stub = run_cli(["hello", "--questions", bare_questions_path],
+                               router=QuestionRecorder())
+check("questions: bare mapping with 'questions' id preserved",
+      stub.questions == bare_questions_only, str(stub.questions))
+check("questions: bare mapping with 'questions' id uses default state_key",
+      stub.states[0] == {"request": "hello"}, str(stub.states[0]))
+
+bare_multi = {
+    "questions": {"type": "choice", "instructions": "Any questions?", "options": ["y", "n"]},
+    "urgency": {"type": "score", "instructions": "How urgent?"},
+}
+bare_multi_path = write_json("bare_multi.json", bare_multi)
+code, out, err, stub = run_cli(["hello", "--questions", bare_multi_path],
+                               router=QuestionRecorder())
+check("questions: multi-question bare mapping with 'questions' id retains all keys",
+      stub.questions == bare_multi, str(stub.questions))
+
+# A wrapper with no state_key unwraps its inner questions.
+wrapped_no_key = {"questions": {"spam": {"type": "noul", "instructions": "Is spam?"}}}
+wrapped_no_key_path = write_json("wrapped_no_key.json", wrapped_no_key)
+code, out, err, stub = run_cli(["hello", "--questions", wrapped_no_key_path],
+                               router=QuestionRecorder())
+check("questions: wrapper without state_key unwraps",
+      sorted(stub.questions) == ["spam"], str(sorted(stub.questions or {})))
+check("questions: wrapper without state_key uses default state_key",
+      stub.states[0] == {"request": "hello"}, str(stub.states[0]))
 
 # The CLI validates the file's shape and defers question semantics to core, so a question set is
 # handed over unchanged rather than normalised twice.

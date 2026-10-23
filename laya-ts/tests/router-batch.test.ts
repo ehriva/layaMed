@@ -1,10 +1,40 @@
 import { describe, expect, it, vi } from "vitest";
-import { Agent, Router } from "../src/index.js";
+import { Agent, Router, clearDefaultHooks, setDefaultHooks } from "../src/index.js";
 import type { BatchRequest } from "../src/index.js";
 
 // TS mirror of tests/test_router_batch.py and the orchestration part of tests/test_batch.py.
 
 const Q = { intent: { type: "noul", instructions: "Relevant?" } } as const;
+
+// A stateful default hook must not run again inside the Agent after the Router has
+// already expanded its questions (as OptionStabilityHook does).
+it.each([false, true])("runs process defaults once per request with fallback=%s", async (fallback) => {
+  const starts: unknown[] = [];
+  const ends: unknown[] = [];
+  const agent = new Agent({ provider: {
+    async runEncoder(batch) { return { lastHidden: batch.inputIds.map(() => [[0]]) }; },
+    async runHead(_hidden, batch) {
+      return { logits: batch.qtype.map(() => [2, 0]), act: batch.qtype.map(() => [3, 0]) };
+    },
+  } });
+  const loaded = fallback ? { systemOne: agent.systemOne.bind(agent) } : agent;
+  const router = new Router({ default: "english", loader: (() => loaded) as never });
+  setDefaultHooks({
+    onPredictStart(ctx) { starts.push([...ctx.states]); },
+    onPredictEnd(ctx) { ends.push([...ctx.states]); },
+  });
+  try {
+    const results = await router.predictBatch([
+      { state: "first request", questions: Q },
+      { state: "second request", questions: Q },
+    ]);
+    expect(results).toHaveLength(2);
+    expect(starts).toEqual([["first request"], ["second request"]]);
+    expect(ends).toEqual(starts);
+  } finally {
+    clearDefaultHooks();
+  }
+});
 const req = (state: unknown, overrides: Record<string, unknown> = {}): BatchRequest =>
   ({ state, questions: Q, ...overrides }) as unknown as BatchRequest;
 
@@ -37,7 +67,7 @@ const makeRouter = (opts: Record<string, unknown> = {}) => {
       },
     };
   };
-  const router = new Router({ loader: loader as never, ...opts });
+  const router = new Router({ default: "english", loader: loader as never, ...opts });
   return { router, built, calls };
 };
 
@@ -85,6 +115,9 @@ describe("Router.routeBatch / predictBatch", () => {
     expect(() => router.routeBatch([null] as never)).toThrow(/request 0/);
     expect(() => router.routeBatch([{ questions: Q }] as never)).toThrow(
       /request 0 is missing required key 'state'/,
+    );
+    expect(() => router.routeBatch([{ state: null, questions: Q }] as never)).toThrow(
+      /request 0 'state' must not be None/,
     );
     expect(() => router.routeBatch([{ state: "x" }] as never)).toThrow(
       /request 0 is missing required key 'questions'/,
@@ -302,6 +335,42 @@ describe("Router.routeBatch / predictBatch", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // Two gaps the cases above leave open, both named when #943 was closed in favour of #936.
+  it("lets a per-call hooksRaise turn raising on where the router has it off", async () => {
+    const throwing = {
+      onPredictEnd() {
+        throw new Error("hook blew up");
+      },
+    };
+    const quiet = makeRouter({ hooks: [throwing], hooksRaise: false });
+    // Router-level off, nothing per-call: the hook throws and the call still succeeds.
+    expect((await quiet.router.predictBatch([req("s", { model: "english" })])).length).toBe(1);
+
+    const loud = makeRouter({ hooks: [throwing], hooksRaise: false });
+    // The override only means something if it is honoured here: without it this resolves.
+    await expect(
+      loud.router.predictBatch([req("s", { model: "english" })], null, { hooksRaise: true }),
+    ).rejects.toThrow("hook blew up");
+  });
+
+  it("appends per-call callbacks after per-call hooks, the composition predict uses", async () => {
+    // Order, not membership: both entries run under either composition, so only the sequence
+    // fails if the arguments to composeHooks are swapped.
+    const order: string[] = [];
+    const { router } = makeRouter({});
+    await router.predictBatch([req("s", { model: "english" })], null, {
+      hooks: [{
+        onPredictStart() {
+          order.push("hooks");
+        },
+      }],
+      onPredictStart() {
+        order.push("onPredictStart");
+      },
+    });
+    expect(order).toEqual(["hooks", "onPredictStart"]);
   });
 
   it("predictMany forwards onPredictStart, onPredictEnd and hooksRaise", async () => {
@@ -528,5 +597,48 @@ describe("Agent.predictBatch", () => {
     });
     expect(results[0].model).toBe("cached");
     expect(encodeCalls).toEqual([]);
+  });
+
+  it("router.decideBatch evaluates schema across batch", async () => {
+    const customLoader = () => ({
+      async predictBatch(states: unknown[]) {
+        return states.map(() => ({
+          model: "fake",
+          answers: { flag: { type: "noul", noul: 0.1, confidence: 0.2, answer_confidence: 0.2 } },
+        }));
+      },
+      async systemOne(state: unknown) {
+        return {
+          model: "fake",
+          answers: { flag: { type: "noul", noul: 0.1, confidence: 0.2, answer_confidence: 0.2 } },
+        };
+      },
+    });
+    const router = new Router({ loader: customLoader as never });
+    const schema = {
+      type: "object",
+      properties: {
+        flag: { type: "boolean" },
+      },
+    };
+    const res1 = await router.decideBatch(["alpha", "beta"], schema);
+    expect(res1).toHaveLength(2);
+    expect(res1[0].flag).toBe(false);
+
+    const res2 = await router.decideBatch(["alpha"], schema, { returnDetails: true });
+    expect(res2).toHaveLength(1);
+    expect(res2[0].values).toBeDefined();
+    expect(res2[0].answerConfidence).toBeDefined();
+    expect(res2[0].confidence).toBeDefined();
+
+    // Verify min_confidence alias gates low confidence on the router path
+    const resGated = await router.decideBatch(["alpha"], schema, { min_confidence: 0.99 });
+    expect(resGated).toHaveLength(1);
+    expect(resGated[0].flag).toBeNull();
+
+    // Verify minConfidence also gates low confidence on the router path
+    const resGatedCamel = await router.decideBatch(["alpha"], schema, { minConfidence: 0.99 });
+    expect(resGatedCamel).toHaveLength(1);
+    expect(resGatedCamel[0].flag).toBeNull();
   });
 });

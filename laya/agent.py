@@ -8,7 +8,7 @@ import time
 import warnings
 from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -40,10 +40,10 @@ from .common import (
     _disable_question_token_reuse,
     encode_text,
     render_criterion,
-    render_options,
     resolve_lang_temperatures,
     serialize_state,
     temp_bucket,
+    temperature_rejected,
     unpermute_probs,
     uses_parallel_layout,
     window_batch_cap,
@@ -313,7 +313,13 @@ def _cpu_amp_dtype() -> Optional[torch.dtype]:
     """Autocast dtype on CPU: bf16 when LAYA_CPU_AMP=bf16|bfloat16, None to leave the forward in
     fp32. No fp16 spelling is offered here, because CPU autocast has no fp16 fast path that beats
     fp32 -- bf16 is the only reduced precision worth asking for, and only on hardware with native
-    BF16 instructions, which is why it stays opt-in. Anything else is ignored."""
+    BF16 instructions, which is why it stays opt-in. Anything else is ignored.
+
+    On hardware without those instructions the failure is a native fault, not an exception:
+    oneDNN picks a kernel the CPU cannot execute and the process dies with SIGILL, or
+    `0xC000001D` on Windows. `_infer`'s autocast retry catches `RuntimeError`, so it cannot
+    see that and cannot fall back. Qualify the host first; `docs/reference/agent.md` has the
+    one-line child-process probe and the `get_cpu_capability()` reading to check."""
     if os.environ.get("LAYA_CPU_AMP", "").lower() in ("bf16", "bfloat16"):
         return torch.bfloat16
     return None
@@ -728,13 +734,8 @@ class Agent(HookRegistry):
         entries += [("temperature[%d]" % i, t, self.temperature[i]) for i, t in enumerate(self.temperature_raw)]
         rejected = []
         for name, raw, applied in entries:
-            try:
-                if float(raw) == applied:
-                    continue
-            except (TypeError, ValueError):
-                # Invalid entries already have a neutral fallback; diagnostics must not
-                # repeat the failed conversion or prevent the checkpoint from loading.
-                pass
+            if not temperature_rejected(raw, applied):
+                continue
             rejected.append("%s=%r -> %g" % (name, raw, applied))
         if rejected:
             warnings.warn(
@@ -1158,7 +1159,7 @@ class Agent(HookRegistry):
                 self.tok, state, q, max_len, head_max_len, option_order=q.get("option_order"),
                 truncate_left=truncate_left, state_ids=state_ids, return_stats=True,
                 return_truncation_stats=True, return_layout=self.parallel_options)
-            n_opts = len(render_options(q))
+            n_opts = stats["options"]
             if len(markers) != n_opts:
                 # The markers are placed at absolute positions and `build_sequence` then drops the
                 # ones past `max_len`, so this is about the question fitting in the sequence --
@@ -1344,7 +1345,7 @@ class Agent(HookRegistry):
                 t_scale = l_cfg["temperature_by_options"].get(temp_bucket(qt, k), l_cfg["temperature"][qt])
             z = raw_rows[j] / t_scale
             p = np.exp(z - z.max())
-            p = p / p.sum()
+            p /= p.sum()
 
             # The row comes back in slot order; everything below indexes by option.
             p = unpermute_probs(p, q.get("option_order"))
@@ -2081,6 +2082,10 @@ def _is_local_checkpoint_arg(model_id_or_path: str) -> bool:
     )
 
 
+if TYPE_CHECKING:  # pragma: no cover - the annotation below is the only use
+    from .onnx_agent import ONNXAgent
+
+
 def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str] = None,
          token: Optional[str] = None, subfolder: Optional[str] = None, fast: bool = False,
          compile: bool = False,
@@ -2091,7 +2096,7 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
          hooks_timeout: Optional[float] = None,
          calibration: Optional[str] = None, backend: Optional[str] = None,
          onnx_path: Optional[str] = None, compile_warmup: bool = True,
-         compile_cache: bool = False, compile_mode: str = "default") -> Agent:
+         compile_cache: bool = False, compile_mode: str = "default") -> Union[Agent, "ONNXAgent"]:
     """Load a Laya agent.
 
     `subfolder` picks one checkpoint out of a repo that bundles several:

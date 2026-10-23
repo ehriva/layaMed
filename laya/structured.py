@@ -99,11 +99,16 @@ def _schema_of(model: Any) -> Dict[str, Any]:
 
 
 def _enum_field(path: str, name: str, values: Sequence[Any], description: Optional[str]) -> _Field:
+    # A JSON 'enum' is an array. Reject a bare scalar before len(): a str is iterable, so without
+    # this check it silently splits into per-character options instead of erroring (the module
+    # promises malformed schemas raise a SchemaError that names the path).
+    if not isinstance(values, (list, tuple)):
+        raise SchemaError("%s: 'enum' must be an array of values, got %s" % (path, type(values).__name__))
     if len(values) > MAX_OPTIONS:
         raise SchemaError("%s: %d options exceeds MAX_OPTIONS=%d" % (path, len(values), MAX_OPTIONS))
     if not values:
         raise SchemaError("%s: 'enum' must not be empty" % path)
-    if all(isinstance(v, bool) for v in values):
+    if all(isinstance(v, bool) for v in values) and len(set(values)) == 2:
         return _noul_field(path, name, description)
     options = [(("null" if v is None else str(v)), v) for v in values]
     if len({label for label, _ in options}) != len(options):
@@ -128,7 +133,14 @@ def _noul_field(path: str, name: str, description: Optional[str]) -> _Field:
 def _score_field(path: str, name: str, prop: Dict[str, Any],
                  description: Optional[str]) -> _Field:
     lo, hi = prop.get("minimum"), prop.get("maximum")
-    if not isinstance(lo, int) or not isinstance(hi, int):
+    # `bool` is a subclass of `int`, so `isinstance(True, int)` is true: a JSON `"minimum": true`
+    # would otherwise slip through and silently become a bound of 1 (`"maximum": false` a bound of
+    # 0), even though the same message rejects `"0"` and `1.5`. `_enum_field` below refuses a
+    # `[true, false]` enum on the same principle -- a boolean is a yes/no, not a number -- so the
+    # exclusion belongs here too, routed into the existing "needs integer" error the string and
+    # float bounds already raise.
+    if (isinstance(lo, bool) or isinstance(hi, bool)
+            or not isinstance(lo, int) or not isinstance(hi, int)):
         raise SchemaError(
             "%s: a numeric field needs integer 'minimum' and 'maximum' to become a score" % path)
     if hi < lo:
@@ -379,9 +391,14 @@ def decide_batch(runner, states: Sequence[Any], schema: Any = None, *,
     are evaluated over every state through ``runner.predict_batch`` (the same
     shared-forward-pass path as :meth:`Agent.predict_batch` /
     :meth:`Router.predict_batch`), then each state's answers are projected exactly as
-    ``decide`` does. Pass exactly one of ``schema`` or ``questions``; extra keyword
-    arguments (``batch_size=``, ``model=``, ``hooks=``, ...) are forwarded to
-    ``runner.predict_batch``. With ``return_details=True`` each item is a
+    ``decide`` does. Pass exactly one of ``schema`` or ``questions``. The extra keywords you leave
+    here (``batch_size=``, ``hooks=``, ``sort_by_length=``, ...) go to ``runner.predict_batch``,
+    but the routing pins and the token budget (``model=``, ``task=``, ``lang=``, ``lang_guess=``,
+    ``max_len=``, ``head_max_len=``) are read off every *request* by a ``Router``, whose
+    ``predict_batch`` declares none of them: ``decide_batch`` copies them onto each request
+    instead, so ``model=`` pins a registered checkpoint there and raises ``TypeError`` on an
+    ``Agent``-like runner, whose ``predict_batch`` declares ``lang=`` but no ``model=``.
+    With ``return_details=True`` each item is a
     ``DecisionResult``. ``min_confidence`` works as in ``decide``: a field whose answer falls
     below it comes back as ``None``, with the answer kept in the details.
 

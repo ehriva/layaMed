@@ -1,6 +1,14 @@
 import type { TokenizerLike } from "./tokenizer.js";
 export type QType = "choice" | "score" | "noul";
-export interface InternalQ { t: QType; ins: string; crit: unknown; labels?: { false: string; true: string } }
+export interface InternalQ {
+  t: QType;
+  ins: string;
+  crit: unknown;
+  labels?: { false: string; true: string };
+  /** The caller's option indices in the order the head should see them: slot `s` shows option
+  `optionOrder[s]`. Set by `toInternal` from a question's `option_order`. */
+  optionOrder?: number[];
+}
 /** Python `json.dumps` for a finite number. JavaScript prints the same shortest round-trip
 digits, but Python switches to exponent notation below 1e-4 (JavaScript: below 1e-6) and pads the
 exponent to two digits (`5e-05`, not `5e-5`). An integer-valued number prints as before, which
@@ -197,6 +205,20 @@ export function buildSequence(tok: TokenizerLike, state: unknown, q: InternalQ,
   const stAll = tok.encode(serializeState(state).split(tok.maskToken).join(" "));
   return sequenceWithState(buildQuestionPrefix(tok, q, maxLen, headMaxLen, optionOrder), stAll, tok.sepId, maxLen, truncateLeft);
 }
+/** Put a slot-ordered probability row back into the caller's option order.
+ *
+ * `buildQuestionPrefix` puts option `order[s]` in slot `s`, so a head row comes back indexed by
+ * slot, while everything downstream indexes by option -- `keys[best]` for a choice, `i * p[i]` for a
+ * score level, `p[1]` for noul-true. Without the inverse the probabilities stay attached to the
+ * wrong options, which is silent. Mirrors `laya.common.unpermute_probs` (`laya/common.py:557`): a
+ * missing order, or one whose length is not the row's, returns the row untouched, so the canonical
+ * path is unaffected. */
+export function unpermuteProbs(p: number[], order?: number[] | null): number[] {
+  if (!order || order.length !== p.length) return p;
+  const canonical = new Array<number>(p.length);
+  for (let s = 0; s < order.length; s++) canonical[order[s]] = p[s];
+  return canonical;
+}
 export function softmax(z: number[]): number[] {
   const m = Math.max(...z);
   const e = z.map((v) => Math.exp(v - m));
@@ -274,7 +296,7 @@ export function checkMinConfidenceMap(m: unknown): MinConfidenceMap {
   const out: Record<string, number> = {};
   for (const [key, val] of Object.entries(m as Record<string, unknown>)) {
     if (key !== "default" && !BUCKET_KEY.test(key)) {
-      throw new Error(`min_confidence map keys must be strings like 'choice:3-5', got ${pyRepr(key)}`);
+      throw new Error(`min_confidence map keys must be a bucket like 'choice:3-5' or 'default', got ${pyRepr(key)}`);
     }
     if (typeof val === "boolean" || typeof val !== "number" || !Number.isFinite(val) || val < 0.0 || val > 1.0) {
       throw new Error(`min_confidence must be a float in [0.0, 1.0], got ${pyRepr(val)}`);
@@ -329,20 +351,51 @@ export function resolveMinConfidence(
 }
 
 /**
+ * The number the abstention gate compares against the threshold, or null if there is none.
+ *
+ * Mirrors Python `laya.confidence._gate_confidence` exactly, including the two places it is
+ * easy to get wrong:
+ *
+ * - the fallback is taken whenever `answer_confidence` is not a usable number, not only when
+ *   it is absent or null. An `answer_confidence` of `NaN` beside a usable `confidence` is
+ *   gated on the `confidence`, because "unusable" and "missing" are the same case here;
+ * - a number outside [0, 1] is still a number. It is compared, not discarded: a negative
+ *   `answer_confidence` is below every threshold and so is flagged, and one above 1 clears
+ *   every threshold. Treating out-of-range as "nothing to gate on" would silently clear a
+ *   marker Python sets.
+ *
+ * null means no usable number, never an unusable one, which is what lets the caller tell
+ * "nothing to gate on" from "a gate ran".
+ */
+function gateConfidence(answer: Record<string, unknown>): number | null {
+  const primary = answer.answer_confidence;
+  if (typeof primary === "number" && Number.isFinite(primary)) return primary;
+  const fallback = answer.confidence;
+  if (typeof fallback === "number" && Number.isFinite(fallback)) return fallback;
+  return null;
+}
+
+/**
  * Opt-in abstention marker (#361, #394): flag answers whose confidence falls below `min_confidence`.
  *
  * Reads `answer_confidence` (the calibrated max(p) confidence, invariant to label count k),
- * falling back to `confidence` if `answer_confidence` is absent.
- * The raw answer and confidence stay intact; `low_confidence: true` is added.
+ * falling back to `confidence` whenever `answer_confidence` is not a usable number -- see
+ * `gateConfidence`, which mirrors Python's `_gate_confidence`.
+ * The raw answer and confidence stay intact; `low_confidence: true` is added when the answer
+ * falls below the threshold, and removed if a previously-flagged answer now clears it (e.g.
+ * when a result dict is reused or re-evaluated with a different threshold).
  *
  * Supports both a scalar number in [0.0, 1.0] and a per-bucket mapping of thresholds.
+ *
+ * Exactly 0.0 runs this same loop rather than short-circuiting out of it. Nothing falls below
+ * it, so it marks no answer -- and the pass is what clears a marker an earlier, stricter threshold
+ * left on a reused payload (#910).
  */
 export function flagLowConfidence(
   results: Array<Record<string, unknown>> | Record<string, unknown>,
   minConfidence: MinConfidence,
 ): void {
   const isMap = typeof minConfidence === "object" && minConfidence !== null;
-  if (!isMap && minConfidence === 0.0) return;
   const list = Array.isArray(results) ? results : [results];
   for (const res of list) {
     const answers = res && typeof res === "object" ? (res as Record<string, unknown>).answers : null;
@@ -350,23 +403,49 @@ export function flagLowConfidence(
     for (const a of Object.values(answers as Record<string, unknown>)) {
       if (!a || typeof a !== "object") continue;
       const ansObj = a as Record<string, unknown>;
-      let conf = ansObj.answer_confidence;
-      if (conf === undefined || conf === null) {
-        conf = ansObj.confidence;
+      const conf = gateConfidence(ansObj);
+      if (conf === null) {
+        delete ansObj.low_confidence;
+        continue;
       }
-      if (typeof conf === "number" && !Number.isNaN(conf)) {
-        const thr = isMap ? resolveMinConfidence(ansObj, minConfidence) : minConfidence;
-        if (conf < thr) {
-          ansObj.low_confidence = true;
-        }
+      const thr = isMap ? resolveMinConfidence(ansObj, minConfidence) : minConfidence;
+      if (conf < thr) {
+        ansObj.low_confidence = true;
+      } else {
+        delete ansObj.low_confidence;
       }
     }
   }
 }
 export const TEMP_MIN = 0.5, TEMP_MAX = 5.0;
+/**
+ * A usable temperature: `t` confined to [`TEMP_MIN`, `TEMP_MAX`], falling back to the neutral 1.0
+ * when it is not a number. Parity with py `common.clamp_temperature`, which asks that question with
+ * `float()`.
+ *
+ * `Number()` asks it more loosely, so a value that is not a number at all reaches the clamp as one.
+ * Measured as `clamp_temperature(t)` / `clampTemperature(t)` over the values a checkpoint config can
+ * hold:
+ *
+ *     t        py     ts (before)
+ *     " "      1.0    0.5     Number(" ") is 0, float(" ") raises
+ *     []       1.0    0.5     Number([]) is 0
+ *     [2]      1.0    2.0     Number([2]) is 2
+ *     ["2"]    1.0    2.0     Number(["2"]) is 2
+ *
+ * The nested lists are the worse half: 2.0 is inside the range, so the loader's own diagnostic
+ * compared it, found it equal, and said nothing about the value the reference refuses outright.
+ * Whichever number landed then scales the logits every published confidence comes from. Take an
+ * answer the neutral 1.0 puts at 0.60: the port's old 0.5 reads it as 0.69 among two options and
+ * 0.92 among six, and its old 2.0 reads the same answer as 0.55 and 0.35. So one malformed field
+ * made a coin flip look certain or a real preference look like noise, depending on which way
+ * `Number()` happened to coerce it. Only a number, or a string that holds one, reaches the clamp.
+ */
 export function clampTemperature(t: unknown): number {
-  if (t === null || t === undefined || t === "" || typeof t === "boolean") return 1.0;
-  const f = typeof t === "number" ? t : Number(t);
+  let f: number;
+  if (typeof t === "number" || typeof t === "bigint") f = Number(t);
+  else if (typeof t === "string" && t.trim() !== "") f = Number(t);
+  else return 1.0;
   if (!Number.isFinite(f)) return 1.0;
   return Math.min(TEMP_MAX, Math.max(TEMP_MIN, f));
 }

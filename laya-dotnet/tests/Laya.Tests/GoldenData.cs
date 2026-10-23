@@ -5,7 +5,8 @@ namespace Laya.Tests;
 /// <summary>One entry of <c>index.json</c>.</summary>
 /// <param name="Kind">
 /// <see langword="null"/> for a standard parity case; <c>"shortlist"</c> for a case recorded
-/// through <c>predict_shortlist</c> rather than <c>system_one</c> directly. Standard case
+/// through <c>predict_shortlist</c>, or <c>"long"</c> through ONNXAgent.predict_long.
+/// Standard case
 /// enumeration excludes non-null kinds, since their <c>result</c> shape and recording flow differ
 /// from the plain parity cases <see cref="CheckpointGoldenData.SuccessCases"/> /
 /// <see cref="CheckpointGoldenData.ErrorCases"/> are meant for.

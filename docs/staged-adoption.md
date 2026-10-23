@@ -81,7 +81,8 @@ itself.
 Four of those six come from the evaluation harness: a `laya-evals run --json` report records the
 checkpoint commit that answered (`config.revisions`), the dataset's bytes and question schema
 (`config.dataset_sha256`, `config.questions_sha256`) and the gate it was scored under
-(`config.thresholds`). Calibration method and owner are the application's to record. See
+(`config.thresholds`). A checkpoint given as a local directory has no commit to name, so its entry in
+that block is `null`. Calibration method and owner are the application's to record. See
 [Evaluation harness](evals.md) for the run identity and the comparability check between a baseline
 and a candidate.
 

@@ -85,6 +85,7 @@ A schema that cannot be answered from a fixed option set raises `laya.structured
 | `{"$ref": "#/definitions/node"}` | `properties.name: $ref '#/definitions/node' does not resolve to an entry of this schema's '$defs' or 'definitions'` |
 | `{"enum": [1, "1"]}` | `properties.name: enum values produce duplicate choice labels` |
 | `{"enum": []}` | `properties.name: 'enum' must not be empty` |
+| `{"enum": "abc"}` | `properties.name: 'enum' must be an array of values, got str` |
 | `{"type": "number"}` | `properties.name: a numeric field needs integer 'minimum' and 'maximum' to become a score` |
 | `{"type": "integer", "minimum": 5, "maximum": 2}` | `properties.name: 'maximum' 2 is below 'minimum' 5` |
 | `{"type": "integer", "minimum": 0, "maximum": 10}` | `properties.name: 11 levels exceeds MAX_SCORE_LEVELS=10; narrow the range or use an enum` |
@@ -141,9 +142,16 @@ values = agent.decide_batch(ticket_texts, schema=Ticket)          # values[i] ma
 results = router.decide_batch(states, schema=Ticket, return_details=True, batch_size=64)
 ```
 
-On a `Router` each state is still routed on its own, so one call can span checkpoints. Keyword
-arguments reach `predict_batch`, so `batch_size=`, `model=` and hooks work as they do for `decide`.
-`Agent`, `ONNXAgent` and `Router` all have it; a runner without `predict_batch` raises
+On a `Router` each state is still routed on its own, so one call can span checkpoints. Which
+keywords reach `predict_batch` depends on who reads them. The call-level ones — `batch_size=`,
+`hooks=`, `sort_by_length=` — are passed as keywords to `predict_batch`. The routing pins and the
+token budget — `model=`, `task=`, `lang=`, `lang_guess=`, `max_len=`, `head_max_len=`, the tuple
+`laya/structured.py::_ROUTER_REQUEST_KEYS` names — are read off every *request* by a `Router`, whose
+`predict_batch` declares none of them, so `decide_batch` copies them onto each request instead; that
+is why `decide_batch(states, schema=..., model="multilingual")` pins a checkpoint the way `decide`
+does. On an `Agent`-like runner the split is visible: its `predict_batch` declares `batch_size=`,
+`hooks=` and `lang=` but no `model=` and swallows nothing, so `model=` there is a `TypeError`, not a
+silent extra keyword. `Agent`, `ONNXAgent` and `Router` all have it; a runner without `predict_batch` raises
 `TypeError` rather than silently falling back to a loop — call `decide` per state there. Batching can shift borderline argmaxes the
 same way `predict_batch` does; the README records the measured speedups for both devices.
 

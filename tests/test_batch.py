@@ -11,6 +11,7 @@ These tests need no model weights. They cover:
 """
 import inspect
 import os
+import re
 import sys
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -205,6 +206,96 @@ check("length/error hook receives failure once", [str(e) for e in errors], ["for
 
 f = make_fake()
 check("orchestration/empty states -> empty list", f.predict_batch([], QUESTIONS), [])
+
+# What the end hook of that same call sees. `predict_batch`'s finally block guards the usage
+# aggregation with `ctx.results is not None`, not with truthiness, and `[]` is the one value where
+# the two disagree: truthiness would leave `ctx.usage` as None on an empty batch, which is exactly
+# the value a call that raised before any result leaves behind. docs/hooks/lifecycle.md's
+# "Empty inputs" table states the difference to readers who write audit hooks against `ctx.usage`,
+# so it is pinned here against the real method.
+end_seen = []
+
+
+class WatchEnd:
+    def on_predict_end(self, ctx):
+        end_seen.append((ctx.results, ctx.usage))
+
+
+f = make_fake()
+f.predict_batch([], QUESTIONS, hooks=[WatchEnd()])
+check("orchestration/empty batch: the end hook still runs, once", len(end_seen), 1)
+check("orchestration/empty batch: results [] but usage summed, not None", end_seen[0],
+      ([], {"input_tokens": 0, "output_tokens": 0}))
+
+end_seen.clear()
+f = make_fake()
+f.predict_batch(["s0", "s1"], {}, hooks=[WatchEnd()])
+check("orchestration/no questions: usage is the sum of the empty payloads", end_seen[0][1],
+      {"input_tokens": 0, "output_tokens": 0})
+
+end_seen.clear()
+f = make_fake()
+f._forward = fail_forward
+check_raises("orchestration/forward error propagates on one state", RuntimeError,
+             lambda: f.predict_batch(["s0"], QUESTIONS, hooks=[WatchEnd()]))
+check("orchestration/a failed call is the only one that leaves usage None", end_seen,
+      [(None, None)])
+
+# The same guard read from both sides. lifecycle.md transcribes this `finally` block into its
+# diagram, so the transcription has to track the code -- a guard that changes shape in one of the
+# two is a page that now lies about when `ctx.usage` is None. Source inspection is already how this
+# file's contract section pins `predict_batch` (it reads `Agent.predict is Agent.system_one` off the
+# class); the doc side is a literal pull out of the fenced diagram. Box-drawing characters and the
+# diagram's own arrows are why both sides go through one regex instead of a line compare.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _finally_guard(text):
+    """The condition the first `if` after `finally:` tests, as written."""
+    tail = text.split("finally:", 1)
+    if len(tail) < 2:
+        return None
+    found = re.search(r"if (ctx\.results[^:]*)", tail[1])
+    return found.group(1).strip() if found else None
+
+
+_code_text = inspect.getsource(Agent.predict_batch)
+with open(os.path.join(_REPO, "docs", "hooks", "lifecycle.md"), encoding="utf-8") as _life:
+    _doc_text = _life.read()
+check("guard/predict_batch has exactly one finally block to transcribe",
+      _code_text.count("finally:"), 1)
+check_true("guard/lifecycle.md's diagram has a finally block", "finally:" in _doc_text)
+# The diagram is the text between the section heading and its closing fence.
+_diagram = _doc_text.split("## Agent.predict_batch", 1)[1].split("```", 2)[1]
+_GUARD_CODE = _finally_guard(_code_text)
+_GUARD_DOC = _finally_guard(_diagram)
+check("guard/the diagram tests what the code tests", _GUARD_DOC, _GUARD_CODE)
+check_true("guard/and that guard is the identity test, not truthiness",
+           _GUARD_CODE == "ctx.results is not None", repr(_GUARD_CODE))
+
+
+def _stmts_after_guard(text):
+    """The call names the two statements that follow that guard, in source order.
+
+    Scoped after `finally:` for the same reason `_finally_guard` is: the body has an earlier
+    `if ctx.results is None:` on the cache-hit branch, and transcribing that one would be a
+    different claim.
+    """
+    tail = text.split("finally:", 1)
+    if len(tail) < 2:
+        return []
+    lines = tail[1].splitlines()
+    for n, ln in enumerate(lines):
+        if "if ctx.results" in ln:
+            return re.findall(r"\b([a-z_]+)\(", "\n".join(lines[n + 1:n + 3]))
+    return []
+
+
+_code_stmts = _stmts_after_guard(_code_text)
+check("guard/the guard runs two statements worth transcribing", _code_stmts,
+      ["aggregate_usage", "apply_confidence_gate"])
+check("guard/and the diagram transcribes both of them",
+      _stmts_after_guard(_diagram), _code_stmts)
 
 f = make_fake()
 res = f.predict_batch(["s0", "s1", "s2"], QUESTIONS)

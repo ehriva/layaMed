@@ -84,5 +84,83 @@
     "file": "case_shortlist_many_options.json",
     "expects_error": false,
     "kind": "shortlist"
+  },
+  {
+    "name": "long_short",
+    "file": "case_long_short.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_exact_limit",
+    "file": "case_long_exact_limit.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_room_fast_path",
+    "file": "case_long_room_fast_path.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_multi_chunk",
+    "file": "case_long_multi_chunk.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_punctuation",
+    "file": "case_long_punctuation.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_dict",
+    "file": "case_long_dict.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_list",
+    "file": "case_long_list.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_clamp",
+    "file": "case_long_clamp.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_special_tokens",
+    "file": "case_long_special_tokens.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_empty_questions",
+    "file": "case_long_empty_questions.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_invalid_stride",
+    "file": "case_long_invalid_stride.json",
+    "expects_error": true,
+    "kind": "long"
+  },
+  {
+    "name": "long_invalid_aggregate",
+    "file": "case_long_invalid_aggregate.json",
+    "expects_error": true,
+    "kind": "long"
+  },
+  {
+    "name": "long_no_state_room",
+    "file": "case_long_no_state_room.json",
+    "expects_error": true,
+    "kind": "long"
   }
 ]

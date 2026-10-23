@@ -4,6 +4,7 @@ A stdlib HTTP server stands in for laya-serve, so these tests need no checkpoint
 and no external network. Run: python -m pytest tests/test_mcp_remote.py
 """
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -14,7 +15,7 @@ pytest.importorskip("mcp")
 from laya.mcp import server as mcp_server  # noqa: E402
 from laya.mcp.tools import (  # noqa: E402
     ToolError, laya_decide, laya_predict, laya_predict_batch, laya_preset, laya_route, laya_route_batch,
-    laya_shortlist, laya_status,
+    laya_shortlist, laya_status, laya_tournament,
 )
 from laya.mcp.remote import DEFAULT_TIMEOUT_S, RemoteError, RemoteRouter  # noqa: E402
 
@@ -129,9 +130,19 @@ def test_http_errors_map_to_tool_error_codes(serve, status, code):
 
 
 def test_unreachable_server_is_a_clean_error():
+    # 127.0.0.1:9 has no listener. POSIX refuses the connect immediately, which
+    # `RemoteRouter._request` classifies as "unreachable"; on Windows a loopback connect to a
+    # dead port retries instead of resetting, so the deadline can fire first and the same
+    # failure arrives as `URLError(TimeoutError)` and is classified "timeout". Both are the
+    # clean-error path this test exists to pin: a `RemoteError` carrying a known code, never a
+    # leaked urllib exception. Which of the two you get is the platform's answer, not laya's, so
+    # the exact code is asserted only where the refusal is guaranteed. Surfaced when #1156 put
+    # this suite in the Windows lane, where it failed on `assert 'timeout' == 'unreachable'`.
     with pytest.raises(RemoteError) as info:
         RemoteRouter("http://127.0.0.1:9", timeout=2).predict("x", _questions())
-    assert info.value.code == "unreachable"
+    assert info.value.code in ("unreachable", "timeout"), info.value.code
+    if not sys.platform.startswith("win"):
+        assert info.value.code == "unreachable"
 
 
 def test_loaded_and_revisions_come_from_health(serve):
@@ -206,6 +217,17 @@ def test_shortlist_is_refused_in_remote_mode(serve):
     with pytest.raises(ToolError) as info:
         laya_shortlist({"text": "x"}, many, k=5, router=RemoteRouter(serve))
     assert info.value.code == "unsupported_remote"
+
+
+@pytest.mark.parametrize("n", [2, 40])
+def test_tournament_is_refused_before_remote_requests(serve, n):
+    questions = {"pick": {"type": "choice", "instructions": "pick",
+                          "criteria": {"opt%d" % i: None for i in range(n)}}}
+    with pytest.raises(ToolError) as info:
+        laya_tournament({"text": "x"}, questions, router=RemoteRouter(serve))
+    assert info.value.code == "unsupported_remote"
+    assert "laya_predict" in info.value.message and "LAYA_TOURNAMENT_GROUP" in info.value.message
+    assert FakeServe.requests == []
 
 
 def test_server_builds_a_remote_router_from_the_environment(monkeypatch, serve):
@@ -321,13 +343,16 @@ def test_remote_mcp_startup_and_every_tool_avoid_torch(serve):
         for call in calls:
             out = json.loads(call())
             assert "error" not in out, out
-        try:
-            server.laya_shortlist_tool(state, questions)
-        except Exception as exc:
-            assert "unsupported_remote" in str(exc), exc
-        else:
-            raise AssertionError("remote shortlist did not refuse the call")
+        for tool in (server.laya_shortlist_tool, server.laya_tournament_tool):
+            try:
+                tool(state, questions)
+            except Exception as exc:
+                payload = json.loads(str(exc))
+                assert payload["error"] == "unsupported_remote", payload
+            else:
+                raise AssertionError("remote in-process tool did not refuse the call")
         assert "torch" not in sys.modules
+        assert "laya.shortlist" not in sys.modules
         assert not server._ROUTER._agents
     ''')
     env = dict(os.environ, LAYA_BASE_URL=serve, LAYA_THREADS="2", LAYA_PRELOAD="1")

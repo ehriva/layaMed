@@ -39,8 +39,15 @@ or option count.
   you serve. The multilingual checkpoint also scores below the English checkpoint on the English
   MASSIVE and XNLI slices.
 - **Many options:** Choice descriptions share a fixed token budget. The 77-label Banking77 run
-  performs poorly at the default budget. Keep a single choice question to roughly 20 options,
-  or evaluate a shortlist and a larger head budget on your own labels.
+  performs poorly at the default budget. Keep a single choice question to roughly 20 options, or
+  shortlist a large catalog before asking. Make each option self-contained: put its distinguishing
+  fact near the beginning of the rendered label or description instead of using an opaque key that
+  requires a lookup elsewhere in the state. A larger `head_max_len` can help options fit, but the
+  checkpoints were trained at their shipped head length, as the maintainer notes in
+  [#171](https://github.com/NandhaKishorM/laya/issues/171); widen `max_len` with it to preserve
+  room for the state, then measure accuracy and latency on your own labels. More budget is not a
+  guaranteed accuracy improvement. See
+  [token-budget shaping](hooks/patterns.md#token-budget-shaping) for the budget mechanics.
 - **Calibration:** Both base checkpoints are over-confident on the published suites as shipped,
   yet a separate routing task was under-confident. Fit and evaluate temperatures on separate,
   held-out examples from your workflow before using a confidence gate.
@@ -70,6 +77,17 @@ and the run index at the top of `BENCHMARKS.md`. `research/scripts/bench_local.p
 51-language CPU sweep, `bench_apps.py` covers application workflows, and
 `bench_latency.py` measures routing and inference speed. The T4 notebook is generated from
 `research/scripts/build_benchmark_nb.py`; edit the generator when changing that benchmark.
+
+### Check runtime parity before comparing accuracy
+
+When an adapter or community runtime differs from the official package, first run the same 20 to 50
+representative states through both paths. Keep the checkpoint revision, state, questions, option
+order, and token budgets identical, then compare the raw probability for each option. The maintainer
+suggests agreement within about `1e-3` as a parity check in
+[#171](https://github.com/NandhaKishorM/laya/issues/171).
+If the probabilities differ, investigate the runtime or adapter before attributing a task-level
+accuracy gap to the checkpoint. Parity does not establish accuracy; evaluate separately against
+held-out reference labels from the target workflow.
 
 For a new deployment, keep a held-out set with the same states, questions and expected answers
 for every checkpoint you compare. Record the checkpoint revision, Laya and library versions,

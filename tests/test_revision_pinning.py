@@ -91,6 +91,43 @@ class ResolveRevisionTests(unittest.TestCase):
                 with self.assertRaises(ValueError, msg=spelling):
                     resolve_revision(spelling)
 
+    def test_the_refusal_blames_whichever_side_asked_for_reviewed(self):
+        """One message for both callers sends the argument's caller to a variable they never set.
+
+        `resolve_revision("acme/any", "reviewed")` is a documented call -- `Router(revision=)` and
+        `laya.load(revision=)` both hand it a string -- and before it refused by naming
+        ``LAYA_REVISION``, so an operator who grepped the deployment environment found nothing and
+        had no way to tell which of the two levers was misconfigured.
+        """
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ValueError) as from_argument:
+                resolve_revision("acme/custom-checkpoint", "reviewed")
+        text = str(from_argument.exception)
+        self.assertIn("revision=", text)
+        self.assertNotIn("LAYA_REVISION", text)
+        self.assertIn("acme/custom-checkpoint", text)
+        self.assertIn("PINNED_REVISIONS", text)
+
+    def test_the_refusal_still_blames_the_environment_when_it_set_the_pin(self):
+        """The deployment's wording is unchanged: `tests/test_download.py` asserts on it, and the
+        env fallback is the path the container guides (`LAYA_REVISION=reviewed laya-serve`) use."""
+        with patch.dict(os.environ, {"LAYA_REVISION": "reviewed"}, clear=True):
+            with self.assertRaises(ValueError) as from_environment:
+                resolve_revision("acme/custom-checkpoint")
+        text = str(from_environment.exception)
+        self.assertIn("LAYA_REVISION", text)
+        self.assertNotIn("revision=", text)
+
+    def test_an_explicit_reviewed_argument_blames_the_argument_not_the_environment(self):
+        """Both sides can be live at once, and the argument wins the `or`. So the message must
+        name the argument even when ``LAYA_REVISION`` holds a perfectly good value -- unsetting the
+        variable would not change what this call does."""
+        with patch.dict(os.environ, {"LAYA_REVISION": "a" * 40}, clear=True):
+            with self.assertRaises(ValueError) as error:
+                resolve_revision("acme/custom-checkpoint", "reviewed")
+        self.assertIn("revision=", str(error.exception))
+        self.assertNotIn("LAYA_REVISION", str(error.exception))
+
 
 class SnapshotRevisionTests(unittest.TestCase):
     def test_snapshot_layout(self):

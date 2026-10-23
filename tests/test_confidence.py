@@ -1,6 +1,6 @@
 """`confidence` carries two definitions, and only one of them is the calibrated quantity.
 
-    choice / score  ->  confidence_from_probs(p, k) == 1 - H(p) / log(k)
+    choice / score  ->  confidence_from_probs(p, k) == 1 - H(p) / log(k)   (k >= 2)
     noul            ->  max(p_true, 1 - p_true)     == max(p)
 
 They are not on the same scale. The same two-option distribution comes back as 0.90 from a
@@ -107,6 +107,18 @@ for probs, k in (([0.1, 0.9], 2), ([0.25] * 4, 4), ([0.7, 0.2, 0.1], 3)):
     ent = -(p * np.log(np.clip(p, 1e-12, 1.0))).sum()
     check_true("entropy/formula for k=%d" % k,
                close(confidence_from_probs(p, k), float(np.clip(1 - ent / math.log(k), 0.0, 1.0))))
+
+# The `k < 2` floor: `log(1)` and `log(0)` are zero, so the formula above has no scale there and
+# the helper hands back its maximum instead. Nothing checked that. `laya.structured` does build a
+# one-option `choice`, from `{"enum": ["solo"]}` -- only the upper bound (`MAX_OPTIONS`) is
+# enforced -- so for such a field the reported `confidence` is this constant whichever way `p`
+# points. The abstention gate is not that reader: `laya.confidence` compares
+# `answer_confidence` first and falls back to `confidence` only when that field is absent.
+check("entropy/k=1 is the maximum, not 0/0", confidence_from_probs(np.array([1.0]), 1), 1.0)
+check("entropy/k=1 ignores the value", confidence_from_probs(np.array([0.0]), 1), 1.0)
+check("entropy/k=0 is the maximum", confidence_from_probs(np.array([]), 0), 1.0)
+check_true("entropy/k=1 is at or above every threshold value the validator accepts",
+           all(confidence_from_probs(np.array([0.4]), 1) >= t for t in (0.0, 0.5, 1.0)))
 
 # --------------------------------------------------------------- min_confidence validation & abstention (#361)
 from laya.confidence import check_min_confidence, flag_low_confidence  # noqa: E402
@@ -281,6 +293,26 @@ clean_res = [{"answers": {"q": {"answer_confidence": 0.95}}}]
 flag_low_confidence(clean_res, 0.5)
 check_true("stale/unflagged answer stays clean", "low_confidence" not in clean_res[0]["answers"]["q"])
 
+# `0.0` belongs to this case as much as `0.5` does -- it is the most permissive threshold there is --
+# but the function used to short-circuit on it before the clearing pass, so a stricter threshold's
+# marker survived a re-evaluation at `0.0`.
+zero_res = [{"answers": {"intent": {"choice": "refund", "answer_confidence": 0.8}}}]
+zero_ans = zero_res[0]["answers"]["intent"]
+flag_low_confidence(zero_res, 0.9)
+check_true("stale/flag 0.9 sets flag before the 0.0 pass", zero_ans.get("low_confidence") is True)
+flag_low_confidence(zero_res, 0.0)
+check_true("stale/flag 0.0 clears flag", "low_confidence" not in zero_ans)
+
+# One rule, one implementation: the boolean the flag writes and the state the gate reports cannot
+# disagree about the same threshold change, which is the claim `apply_confidence_gate`'s docstring
+# makes about delegating rather than re-implementing.
+gate_both = [{"answers": {"intent": {"choice": "refund", "answer_confidence": 0.8}}}]
+apply_confidence_gate(gate_both, 0.9)
+apply_confidence_gate(gate_both, 0.0)
+check_true("stale/flag and gate agree after 0.9 -> 0.0",
+           ("low_confidence" in zero_ans) == ("low_confidence" in gate_both[0]["answers"]["intent"]),
+           repr((zero_ans, gate_both[0]["answers"]["intent"])))
+
 # 2. apply_confidence_gate clears stale flag and updates abstention state on re-evaluation
 gate_reuse = [{
     "answers": {
@@ -401,8 +433,8 @@ check("export/laya re-exports the same tuple", laya.GATE_STATES, _confidence.GAT
 # --------------------------------- the two doc pages must attribute confidence per question type
 # `docs/structured.md` and `docs/questions-and-answers.md` each opened their confidence section with
 # "`confidence` is normalized entropy". Neither agent writes that for every type:
-# `Agent._decode_answers` (`laya/agent.py:1367-1404`) and `OnnxAgent._decode_answers`
-# (`laya/onnx_agent.py:682-727`) put `confidence_from_probs(p, k)` = `1 - H(p) / log(k)` in the
+# `Agent._decode_answers` (`laya/agent.py:1369-1398`) and `ONNXAgent._decode_answers`
+# (`laya/onnx_agent.py:715-785`) put `confidence_from_probs(p, k)` = `1 - H(p) / log(k)` in the
 # `choice` and `score` answers and `max(p_true, 1 - p_true)` in the `noul` one. Each page printed a
 # `noul` in the very block its sentence introduces, so the sentence was falsifiable from the page
 # alone: the Q&A page's sample answer is `{"type": "noul", "noul": 0.8727, "confidence": 0.8727}`,
@@ -2041,9 +2073,149 @@ def test_bucket_rows_stays_a_power_of_two_below_16():
             "expect 16 here" % (n, bucket_rows(n)))
 
 
+# ------------------------------- and the caller it names has to be on the kernels' own route
+# The attribution was the second half of the same defect. The docstring called
+# `laya.backends.base.pad_batch` "the caller" of these kernels, but `pad_batch` serves the
+# `backend="compile"` route: it has exactly one production call site, `laya/backends/compile.py:111`,
+# and `laya/fast.py:10` is the only module in the package that imports `tl_kernels`. Those two sets
+# being disjoint is what makes the sentence false, and nothing in the tree checked either one. The
+# padding on the TileLang route happens in `FastLaya._forward_unlocked`, which takes its row bucket
+# from `bucket_rows` (through `_bucket_n`) but *inlines* the token bucketing against its own
+# `FastLaya.DYNAMIC_MAX_L`/`LONG_BUCKET` class attributes rather than calling `bucket_tokens`. So a
+# maintainer who retuned `pad_batch` or `bucket_tokens` for TileLang padding changed nothing on the
+# TileLang route, and no test said so. All three checks below read the call graph out of the AST --
+# no `tilelang` import, so they run on a CPU-only box where the fast path cannot execute.
+
+FAST_REL = "laya/fast.py"
+COMPILE_REL = "laya/backends/compile.py"
+_BAN_PAD_BATCH_CALLER = re.compile(r"caller(?:,| in) [`\w.]*pad_batch", re.I)
+
+
+def _laya_trees():
+    """`[(slash-relative path, parsed AST)]` for every module under `laya/`."""
+    out = []
+    for base, _dirs, files in os.walk(os.path.join(ROOT, "laya")):
+        for name in sorted(files):
+            if not name.endswith(".py") or "__pycache__" in base:
+                continue
+            path = os.path.join(base, name)
+            with open(path, encoding="utf-8") as fh:
+                out.append((path[len(ROOT) + 1:].replace(os.sep, "/"), ast.parse(fh.read(), filename=path)))
+    return out
+
+
+def _modules_calling(trees, fname):
+    """Paths of the `laya/` modules containing a call node for `fname`."""
+    hits = set()
+    for rel, tree in trees:
+        for node in ast.walk(tree):
+            func = node.func if isinstance(node, ast.Call) else None
+            if func is not None and ((isinstance(func, ast.Name) and func.id == fname)
+                                     or (isinstance(func, ast.Attribute) and func.attr == fname)):
+                hits.add(rel)
+    return hits
+
+
+def _modules_importing(trees, mod):
+    """Paths of the `laya/` modules that import `mod`, `from . import mod` included."""
+    hits = set()
+    for rel, tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and any(a.name == mod for a in node.names):
+                hits.add(rel)
+            elif isinstance(node, ast.Import):
+                if any(a.name.split(".")[-1] == mod for a in node.names):
+                    hits.add(rel)
+    return hits
+
+
+def _unparsed_function(rel, funcname):
+    """One function's body, `ast.unparse`d, so the check reads the code rather than its comments."""
+    with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=rel)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == funcname:
+            return ast.unparse(node)
+    raise AssertionError("%s has no function %s() -- the docstring cites a moved symbol" % (rel, funcname))
+
+
+def _class_constant(rel, classname, const):
+    """A class-level `CONST = <literal>`, read without importing the module (this one needs tilelang)."""
+    with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=rel)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == classname:
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name) and target.id == const:
+                            if isinstance(stmt.value, ast.Constant):
+                                return stmt.value.value
+    raise AssertionError("no `%s.%s = <literal>` in %s -- the docstring cites a moved constant"
+                         % (classname, const, rel))
+
+
+def test_tl_kernels_names_a_caller_that_is_on_the_kernels_route():
+    """`pad_batch` never reaches these kernels, so it cannot be the caller the docstring names."""
+    trees = _laya_trees()
+    kernel_importers = _modules_importing(trees, "tl_kernels")
+    pad_batch_callers = _modules_calling(trees, "pad_batch")
+    assert kernel_importers == {FAST_REL}, (
+        "the `laya/` modules importing `tl_kernels` are now %s; the docstring describes one caller, "
+        "so a second route needs its own sentence" % sorted(kernel_importers))
+    assert pad_batch_callers == {COMPILE_REL}, (
+        "`pad_batch` is now called from %s, not only from `%s`; if a route from there reaches "
+        "`tl_kernels`, the docstring's caller may genuinely be `pad_batch` again -- re-read both "
+        "before editing" % (sorted(pad_batch_callers), COMPILE_REL))
+    assert not (kernel_importers & pad_batch_callers), (
+        "`pad_batch` is on the `tl_kernels` route after all, so this ban is stale -- re-read the "
+        "call graph rather than deleting the sentence it caught")
+    doc = _tl_docstring()
+    assert not _BAN_PAD_BATCH_CALLER.search(doc), (
+        "`laya/tl_kernels.py` again calls `laya.backends.base.pad_batch` the caller of these "
+        "kernels. Its one production call site is `laya/backends/compile.py:111`, and "
+        "`laya/fast.py:10` is the only module that imports `tl_kernels`; the padding these kernels "
+        "see happens in `FastLaya._forward_unlocked`.")
+    assert "laya.fast" in doc and "_forward_unlocked" in doc, (
+        "the docstring must name the caller the call graph actually gives these kernels")
+
+
+def test_the_fast_path_still_inlines_the_token_bucket_the_docstring_says_it_repeats():
+    """`_forward_unlocked` mirrors `bucket_tokens`'s arithmetic against its own constants."""
+    body = _unparsed_function(FAST_REL, "_forward_unlocked")
+    assert "self.DYNAMIC_MAX_L" in body and "self.LONG_BUCKET" in body, (
+        "`_forward_unlocked` no longer buckets tokens against the `FastLaya` class constants, so "
+        "the docstring's 'repeats against its own `FastLaya.DYNAMIC_MAX_L`/`LONG_BUCKET`' is stale")
+    assert "bucket_tokens(" not in body, (
+        "`_forward_unlocked` calls `bucket_tokens` directly now; then there is one policy rather "
+        "than two copies, and both the docstring and this check need re-reading")
+    assert "_bucket_n(" in body or "bucket_rows(" in body, (
+        "the row pad no longer comes from `laya.backends.base.bucket_rows`, through `_bucket_n` or "
+        "directly, so the docstring's attribution needs re-reading")
+
+
+def test_the_two_bucket_policies_the_docstring_describes_are_still_the_same_numbers():
+    """One sentence covers both routes only while the duplicated constants agree."""
+    from laya.backends.base import DYNAMIC_MAX_L, LONG_BUCKET
+    fast_max_l = _class_constant(FAST_REL, "FastLaya", "DYNAMIC_MAX_L")
+    fast_long = _class_constant(FAST_REL, "FastLaya", "LONG_BUCKET")
+    assert (fast_max_l, fast_long) == (DYNAMIC_MAX_L, LONG_BUCKET), (
+        "`FastLaya` buckets at (%s, %s) while `laya.backends.base` buckets at (%s, %s). "
+        "`laya/tl_kernels.py`'s docstring describes one policy for these kernels; once the two "
+        "copies differ it has to name both, and its `16`/`%d` numbers need re-reading."
+        % (fast_max_l, fast_long, DYNAMIC_MAX_L, LONG_BUCKET, LONG_BUCKET))
+    doc = _tl_docstring()
+    assert "16-token bucket" in doc, "the docstring no longer states the small token bucket"
+    assert "%d-token bucket" % LONG_BUCKET in doc, (
+        "the docstring no longer states the large token bucket the code uses (`%d`)" % LONG_BUCKET)
+
+
 for _fn in (test_tl_kernels_drops_the_wrong_row_claim,
             test_tl_kernels_names_the_real_padding_policy,
-            test_bucket_rows_stays_a_power_of_two_below_16):
+            test_bucket_rows_stays_a_power_of_two_below_16,
+            test_tl_kernels_names_a_caller_that_is_on_the_kernels_route,
+            test_the_fast_path_still_inlines_the_token_bucket_the_docstring_says_it_repeats,
+            test_the_two_bucket_policies_the_docstring_describes_are_still_the_same_numbers):
     try:
         _fn()
     except AssertionError as e:
@@ -2056,7 +2228,7 @@ for _fn in (test_tl_kernels_drops_the_wrong_row_claim,
 # --------------------------------------- DecisionResult's docstring must split confidence by question type
 # `laya/structured.py`'s `DecisionResult` closed with "confidence keeps the **normalized-entropy
 # value** it has always had, because that is a different quantity on a scale that depends on the
-# label count". `Agent._decode_answers` (`laya/agent.py:1349-1402`) uses two different formulas:
+# label count". `Agent._decode_answers` (`laya/agent.py:1369-1398`) uses two different formulas:
 #   * `choice` and `score`  ->  `confidence_from_probs(p, k)` = `1 - H(p) / log(k)`
 #   * `noul`                ->  `max(p_true, 1 - p_true)`  (its own comment: "identical here:
 #                               over two options `max(p_true, 1 - p_true)` is `max(p)`")
@@ -2292,9 +2464,139 @@ for _name, _answer in (
     ("non-numeric-probability", _choice(0.5, "high")),
     ("bool-probability", _choice(True, False)),
     ("nan-probability", _choice(float("nan"), 0.5)),
+    ("infinite-probability", _choice(float("inf"), 0.5)),
     ("non-integer-score-level", {"type": "score", "probabilities": {"low": 0.5, "high": 0.5}}),
+    # A negative probability is malformed, and at `432312b3` none of these five were refused: they
+    # returned 3.0, 2.0, 0.8, 121.0 (120.99999999999989) and 1.75. The third is the one that cannot
+    # be caught by inspection -- an all-negative document divides by its own negative total and
+    # comes back with the number its positive counterpart comes back with.
+    ("negative-probability", _choice(2.0, -1.0)),
+    ("mixed-sign-argmax-flips", _choice(0.5, -1.5)),
+    ("all-negative-probabilities", _choice(-0.9, -0.1)),
+    ("negative-total-near-zero", _choice(-0.61, 0.6)),
+    ("negative-score-level", _score(1.5, -0.5, 0.0)),
 ):
     check("jev_confidence/none-for-%s" % _name, jev_confidence(_answer), None)
+
+
+# The table above refuses a document whose probabilities are *all* boolean, which is the one shape a
+# `any(isinstance(v, bool) ...)` guard and an `all(...)` one agree on. The positions below are where
+# the two disagree, and they are the shapes a client actually sends: `{"spam": true, "ham": 0.4}`
+# mixes a JSON boolean with real numbers. Under `all` that document is measured -- `float(True)` is
+# 1.0, so the answer comes back as the most confident option the caller never scored -- and
+# `/v1/systemone` publishes the number as `x_jev_confidence` for a client to threshold against.
+_swept, _measured = 0, []
+for _k in (2, 3, 4, 5, 8, 12):
+    for _i in range(_k):
+        for _flag in (True, False):
+            _vals = [1.0 / _k] * _k
+            _vals[_i] = _flag
+            for _answer in (_choice(*_vals), _score(*_vals)):
+                _got = jev_confidence(_answer)
+                _swept += 1
+                if _got is not None:
+                    _measured.append((_k, _i, _flag, _answer["type"], _got))
+check_true("jev_confidence/a bool in any position of any option count is refused",
+           not _measured, "%d of %d measured: %r" % (len(_measured), _swept, _measured[:3]))
+# Every one of those documents differs from its all-float twin by exactly one entry, so the count
+# is the witness that the sweep ran over the positions it claims.
+check("jev_confidence/position sweep size", _swept, sum(2 * 2 * _k for _k in (2, 3, 4, 5, 8, 12)))
+
+
+def _jev_measured(_answer):
+    """`jev_confidence`'s number, or the exception it raised instead, so a slip reports, not aborts."""
+    try:
+        return jev_confidence(_answer)
+    except BaseException as _exc:  # noqa: BLE001 -- the bare TypeError a misplaced check raises
+        return _exc
+
+
+# A probability written as the string "0.9" reads as a number through the function's own float()
+# coercion, so it is measured rather than refused -- and the finite and range checks run on that
+# coerced value, not on the JSON type it arrived as.
+_got = _jev_measured(_choice("0.9", "0.1"))
+check_true("jev_confidence/a numeric string probability is measured as a number",
+           isinstance(_got, float) and abs(_got - 0.8) < 1e-9, repr(_got))
+
+# The range the name promises: nothing this returns is outside [0, 1], and the negatives are
+# exactly what is refused. `x_jev_confidence` is served for a client to compare a threshold
+# against, so an out-of-range number is a gate that passes every answer it touches.
+_swept, _out_of_range, _refused = 0, [], []
+for _i in range(-200, 301):
+    for _answer in (_choice(_i / 100.0, 0.6), _score(_i / 100.0, 0.4, 0.2)):
+        _got = jev_confidence(_answer)
+        _swept += 1
+        if _got is None:
+            _refused.append(_i / 100.0)
+        elif not (0.0 <= _got <= 1.0):
+            _out_of_range.append((_i / 100.0, _got))
+check_true("jev_confidence/sweep kept every number inside [0, 1]", not _out_of_range,
+           "%d of %d outside, worst %r" % (len(_out_of_range), _swept, _out_of_range[:3]))
+check_true("jev_confidence/sweep refused exactly the negative probability",
+           sorted(set(_refused)) == [value / 100.0 for value in range(-200, 0)],
+           "%d refused: %r" % (len(_refused), _refused[:2] + _refused[-2:]))
+# 501 values x both answer types, and the 400 refusals are the 200 negatives twice over
+check_true("jev_confidence/sweep measured everything that is not negative",
+           (_swept, len(_refused), _swept - len(_refused)) == (1002, 400, 602),
+           "swept %d, refused %d, measured %d" % (_swept, len(_refused), _swept - len(_refused)))
+
+# --- the public name and the served field must be one computation (#302) --------------------
+# `/v1/systemone` publishes `x_jev_confidence`, but a caller running the checkpoint in-process
+# gets an answer dict and no HTTP layer, and the other two confidence quantities
+# (`answer_confidence`, `confidence_from_probs`) are already public. So the name ships from
+# `laya`, and these checks pin that the served number is this function's number.
+import laya  # noqa: E402
+
+check_true("jev_public/exported", "jev_confidence" in laya.__all__)
+check_true("jev_public/lazy attr resolves to the core function",
+           getattr(laya, "jev_confidence", None) is jev_confidence)
+
+from laya.serve import _add_jev_confidence  # noqa: E402
+
+_answers = {
+    "q": _choice(0.88, 0.12),
+    "r": _choice(2, 1),          # 1/3, so the served rounding is visible
+    "s": _score(0.0, 0.95, 0.05),
+    "n": {"type": "noul", "noul": 0.9},
+}
+_served = _add_jev_confidence({"answers": copy.deepcopy(_answers)})["answers"]
+for _qid in ("q", "r", "s"):
+    check("jev_public/served %s is the public function rounded" % _qid,
+          _served[_qid]["x_jev_confidence"], round(jev_confidence(_answers[_qid]), 4))
+check_true("jev_public/served noul carries no field",
+           "x_jev_confidence" not in _served["n"], _served["n"].keys())
+
+# --- probability precision: both decoders round independently, not to a unit sum (#555) ------
+from laya.agent import Agent  # noqa: E402
+from laya.onnx_agent import ONNXAgent  # noqa: E402
+
+for _cls in (Agent, ONNXAgent):
+    _agent = _cls.__new__(_cls)  # no checkpoint, model or ONNX session
+    _agent.temperature = [1.0, 1.0, 1.0]
+    _agent.temperature_by_options = {}
+    for _k, _value, _total in ((3, 0.3333, 0.9999), (6, 0.1667, 1.0002)):
+        for _qtype in ("choice", "score"):
+            _labels = ["o%d" % i for i in range(_k)]
+            _crit = dict.fromkeys(_labels) if _qtype == "choice" else _labels
+            _answer = _agent._decode_answers(
+                np.zeros((1, _k)), np.array([[1.0, 0.0]]), [{"markers": list(range(_k))}],
+                ["q"], {"q": {"t": _qtype, "crit": _crit}}, 0)["q"]
+            _probs = list(_answer["probabilities"].values())
+            _name = "rounding/%s/%s/k=%d" % (_cls.__name__, _qtype, _k)
+            check(_name + "/four decimal places", _probs, [_value] * _k)
+            check_true(_name + "/non-unit sum", close(sum(_probs), _total), repr(_probs))
+
+for _page in ("questions-and-answers.md", "http-api.md"):
+    _text = _prose(_read_page(os.path.join(DOC_ROOT, "docs", _page)))
+    check_true("rounding/docs/%s explains precision" % _page,
+               bool(_re.search(r"`probabilities`.*?rounded independently to four decimal places", _text)))
+    check_true("rounding/docs/%s qualifies the unit sum" % _page,
+               "need not sum exactly to 1" in _text)
+
+_tournament = _prose(_read_page(os.path.join(DOC_ROOT, "docs", "http-api.md")).split(
+    "### Large choices:", 1)[1].split("## Limits", 1)[0])
+check_true("rounding/docs/tournament does not promise an exact unit sum",
+           "need not sum exactly to 1" in _tournament)
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:

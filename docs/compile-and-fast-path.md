@@ -19,7 +19,12 @@ and `fast`; omitting it preserves both flags' existing behaviour.
   to choose its cache directory (default `~/.cache/laya/inductor`).
 - `tilelang`: an adapter around the current fast path, using the agent's bf16 or fp16 dtype.
 - `auto`: TileLang on CUDA with a supported ModernBERT encoder and dtype when TileLang is
-  installed, otherwise compile on CUDA; eager on other devices.
+  installed, otherwise compile on CUDA; eager on other devices. One check comes before the device:
+  a checkpoint on the parallel option layout (`Agent.parallel_options`, set by `option_layout` in
+  its config) is eager on CUDA too, because the accelerated forwards do not take the parallel
+  masks. Nothing flags the choice — `auto` answered with a backend, just not the one the clause
+  above implies — so `agent.backend` is what says which arm ran, and `laya.backends.auto_policy` is
+  the authority on the order of those checks.
 - `onnx`: `laya.load(..., backend="onnx", onnx_path="model.onnx")` returns the existing
   `ONNXAgent`. Without `onnx_path`, it uses `laya.onnx`.
 
@@ -95,38 +100,67 @@ warm-up shapes do not pre-record every request shape. Repeated shapes can benefi
 shapes can pay extra latency and retain graph pools. PyTorch may skip CUDA graphs for unsupported
 operations or configurations; setting this mode is not a guarantee of capture.
 
-Laya marks each compiled CUDA forward as a new step, serializes these forwards across its agents,
-and clones both output tensors outside the compiled graph before releasing the lock. This keeps
-retained outputs valid across replays, at the cost of two copies and serialized forward execution.
-The lock does not coordinate unrelated application-owned compiled models; callers sharing CUDA
-graph iterations or using custom streams must manage their own coordination. Disk caches reuse
-compiled code, not live CUDA graph recordings or their device memory, across processes.
+On `compile=True` with `compile_mode="reduce-overhead"`, Laya marks each compiled CUDA forward as
+a new step, serializes these forwards across its agents, and clones both output tensors outside
+the compiled graph before releasing the lock. `Agent._infer` enters `laya._compile.cuda_graph_step`
+only when `_reduce_overhead` is set (`laya/agent.py:700`, read at `:1237`, entered at `:1238`), and
+nothing outside this branch sets it; the clone of every output is at `:1250`. The lock
+`cuda_graph_step` takes is a module-level `threading.Lock` (`laya/_compile.py:39`, taken at `:63`),
+so every agent in the process shares it: that is what "across its agents" means. Together these
+keep retained outputs valid across replays, at the cost of two copies and serialized forward
+execution.
+
+`backend="compile"` is a different route. It still copies its outputs out before releasing its
+lock, but it marks no step and locks per agent rather than across agents. `CompileBackend.forward`
+holds an `RLock` built per instance (`laya/backends/compile.py:79`, taken at `:114`) and clones the
+sliced outputs inside it (`:117`); it does not import `cuda_graph_step`, so it makes no
+`torch.compiler.cudagraph_mark_step_begin` call, and it never raises on a torch build without that
+API. Two agents on `backend="compile"` therefore replay their graphs concurrently, with no step
+marked between their forwards. The backend's default mode is `"reduce-overhead"`
+(`laya/backends/compile.py:70`) and `backend="auto"` resolves to it on a CUDA machine without
+tilelang (`laya.backends.auto_policy`), so this is the CUDA graph path that runs by default, not
+the opt-in one. `agent.backend` names the route a load took; `agent.backend_object._lock` is the
+specific lock a second `backend="compile"` agent would not be sharing.
+
+In both routes the lock does not coordinate unrelated application-owned compiled models; callers
+sharing CUDA graph iterations or using custom streams must manage their own coordination. Disk
+caches reuse compiled code, not live CUDA graph recordings or their device memory, across
+processes.
 
 Reproduce cold/restart timings, memory, and cache counters with
 `benchmarks/bench_compile_defaults.py`; see
 [the recorded measurements](https://github.com/NandhaKishorM/laya/blob/main/benchmarks/results/compile-defaults/README.md).
 
-## AOTInductor: not yet
+## AOTInductor
 
 Shipping a precompiled artifact per checkpoint and GPU architecture
-(`torch._inductor.aoti_compile_and_package`) would remove the compile entirely. On torch 2.11 it
-stops at packaging:
+(`torch._inductor.aoti_compile_and_package`) removes the compile entirely. It works on the current
+tree. The blocker these notes recorded was real and is fixed; [fast backends](fast-backends.md) has
+the export recipe, the check and the measured package/load timings, so this section keeps only what
+a reader of these notes needs to not walk into it again.
 
 - **Export works.** `torch.export` of `DecisionModel` succeeds, in about 5 s, with dynamic rows,
   markers and tokens. Tokens must be declared as a multiple of 16 (`16 * Dim(...)`); a plain range
   fails the exporter's own `L % 8` alignment guard. This is the same mask alignment as above.
-- **Packaging fails.** How it fails depends on how the program was exported:
-  - **Under autocast**, the program carries dtype asserts that AOTI trips outside autocast:
-    `Tensor dtype mismatch! Expected: torch.bfloat16, Got: torch.float32`.
-  - **From a bf16 copy without autocast**, tracing fails inside the forward:
-    `mat1 and mat2 must have the same dtype`. `DecisionModel.forward` upcasts the pooled state
-    and the confidence features to fp32 before the action head, and autocast normally
-    reconciles that.
+- **The dtype failure these notes measured is fixed.** Packaging from a bf16 copy exported without
+  autocast used to fail inside the forward with `mat1 and mat2 must have the same dtype`:
+  `DecisionModel.forward` keeps the pooled state and the confidence features in fp32 even when the
+  weights are bf16, and with no autocast to reconcile that the first action linear received fp32
+  against bf16 weights. The forward now casts the concatenated input to the head's weight dtype
+  **only when no autocast is active** (`laya/common.py:653-657`), so the AMP and fp32 paths keep
+  their numerics and the decision logits stay fp32.
+  `tests/test_decision_model.py::test_action_head_explicit_dtype_and_autocast` pins the input each
+  head sees for every combination of fp32/bf16 weights with no-AMP/bf16-AMP/fp16-AMP.
+- **Autocast is still the wrong export context.** A program traced under autocast carries dtype
+  asserts that AOTI trips outside autocast:
+  `Tensor dtype mismatch! Expected: torch.bfloat16, Got: torch.float32`. Export a separate
+  evaluation copy in an explicit dtype instead — that is why the cast above is conditional rather
+  than unconditional.
 
-The artifact route therefore needs a dtype-explicit action head: either cast its input to the
-head's dtype, or run the head in fp32.
+`python scripts/check_aoti.py` runs the whole route on a tiny randomly initialised encoder with no
+network access, and prints `SKIP: CUDA and a C++ compiler are required` where it cannot package.
 
-## TileLang portability: the kernels are CUDA-only
+## TileLang portability: the GPU specialisation is CUDA-only
 
 tilelang registers targets for CUDA, HIP, Metal, WebGPU and a C backend. Without AMD or Apple
 hardware, the answerable question was whether `laya/tl_kernels.py` lowers for the CPU at all.
@@ -138,7 +172,7 @@ Probed with `tilelang.compile(kernel.prim_func, target=...)` on Linux x86-64:
 | `"llvm"` | `Cannot find global function target.build.llvm`. The wheel ships no LLVM backend. |
 | `"c"` | Lowers to C and runs on CPU tensors, but only for a subset of the language. |
 
-Every Laya kernel fails on `"c"`, for one of three reasons:
+Every Laya kernel fails on `"c"` **as written for the GPU**, for one of three reasons:
 
 | kernel | failure on `target="c"` | construct |
 |---|---|---|
@@ -153,10 +187,25 @@ The C backend does accept:
 - `T.Pipelined`, which lowers to a plain loop;
 - `T.gemm` with a `T.alloc_local` accumulator, which lowers to a scalar triple loop.
 
-A CPU version would therefore be a second set of kernels, not a target flag. Its GEMM would be an
-unblocked scalar loop, and it would not compete with the MKL/oneDNN path that the stock forward
-already uses on CPU. The same three constructs are the ones to check first on HIP and Metal:
-fragments, `T.gemm` with `GemmWarpPolicy`, and bf16/fp16 support.
+That list is now the specification of a CPU lowering, not an argument against one. Each of the five
+factories takes a keyword-only `cpu=False`, and `compile_cpu` (`laya/tl_kernels.py:261-271`) sets
+`cpu=True` with `dtype="float32"` and lowers the same `prim_func` on `target="c"` with
+`TIR_DISABLE_VECTORIZE`. The three rejected constructs are the three the selector swaps:
+`T.alloc_fragment` and `T.alloc_shared` become `T.alloc_local`, `T.Parallel` becomes `T.grid`, and
+16-bit activations become fp32. Everything else is shared with the GPU form — tile blocking,
+`T.Pipelined`, `T.gemm` with `GemmWarpPolicy`, `T.reduce_sum` / `T.reduce_max` — and the only
+construct the CPU branch drops is the swizzled shared-memory layout annotation, the `if not cpu:`
+guard on `T.annotate_layout` inside `attn_kernel` (`laya/tl_kernels.py:218-219`), which is a GPU
+concern anyway.
+
+What this is *not* is still what the paragraph before it argued: not a faster way to run on CPU.
+`compile_cpu`'s own docstring calls it "a scalar correctness path, not an Agent.accelerate backend",
+[fast backends](fast-backends.md) claims no CPU speedup and no full-model CPU backend, and
+`tests/test_fast_cpu.py` is the parity check against a reference rather than a benchmark. The
+MKL/oneDNN path the stock forward already uses remains the CPU route that is worth running.
+
+The same three constructs are the ones to check first on HIP and Metal: fragments, `T.gemm` with
+`GemmWarpPolicy`, and bf16/fp16 support.
 
 To reproduce the first row of the second table:
 `tilelang.compile(K.gemm_kernel(768, 768).prim_func, target="c")`.

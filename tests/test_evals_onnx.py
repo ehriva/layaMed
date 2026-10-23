@@ -22,6 +22,12 @@ from laya.evals_cli import OnnxRunner  # noqa: E402
 
 PASS, FAIL = [], []
 
+# Two different commits, on purpose: a pin and the commit an unpinned default branch resolved to.
+# One value for both would let a check pass no matter which arm of `ONNXAgent`'s
+# `snapshot_revision(model_dir) or revision` answered.
+PINNED = "1" * 40
+RESOLVED_REVISION = "2" * 40
+
 
 def check(name, got, want):
     if got == want:
@@ -44,6 +50,12 @@ class _FakeAgent:
         self.model_id = model_id_or_path
         self.onnx_path = onnx_path
         self.calibration = kw.get("calibration")
+        # `ONNXAgent` sets `self.revision` from the snapshot it downloaded -- the commit the
+        # default branch resolved to, or the pin when the caller pinned one -- and leaves it None
+        # when the source is a local directory that already exists. The stand-in models all three
+        # arms, because the report block is read from this attribute.
+        self.revision = None if os.path.exists(model_id_or_path) else (
+            kw.get("revision") or RESOLVED_REVISION)
         self.calls = []
 
     def _answer(self, questions):
@@ -151,6 +163,39 @@ try:
           report["config"]["onnx"], os.path.join(tmp, "laya.onnx"))
     check("cli/report omits calibration when unset", "calibration" not in report["config"], True)
     check("cli/report keeps the forced checkpoint", report["config"]["model"], "english-ckpt")
+
+    # `--revision`'s help promises "the report records the commit that answered either way", and
+    # docs/evals.md lists `revisions` as a block of every `run`. Only the torch Router kept it:
+    # the block was read from `router.loaded_revisions` under `if router is not None`, so an ONNX
+    # report carried no `revisions` key at all -- an unattributable artifact from a CLI that says
+    # it is attributable. The three shapes `ONNXAgent.revision` takes each get a check, and each
+    # reads the key through `.get()`: a report that omits the block has to fail by name here, not
+    # abort the suite on a KeyError before the remaining checks run.
+    pinned_path = os.path.join(tmp, "pinned.json")
+    rc = evals_cli.main(["run", dataset, "--onnx", os.path.join(tmp, "laya.onnx"),
+                         "--model", "english-ckpt", "--revision", PINNED, "--json", pinned_path])
+    check("cli/run --onnx --revision exits 0", rc, 0)
+    with open(pinned_path) as f:
+        pinned_report = json.load(f)
+    check("cli/--onnx records the pinned commit against the checkpoint it serves",
+          pinned_report["config"].get("revisions"), {"english-ckpt": PINNED})
+    check("cli/an unpinned ONNX run records the commit the default branch resolved to",
+          report["config"].get("revisions"), {"english-ckpt": RESOLVED_REVISION})
+
+    # A local checkpoint directory has no commit to name, and `ONNXAgent` leaves `revision` None.
+    # The block still says that, rather than leaving the reader to tell "ran from a local path"
+    # apart from "the harness forgot to record it".
+    local_ckpt = os.path.join(tmp, "ckptdir")
+    os.makedirs(local_ckpt)
+    local_path = os.path.join(tmp, "local.json")
+    rc = evals_cli.main(["run", dataset, "--onnx", os.path.join(tmp, "laya.onnx"),
+                         "--model", local_ckpt, "--json", local_path])
+    check("cli/run --onnx from a local checkpoint exits 0", rc, 0)
+    with open(local_path) as f:
+        local_report = json.load(f)
+    check("cli/a local ONNX checkpoint is recorded as having no commit",
+          local_report["config"].get("revisions"), {local_ckpt: None})
+
     check("cli/metrics are computed from the ONNX answers",
           report["overall"]["choice_accuracy"], 1.0)
 

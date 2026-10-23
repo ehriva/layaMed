@@ -79,6 +79,13 @@ describe("lang", () => {
     expect(analyse("What was the reason for the delay").language).toBe("en");
     expect(analyse("Where can I find my invoice in the app").isEnglish).toBe(true);
   });
+  it("names English made of question words and contractions", () => {
+    for (const text of ["Why hasn't my card been delivered?", "How long does a card delivery take?",
+      "Where should my refund show up?"]) {
+      expect(guessLatinLanguage(text)).toBe("en");
+      expect(analyse(text).languageUndecided).toBe(false);
+    }
+  });
   // `es` and `du` are German function words, but Spanish and French claim them, and a word two
   // lists share names neither language. They stay out of the German list.
   it("does not pull es or du into German", () => {

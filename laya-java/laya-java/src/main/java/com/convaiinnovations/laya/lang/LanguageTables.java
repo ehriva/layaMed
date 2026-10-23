@@ -178,7 +178,7 @@ public final class LanguageTables {
 
     static {
         Map<String, Set<String>> STOP = new LinkedHashMap<>();
-        STOP.put("en", Set.of("and", "are", "as", "at", "be", "but", "can", "for", "from", "has", "have", "i", "in", "is", "it", "not", "of", "on", "please", "that", "the", "their", "there", "this", "to", "was", "we", "were", "what", "which", "will", "with", "would", "you"));
+        STOP.put("en", Set.of("after", "already", "always", "and", "any", "are", "aren", "as", "at", "be", "because", "been", "before", "being", "between", "both", "but", "can", "could", "couldn", "didn", "didnt", "does", "doesn", "doesnt", "doing", "done", "dont", "down", "during", "each", "ever", "every", "few", "for", "from", "has", "hasn", "have", "haven", "havent", "here", "him", "his", "how", "i", "if", "in", "into", "is", "isn", "isnt", "it", "ive", "many", "might", "much", "must", "never", "nor", "not", "of", "on", "only", "onto", "our", "please", "shall", "she", "should", "some", "than", "that", "thats", "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "until", "very", "was", "wasn", "wasnt", "we", "were", "weren", "what", "whats", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "within", "without", "won", "wont", "would", "wouldn", "yet", "you", "your", "youre", "yours"));
         STOP.put("fr", Set.of("alors", "au", "aux", "avec", "bien", "bonjour", "ce", "ces", "cette", "comment", "dans", "des", "deux", "dois", "doit", "donc", "du", "elle", "elles", "est", "et", "fait", "fois", "il", "ils", "je", "jour", "jours", "la", "le", "les", "ma", "mais", "merci", "mes", "mois", "mon", "nous", "ont", "ou", "pas", "peut", "peux", "plus", "pour", "pourquoi", "quand", "que", "qui", "sa", "ses", "sont", "sur", "ta", "tes", "ton", "tous", "tout", "toute", "trois", "tr\u00E8s", "tu", "une", "veut", "veux", "vous", "\u00EAtre"));
         STOP.put("de", Set.of("aber", "auch", "auf", "aus", "bei", "bitte", "das", "dem", "den", "der", "dich", "die", "diese", "diesen", "dieser", "dieses", "dir", "ein", "eine", "einem", "einen", "einer", "f\u00FCr", "gibt", "habe", "haben", "heute", "ich", "im", "in", "ist", "jetzt", "kann", "kannst", "mein", "meine", "meinem", "meinen", "meiner", "mich", "mir", "mit", "nach", "nicht", "noch", "oder", "sich", "sind", "und", "uns", "von", "wann", "was", "welche", "werden", "wie", "wir", "wird", "wo", "wurde", "zu", "zum", "zur"));
         STOP.put("es", Set.of("al", "algo", "aqu\u00ED", "aunque", "como", "con", "cuando", "del", "donde", "dos", "el", "entre", "es", "esa", "ese", "eso", "esta", "este", "esto", "est\u00E1", "fue", "fueron", "gracias", "han", "hay", "hemos", "hoy", "la", "las", "le", "les", "lo", "los", "mi", "muy", "m\u00E1s", "nada", "necesito", "ni", "nos", "para", "pero", "por", "porque", "puede", "pueden", "que", "quiero", "se", "ser", "sobre", "son", "su", "sus", "tambi\u00E9n", "tengo", "tiene", "tienen", "todo", "tres", "tu", "un", "una", "y", "ya"));
@@ -224,9 +224,17 @@ public final class LanguageTables {
 
     /** English function words no other list holds. */
     public static final Set<String> EN_ONLY_WORDS = Set.of(
-            "and", "are", "at", "be", "but", "can", "for", "from", "has", "have", "i", "it", "not",
-            "of", "on", "please", "that", "the", "their", "there", "this", "to", "we", "were", "what",
-            "which", "will", "with", "would", "you");
+            "after", "already", "always", "and", "any", "are", "aren", "at", "be", "because", "been",
+            "before", "being", "between", "both", "but", "can", "could", "couldn", "didn", "didnt",
+            "does", "doesn", "doesnt", "doing", "done", "dont", "down", "during", "each", "ever",
+            "every", "few", "for", "from", "has", "hasn", "have", "haven", "havent", "here", "him",
+            "his", "how", "i", "if", "into", "isn", "isnt", "it", "ive", "many", "might", "much",
+            "must", "never", "nor", "not", "of", "on", "only", "onto", "our", "please", "shall", "she",
+            "should", "some", "than", "that", "thats", "the", "their", "them", "then", "there",
+            "these", "they", "this", "those", "through", "to", "too", "until", "very", "wasn", "wasnt",
+            "we", "were", "weren", "what", "whats", "when", "where", "which", "while", "who", "whom",
+            "why", "will", "with", "within", "without", "won", "wont", "would", "wouldn", "yet", "you",
+            "your", "youre", "yours");
 
     /** Words that collide with English, counted once however often they repeat. */
     public static final Set<String> EN_COLLISION_WORDS = Set.of(

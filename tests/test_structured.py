@@ -2,6 +2,7 @@
 
 Run: python tests/test_structured.py
 """
+import inspect
 import os
 import sys
 
@@ -75,6 +76,26 @@ check("map/nullable boolean remains noul",
       questions_from_json_schema({"type": "object", "properties": {"a": {"type": ["null", "boolean"]}}})["a"]["type"],
       "noul")
 
+for value in (True, False):
+    for constraint in ({"enum": [value]}, {"const": value}):
+        schema = {"type": "object", "properties": {"flag": {"type": "boolean", **constraint}}}
+        question = questions_from_json_schema(schema)["flag"]
+        case = "boolean singleton %r" % constraint
+        check("map/%s is a choice" % case, question["type"], "choice")
+        check("map/%s has only the allowed option" % case,
+              question.get("criteria"), {str(value): None})
+        projected = answers_to_json({"flag": {"type": "choice", "choice": str(value)}}, schema)
+        check_true("project/%s preserves its boolean value" % case, projected["flag"] is value)
+
+for options in ([True, False], [False, True]):
+    schema = {"type": "object", "properties": {"flag": {"enum": options}}}
+    check("map/two boolean options %r remain noul" % options,
+          questions_from_json_schema(schema)["flag"]["type"], "noul")
+    for probability, value in ((0.2, False), (0.8, True)):
+        projected = answers_to_json({"flag": {"type": "noul", "noul": probability}}, schema)
+        check_true("project/boolean options %r with noul %s" % (options, probability),
+                   projected["flag"] is value)
+
 
 # --------------------------------------------------------------- projection
 ANSWERS = {
@@ -130,6 +151,22 @@ check_raises("reject/unbounded number", SchemaError,
              _bad({"type": "object", "properties": {"a": {"type": "integer", "minimum": 0}}}))
 check_raises("reject/score too wide", SchemaError,
              _bad({"type": "object", "properties": {"a": {"type": "integer", "minimum": 0, "maximum": 100}}}))
+# A JSON boolean is not an integer scale bound. `bool` subclasses `int`, so `isinstance(True, int)` is
+# true and a `minimum`/`maximum` of `true`/`false` used to slip through and silently become 1/0 -- even
+# though the same guard rejects `"0"` (str) and `1.5` (float). Refuse them on the same message.
+for bool_bound in ({"minimum": True, "maximum": 3}, {"minimum": 1, "maximum": False},
+                   {"minimum": False, "maximum": True}, {"minimum": True, "maximum": True}):
+    check_raises("reject/boolean score bound %r" % bool_bound, SchemaError,
+                 _bad({"type": "object", "properties": {"a": {"type": "integer", **bool_bound}}}))
+try:
+    questions_from_json_schema({"type": "object", "properties": {"x": {"type": "integer", "minimum": True, "maximum": 3}}})
+except SchemaError as exc:
+    check("reject/boolean bound names the field and the integer rule", str(exc),
+          "properties.x: a numeric field needs integer 'minimum' and 'maximum' to become a score")
+# Positive control: a real integer bound still maps to a score scale (the guard is not over-strict).
+check("accept/integer score bounds unchanged",
+      questions_from_json_schema({"type": "object", "properties": {"x": {"type": "integer", "minimum": 1, "maximum": 3}}})
+      ["x"]["criteria"], ["1", "2", "3"])
 check_raises("reject/too many properties", SchemaError,
              _bad({"type": "object", "properties": {("p%d" % i): {"type": "boolean"} for i in range(33)}}))
 check_raises("reject/too many options", SchemaError,
@@ -142,6 +179,16 @@ try:
 except SchemaError as exc:
     check("reject/colliding enum names the field", str(exc),
           "properties.x: enum values produce duplicate choice labels")
+# A JSON 'enum' is an array. A bare scalar used to leak TypeError from len(), and a bare string
+# silently split into per-character options; both must now raise a SchemaError naming the path.
+for scalar in (5, 1.5, True, None, "abc"):
+    check_raises("reject/non-array enum %r" % (scalar,), SchemaError,
+                 _bad({"type": "object", "properties": {"x": {"enum": scalar}}}))
+try:
+    questions_from_json_schema({"type": "object", "properties": {"x": {"enum": "abc"}}})
+except SchemaError as exc:
+    check("reject/non-array enum names the field and type", str(exc),
+          "properties.x: 'enum' must be an array of values, got str")
 check_raises("reject/non-object root", SchemaError, _bad({"type": "array"}))
 check_raises("reject/empty properties", SchemaError, _bad({"type": "object", "properties": {}}))
 
@@ -334,11 +381,58 @@ check("batch/projection matches decide", outs[0], decide(FakeRunner(ANSWERS), "x
 check("batch/per-state values", outs[1],
       {"department": "sales", "urgency": 0, "needs_human": False, "priority": 1})
 
-# kwargs are forwarded to predict_batch (batch_size, model, hooks, ...)
+# Call-level keywords ride through to predict_batch -- but only the ones a real runner declares.
+# `lang`/`max_len` are Agent- and ONNXAgent-side keywords, so they are valid here for the Agent
+# convention and are per-request keys for the Router convention below. `model=` is only the second.
 batch_runner = FakeBatchRunner(BATCH_ANSWERS)
-decide_batch(batch_runner, STATES, schema=SCHEMA, batch_size=4, model="english")
+decide_batch(batch_runner, STATES, schema=SCHEMA, batch_size=4, lang="en")
 check("batch/forwards predict kwargs", batch_runner.calls[0]["kwargs"],
-      {"batch_size": 4, "model": "english"})
+      {"batch_size": 4, "lang": "en"})
+
+# No runner takes model= as a call-level keyword: the docstring used to list it among the keywords
+# forwarded to predict_batch, and this suite used to assert that forwarding -- against a fake whose
+# **kwargs absorbs anything. Bound against the real signatures instead, which loads no checkpoint.
+from laya.agent import Agent  # noqa: E402
+from laya.onnx_agent import ONNXAgent  # noqa: E402
+from laya.structured import _ROUTER_REQUEST_KEYS  # noqa: E402
+
+for _cls in (Agent, ONNXAgent, laya.Router):
+    check_raises("batch/%s.predict_batch rejects model=" % _cls.__name__, TypeError,
+                 lambda _cls=_cls: inspect.signature(_cls.predict_batch).bind(
+                     None, STATES, {}, model="english"))
+check_true("batch/model is one of the router's per-request keys",
+           "model" in _ROUTER_REQUEST_KEYS)
+
+
+class StrictAgentRunner:
+    """An ``Agent``-shaped ``predict_batch``: the keywords it names and no ``**kwargs`` to swallow
+    the rest. That is what makes ``model=`` an error a caller meets, not a silent extra argument."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.calls = []
+
+    def predict_batch(self, states, questions, batch_size=None, lang=None, hooks=None):
+        self.calls.append({"states": list(states), "kwargs": {"batch_size": batch_size,
+                                                             "lang": lang, "hooks": hooks}})
+        return [{"answers": self.answers[s], "routing": {"model": "english"}} for s in states]
+
+
+# Only half of the asymmetry is new here: `decide_batch` gives a Router-like runner the opposite
+# answer, because it copies `model=` onto every request instead of passing it as a keyword, and main
+# already pins that as "batch/router model= reaches a registered checkpoint".
+try:
+    decide_batch(StrictAgentRunner(BATCH_ANSWERS), STATES, schema=SCHEMA, model="english")
+    _model_error = None
+except TypeError as _e:
+    _model_error = str(_e)
+check("batch/agent-like decide_batch rejects model=",
+      "'model'" in (_model_error or ""), True)
+_strict = StrictAgentRunner(BATCH_ANSWERS)
+check("batch/agent-like decide_batch keeps the keywords it does declare",
+      decide_batch(_strict, STATES, schema=SCHEMA, batch_size=4, lang="en"), outs)
+check("batch/and the declared keywords reach predict_batch as keywords",
+      _strict.calls[0]["kwargs"], {"batch_size": 4, "lang": "en", "hooks": None})
 
 # return_details: one DecisionResult per state with the usual fields
 details = decide_batch(FakeBatchRunner(BATCH_ANSWERS), STATES, schema=SCHEMA, return_details=True)
@@ -494,6 +588,22 @@ try:
     })
     check("pydantic/instance", (ticket.department, ticket.urgency, ticket.needs_human),
           ("support", 1, True))
+
+    class BooleanLiterals(pydantic.BaseModel):
+        enabled: Literal[True]
+        disabled: Literal[False]
+
+    literal_questions = questions_from_pydantic(BooleanLiterals)
+    check("pydantic/true literal has one option", literal_questions["enabled"].get("criteria"),
+          {"True": None})
+    check("pydantic/false literal has one option", literal_questions["disabled"].get("criteria"),
+          {"False": None})
+    literals = answer_to_pydantic(BooleanLiterals, {
+        "enabled": {"type": "choice", "choice": "True"},
+        "disabled": {"type": "choice", "choice": "False"},
+    })
+    check_true("pydantic/boolean literals preserve their values",
+               literals.enabled is True and literals.disabled is False)
 except ImportError:
     PASS.append("pydantic/skipped (not installed)")
 

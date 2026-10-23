@@ -7,6 +7,7 @@ import warnings
 from contextlib import nullcontext
 from contextvars import ContextVar
 from functools import wraps
+from numbers import Integral
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
@@ -764,7 +765,18 @@ def td_lambda_targets(p_true: torch.Tensor, batch: Dict, lam: float = 1.0) -> to
 
 
 def ece_score(conf: np.ndarray, correct: np.ndarray, bins: int = 15) -> float:
-    """Expected Calibration Error across confidence bins."""
+    """Expected Calibration Error across confidence bins.
+
+    `bins` is the number of histogram buckets and must be an integer of at least 1. It is refused
+    rather than misread because `np.linspace(0, 1, bins + 1)` yields no interior edge for `0` and
+    `-1`: the loop body never runs and the function returns `0.0`, the best score ECE can report,
+    for a distribution that is anything but well calibrated. A count that arrives from a config
+    file as `0` therefore turns a calibration gate into one that always passes. `True` is refused
+    with the same argument -- it would silently histogram into a single bucket. Any other
+    `Integral` is accepted, a `numpy.int64` among them, since the arrays here are numpy's own.
+    """
+    if isinstance(bins, bool) or not isinstance(bins, Integral) or bins < 1:
+        raise ValueError("bins must be an integer of at least 1, got %r" % (bins,))
     if len(conf) == 0:
         return float("nan")
     edges = np.linspace(0, 1, bins + 1)
@@ -796,7 +808,8 @@ def answer_confidence(p: np.ndarray, k: int) -> float:
     """
     if k < 1:
         return 1.0
-    return float(np.clip(np.max(p[:k]), 0.0, 1.0))
+    val = float(p[:k].max())
+    return 0.0 if val < 0.0 else (1.0 if val > 1.0 else val)
 
 
 def confidence_from_probs(p: np.ndarray, k: int) -> float:
@@ -804,12 +817,31 @@ def confidence_from_probs(p: np.ndarray, k: int) -> float:
 
     How concentrated the whole distribution is. Useful, but not calibrated: it is not what
     temperature scaling fits and not what the reported ECE measures. See `answer_confidence`.
+
+    The formula is reported only for ``k >= 2``: ``log(1)`` and ``log(0)`` are zero, so a
+    distribution over fewer than two options has no entropy scale to divide by. Those inputs
+    return ``1.0``, the *maximum* score this function can produce, whatever ``p`` holds -- an
+    empty or single-option question reads as perfectly concentrated, and a caller comparing the
+    reported `confidence` against any threshold sees a pass. That is not the same as the
+    abstention gate passing it: `laya.confidence` gates on `answer_confidence` first and reaches
+    this number only when that field is absent. The gate does pass a real one-option answer, for
+    a different reason -- a softmax over one logit is exactly ``[1.0]``, so both numbers are
+    ``1.0``. `laya.structured` builds such an answer from ``{"enum": ["solo"]}``, and the option
+    count is bounded only above (`MAX_OPTIONS`).
     """
     if k < 2:
         return 1.0
-    p = p[:k]
-    ent = -(p * np.log(np.clip(p, 1e-12, 1.0))).sum()
-    return float(np.clip(1.0 - ent / math.log(k), 0.0, 1.0))
+    # The scalar `np.clip` on the score is the part worth replacing (a native comparison is ~4x
+    # the dispatcher); the entropy sum itself stays vectorised. A Python loop over `pk` is faster
+    # below roughly k=40 and slower above it -- 0.9 us vs 2.4 us at k=11, but 14.6 us vs 3.0 us at
+    # k=256 -- and summing in a different order moves the last bits (1.7e-15 over 136k measured
+    # distributions). Both callers `round(..., 4)` this, so that drift is invisible today; it is
+    # the SDK goldens in laya-rust, laya-dotnet and laya-ts that have to keep reproducing these
+    # numbers, and there is no reason to spend bit-exactness on a microsecond.
+    pk = p[:k]
+    ent = -float((pk * np.log(np.clip(pk, 1e-12, 1.0))).sum())
+    score = 1.0 - ent / math.log(k)
+    return 0.0 if score < 0.0 else (1.0 if score > 1.0 else score)
 
 
 def temp_bucket(qtype: int, k: int) -> str:
@@ -843,6 +875,26 @@ def clamp_temperature(t, lo: float = TEMP_MIN, hi: float = TEMP_MAX) -> float:
     return min(hi, max(lo, t))
 
 
+def temperature_rejected(raw, applied: float) -> bool:
+    """Whether `raw` is not the number `clamp_temperature` turned into `applied`.
+
+    Loaders use this to name the entries they had to replace. The obvious test, `float(raw) !=
+    applied`, misses the bool case: `clamp_temperature(True)` returns the neutral 1.0 and
+    `float(True)` *is* 1.0, so a checkpoint or calibration file shipping `true` where a number
+    belongs read as an accepted temperature and loaded in silence, while `false` floated to 0.0,
+    mismatched and was reported. So ask the question `clamp_temperature` itself asks -- is this a
+    number at all -- instead of re-deriving its answer. A value that will not convert is rejected
+    the same way: it has a neutral fallback to report, and the diagnostic must never raise for it.
+    """
+    if isinstance(raw, bool):
+        return True
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return True
+    return value != applied
+
+
 def resolve_lang_temperatures(raw: Optional[Dict[str, Any]],
                               base_temperature: Sequence[float]) -> Dict[str, Dict[str, Any]]:
     """Parse the `lang_temperatures` option into `{language: {temperature, temperature_by_options}}`.
@@ -858,6 +910,12 @@ def resolve_lang_temperatures(raw: Optional[Dict[str, Any]],
 
     A `null` entry or a `null` temperature both mean "inherit the checkpoint's own", which is how
     the `laya-ts` port reads the same option (`agent.ts:322-327`).
+
+    Every value still goes through `clamp_temperature`, and a value the clamp had to replace is named
+    in a `RuntimeWarning` for its language: `{"de": {"temperature": [True, 1.5, 2.0]}}` answers
+    `[1.0, 1.5, 2.0]` and `[99, 0.01, 1]` answers `[5.0, 0.5, 1.0]`, which is a different confidence
+    scale from the one the caller wrote. `temperature_rejected` is what distinguishes a replaced entry
+    from an accepted one.
     """
     resolved: Dict[str, Dict[str, Any]] = {}
     for lang, cfg in (raw or {}).items():
@@ -870,7 +928,8 @@ def resolve_lang_temperatures(raw: Optional[Dict[str, Any]],
             raise ValueError("Language override %r must be a mapping, got %s"
                              % (lang, type(cfg).__name__))
         t_raw = cfg.get("temperature")
-        if t_raw is None:
+        inherited = t_raw is None
+        if inherited:
             t_raw = base_temperature
         if not isinstance(t_raw, (list, tuple)) or len(t_raw) != 3:
             raise ValueError("Language override %r temperature must be a list of 3 floats, got %r"
@@ -879,9 +938,27 @@ def resolve_lang_temperatures(raw: Optional[Dict[str, Any]],
         if not isinstance(tbo_raw, dict):
             raise ValueError("Language override %r temperature_by_options must be a mapping of "
                              "bucket -> float, got %s" % (lang, type(tbo_raw).__name__))
+        temperature = [clamp_temperature(t) for t in t_raw]
+        by_options = {k: clamp_temperature(v) for k, v in tbo_raw.items()}
+        # An override that omits `temperature` inherits the checkpoint's own list, and the loader
+        # that got here has already reported the entries it replaced in it. Repeating that line once
+        # per language would bury the overrides a reader is actually holding.
+        entries = [] if inherited else [
+            ("temperature[%d]" % i, raw, applied)
+            for i, (raw, applied) in enumerate(zip(t_raw, temperature))
+        ]
+        entries += [("%s" % k, v, by_options[k]) for k, v in tbo_raw.items()]
+        rejected = ["%s=%r -> %g" % (name, raw, applied)
+                    for name, raw, applied in entries if temperature_rejected(raw, applied)]
+        if rejected:
+            warnings.warn(
+                "laya: language override %r ships invalid temperatures or values outside "
+                "[%g, %g]; using %s. Treat confidence from the affected entries as uncalibrated."
+                % (lang, TEMP_MIN, TEMP_MAX, ", ".join(rejected)),
+                RuntimeWarning, stacklevel=2)
         resolved[norm] = {
-            "temperature": [clamp_temperature(t) for t in t_raw],
-            "temperature_by_options": {k: clamp_temperature(v) for k, v in tbo_raw.items()},
+            "temperature": temperature,
+            "temperature_by_options": by_options,
         }
     return resolved
 
@@ -896,21 +973,25 @@ def collate_items(batch, pad_id: int):
         return None
     n, L = len(items), max(len(it["ids"]) for it in items)
     kmax = max(len(it["markers"]) for it in items)
-    ids = torch.full((n, L), pad_id, dtype=torch.long)
-    att = torch.zeros((n, L), dtype=torch.long)
-    mpos = torch.zeros((n, kmax), dtype=torch.long)
-    mmask = torch.zeros((n, kmax), dtype=torch.bool)
+    ids = np.full((n, L), pad_id, dtype=np.int64)
+    att = np.zeros((n, L), dtype=np.int64)
+    mpos = np.zeros((n, kmax), dtype=np.int64)
+    mmask = np.zeros((n, kmax), dtype=bool)
     has_target = any("target" in it for it in items)
-    target = torch.zeros((n, kmax), dtype=torch.float32) if has_target else None
+    target = np.zeros((n, kmax), dtype=np.float32) if has_target else None
 
     for i, it in enumerate(items):
-        ids[i, : len(it["ids"])] = torch.tensor(it["ids"])
-        att[i, : len(it["ids"])] = 1
-        k = len(it["markers"])
-        mpos[i, :k] = torch.tensor(it["markers"])
+        it_ids = it["ids"]
+        l_ids = len(it_ids)
+        ids[i, :l_ids] = it_ids
+        att[i, :l_ids] = 1
+        markers = it["markers"]
+        k = len(markers)
+        mpos[i, :k] = markers
         mmask[i, :k] = True
         if has_target and "target" in it:
-            if len(it["target"]) > k:
+            t = it["target"]
+            if len(t) > k:
                 # Otherwise this lands as "The expanded size of the tensor (k) must match the
                 # existing size (kmax)" from inside the assignment, which says nothing about the
                 # actual mistake: a target with more entries than the item has options. The limit
@@ -918,28 +999,29 @@ def collate_items(batch, pad_id: int):
                 # batch a longer sibling row must not legitimise extra entries (#311).
                 raise ValueError(
                     "collate_items: item %d has %d target entries but only %d marker positions; "
-                    "a target needs one entry per option" % (i, len(it["target"]), k))
-            target[i, : len(it["target"])] = torch.tensor(it["target"], dtype=torch.float32)
+                    "a target needs one entry per option" % (i, len(t), k))
+            target[i, : len(t)] = t
 
     res = {
-        "input_ids": ids,
-        "attention_mask": att,
-        "marker_pos": mpos,
-        "marker_mask": mmask,
-        "qtype": torch.tensor([it["qtype"] for it in items]),
-        "label": torch.tensor([it.get("label", -1) for it in items]),
+        "input_ids": torch.from_numpy(ids),
+        "attention_mask": torch.from_numpy(att),
+        "marker_pos": torch.from_numpy(mpos),
+        "marker_mask": torch.from_numpy(mmask),
+        "qtype": torch.from_numpy(np.array([it["qtype"] for it in items], dtype=np.int64)),
+        "label": torch.from_numpy(np.array([it.get("label", -1) for it in items], dtype=np.int64)),
         "meta": [{k: it[k] for k in it if k not in ("ids", "markers", "target", "layout")} for it in items],
     }
     if target is not None:
-        res["target"] = target
+        res["target"] = torch.from_numpy(target)
     if any("layout" in it for it in items):
         # All or none: a batch that mixes layouts would run half its rows through the wrong masks
         if not all("layout" in it for it in items):
             raise ValueError("collate_items: some items carry a parallel layout and some do not")
-        pos = torch.zeros((n, L), dtype=torch.long)
-        opt = torch.zeros((n, L), dtype=torch.long)
+        pos = np.zeros((n, L), dtype=np.int64)
+        opt = np.zeros((n, L), dtype=np.int64)
         for i, it in enumerate(items):
-            pos[i, : len(it["ids"])] = torch.tensor(it["layout"]["position_ids"])
-            opt[i, : len(it["ids"])] = torch.tensor(it["layout"]["option_ids"])
-        res["position_ids"], res["option_ids"] = pos, opt
+            l_ids = len(it["ids"])
+            pos[i, :l_ids] = it["layout"]["position_ids"]
+            opt[i, :l_ids] = it["layout"]["option_ids"]
+        res["position_ids"], res["option_ids"] = torch.from_numpy(pos), torch.from_numpy(opt)
     return res

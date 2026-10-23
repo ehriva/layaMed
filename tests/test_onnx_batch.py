@@ -362,6 +362,30 @@ check("single option/a run that already has two or more slots is sent as before"
       wide.session.marker_widths, [3])
 
 
+# ---------------------------------------------------------------- question token reuse
+# Agent.predict_batch caches question tokenizations across states (@_reuse_question_tokens);
+# ONNXAgent.predict_batch shares that cache, so question instructions and options are encoded once
+# per batch rather than once per state document.
+tok_records = []
+
+
+class _TrackingTok(_FakeTok):
+    def __call__(self, text, **kw):
+        tok_records.append(text)
+        return super().__call__(text, **kw)
+
+
+tracking_agent = _bare_onnx()
+tracking_agent.tok = _TrackingTok()
+tracking_agent.predict_batch(STATES, QUESTIONS)
+dept_instruction = "choice question: Which team?"
+check("reuse/question instruction encoded once across the batch",
+      tok_records.count(dept_instruction), 1)
+check("reuse/total tokenizations capped by reuse across states",
+      len(tok_records), 7 + len(STATES))
+
+
+
 # --------------------------------------------------------------------------- report
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:

@@ -793,6 +793,26 @@ with warnings.catch_warnings(record=True) as caught:
 check("explicit/clamping the default window is not warned about",
       [w.category.__name__ for w in caught], [])
 
+# 12e-bis. and the default stride halves the *effective* window, not the one that was asked for.
+# Nothing here pinned the step of a clamped scan, so `laya/onnx_agent.py` was free to teach
+# `window // 2`: on this config that is a step of 100 tokens across the 76-token window the
+# questions leave, which is not a default at all but the stride 12f refuses with a ValueError.
+# Measured from the spans the scan hands the model, so it checks the step taken rather than the
+# number `window_budget` returns.
+_eff_wide = min(room_for(q) for q in Q.values())
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", RuntimeWarning)
+    _wide, _handed_wide = scan(Q, window=200)
+check("explicit/the clamped window is the smallest room of the questions",
+      max(end - start for start, end in _handed_wide), _eff_wide)
+check("explicit/so the default stride is half that window",
+      _handed_wide[1][0] - _handed_wide[0][0], _eff_wide // 2)
+check_true("explicit/which is NOT half the 200 that was asked for",
+           _handed_wide[1][0] - _handed_wide[0][0] != 200 // 2,
+           (_handed_wide[1][0] - _handed_wide[0][0], 200 // 2))
+check("explicit/the clamped scan still reads every token",
+      uncovered(read_spans(_handed_wide, _eff_wide), STATE_TOKENS), [])
+
 # 12f. a stride past the effective window is refused: the tokens between two windows would be read
 # by nothing, which is the failure this method exists to prevent.
 check_raises("stride/past the effective window is an error", ValueError,
@@ -2011,6 +2031,22 @@ for _doc_name, _doc, _stop in _WINDOW_DOCSTRINGS:
     _at = _para.find(_DEFAULT_EXPR or "")
     check_true("floor/%s teaches it as the default, not beside it" % _doc_name,
                _at > -1 and "default" in _para[max(0, _at - 220):_at].lower(), _para[:160])
+
+# The three `predict_long` pages also have to agree on the stride default, since the step actually
+# taken is half the *effective* window while `window` is the number the caller typed.
+_STRIDE_HALF = re.compile(r"hal\w*\s+the\s+\*?effective\*?\s+window", re.I)
+for _doc_name, _doc, _stop in _WINDOW_DOCSTRINGS[1:]:
+    _d = _doc or ""
+    _at = _d.find(_stop)
+    _bullet = _d[_at:_d.find("aggregate:", _at)] if _at > -1 else ""
+    check_true("stride-doc/%s says the step halves the effective window" % _doc_name,
+               _STRIDE_HALF.search(_bullet) is not None, _bullet[:140])
+    check_true("stride-doc/%s never names the requested window as the step" % _doc_name,
+               "window // 2" not in _bullet and "window //2" not in _bullet, _bullet[:140])
+    # Half of the effective window is only true of the default, so the bullet has to keep saying
+    # that it is the default it describes, and not leave a reader to work out which window it means.
+    check_true("stride-doc/%s teaches it as the default" % _doc_name,
+               "default" in _bullet[:120].lower(), _bullet[:140])
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))

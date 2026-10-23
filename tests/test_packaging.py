@@ -3,18 +3,27 @@
 Text parsing, not tomllib: the floor is 3.10 and tomllib arrives in 3.11.
 """
 import ast
+import contextlib
 import fnmatch
+import importlib.util
+import io
 import os
 import re
 import shlex
+import subprocess
 import sys
+import tempfile
+import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-PASS, FAIL = [], []
+PASS, FAIL, SKIPPED = [], [], []
+_SUSPENDED = False
 
 
 def check(name, got, want):
+    if _SUSPENDED:
+        return
     if got == want:
         PASS.append(name)
     else:
@@ -22,6 +31,8 @@ def check(name, got, want):
 
 
 def check_true(name, cond, detail=""):
+    if _SUSPENDED:
+        return
     if cond:
         PASS.append(name)
     else:
@@ -29,12 +40,127 @@ def check_true(name, cond, detail=""):
 
 
 def read(name):
-    with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+    path = os.path.join(ROOT, name)
+    # A suspended section is one require_repo already skipped; do not raise on its files.
+    if _SUSPENDED and not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
 def version_tuple(text):
     return tuple(int(part) for part in text.split("."))
+
+
+# The published sdist ships laya/, tests/, README.md, pyproject.toml, and setup.py. It does
+# not ship .github/workflows, the compose files, scripts/, nix/, docs/, or CONTRIBUTING.md.
+# require_repo skips just the section that reads those, so checks that only need
+# shipped files keep running (#1263).
+def _missing_repo(relative_paths, root):
+    return [rel for rel in relative_paths if not os.path.exists(os.path.join(root, rel))]
+
+
+def _repo_skip_reason(missing):
+    return ("repo-only file(s) absent from this tree "
+            "(the published sdist does not ship them): " + ", ".join(missing))
+
+
+class _SkipObj:
+    """Stand-in for a module the sdist did not ship. Attribute access does not raise."""
+
+    def __getattr__(self, name):
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __getitem__(self, key):
+        return self
+
+    def __bool__(self):
+        return False
+
+
+class _SkipLoader:
+    def create_module(self, spec):
+        return _SkipObj()
+
+    def exec_module(self, module):
+        return None
+
+
+_real_listdir = os.listdir
+_real_spec_from_file_location = importlib.util.spec_from_file_location
+
+
+def _listdir(*args, **kwargs):
+    if not _SUSPENDED:
+        return _real_listdir(*args, **kwargs)
+    path = args[0] if args else kwargs.get("path")
+    if not path or not os.path.isdir(path):
+        if not path:
+            return _real_listdir(*args, **kwargs)
+        return []
+    return _real_listdir(*args, **kwargs)
+
+
+def _spec_from_file_location(name, location, *args, **kwargs):
+    if _SUSPENDED and location and not os.path.exists(location):
+        import importlib.machinery
+        spec = importlib.machinery.ModuleSpec(name, _SkipLoader())
+        spec.origin = location
+        return spec
+    return _real_spec_from_file_location(name, location, *args, **kwargs)
+
+
+os.listdir = _listdir
+importlib.util.spec_from_file_location = _spec_from_file_location
+
+
+def require_repo(*relative_paths, root=None, as_test=False):
+    """True when every path is in the tree. Missing paths skip that section, they do not raise.
+
+    At import time a missing path suspends check() until a later require_repo finds its
+    files, so sections that only need the sdist keep running. as_test=True raises
+    pytest.skip so a pytest test is reported skipped instead.
+    """
+    global _SUSPENDED
+    base = ROOT if root is None else root
+    missing = _missing_repo(relative_paths, base)
+    if not missing:
+        if root is None:
+            _SUSPENDED = False
+        return True
+    reason = _repo_skip_reason(missing)
+    if root is None and reason not in SKIPPED:
+        SKIPPED.append(reason)
+        print("SKIP: " + reason)
+    if root is None:
+        _SUSPENDED = True
+    if as_test:
+        import pytest
+        pytest.skip(reason)
+    return False
+
+
+_GUARD_SAMPLES = (
+    os.path.join(".github", "workflows", "ci.yml"),
+    os.path.join(".github", "workflows"),
+    os.path.join(".github", "workflows", "docker.yml"),
+    os.path.join(".github", "workflows", "release.yml"),
+    os.path.join(".github", "workflows", "docs.yml"),
+    os.path.join(".github", "workflows", "evals.yml"),
+    "compose.yaml",
+    "compose.http.yaml",
+    "compose.cuda.yaml",
+    "compose.modelscope.yaml",
+    "Dockerfile",
+    os.path.join("scripts", "test_suites.py"),
+    "CONTRIBUTING.md",
+    os.path.join("nix", "package.nix"),
+    "docs",
+    "BENCHMARKS.md",
+)
 
 
 pyproject = read("pyproject.toml")
@@ -58,6 +184,96 @@ for package_root, _dirs, files in os.walk(os.path.join(ROOT, "laya")):
     source_packages.add(relative.replace(os.sep, "."))
 check("setuptools/packages match every importable laya package",
       sorted(declared_packages), sorted(source_packages))
+
+# laya/mcp/__init__.py carries the same kind of inventory, two levels down: its docstring splits the
+# submodules into "importable without the `mcp` extra" and "requires the extra", and __all__ is what a
+# reader (and `from laya.mcp import *`) is told the package contains. Neither list is derived from
+# anything, so remote.py -- the module LAYA_BASE_URL mode added -- appeared in neither, while every
+# test that imports `laya.mcp.remote` by its full path kept passing. Derive the modules from the tree
+# and read each module's own bindings, the way the package list above does, so a new submodule has to
+# be declared and a stale dependency claim is caught against the source that contradicts it.
+mcp_dir = os.path.join("laya", "mcp")
+mcp_modules = sorted(name[:-3] for name in os.listdir(os.path.join(ROOT, mcp_dir))
+                     if name.endswith(".py") and name != "__init__.py")
+# Guards, not formalities: an unreadable listing would let every comparison below pass against [].
+check_true("mcp/submodules found under laya/mcp", len(mcp_modules) >= 4, mcp_modules)
+
+
+def _literal_all(tree):
+    """The __all__ elements of a parsed module, or None when it is not a list of strings."""
+    for node in tree.body:
+        targets = getattr(node, "targets", [])
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__all__" for t in targets):
+            value = node.value
+            if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+                return [e.value for e in value.elts if isinstance(e, ast.Constant)]
+            return None          # computed __all__: reported rather than passed as an empty list
+    return None
+
+
+mcp_init = ast.parse(read(os.path.join(mcp_dir, "__init__.py")))
+mcp_all = _literal_all(mcp_init)
+check_true("mcp/__all__ read as a literal from laya/mcp/__init__.py",
+           mcp_all is not None, ast.dump(mcp_init.body[-1]) if mcp_init.body else "empty module")
+check("mcp/__all__ names every submodule", sorted(mcp_all or []), mcp_modules)
+
+
+def _import_time_nodes(tree):
+    """The statements a module runs while it is being imported: no function or class bodies."""
+    result = []
+
+    def walk(body):
+        for stmt in body:
+            # An import inside a def/class body is deferred to the call, so it cannot make the module
+            # itself unimportable without the extra.
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            result.append(stmt)
+            for field in ("body", "orelse", "finalbody"):
+                walk([child for child in getattr(stmt, field, []) if isinstance(child, ast.stmt)])
+            for handler in getattr(stmt, "handlers", []):
+                walk([child for child in handler.body if isinstance(child, ast.stmt)])
+
+    walk(tree.body)
+    return result
+
+
+def binds_mcp_at_import_time(name):
+    """Whether laya/mcp/<name>.py imports the `mcp` distribution at module scope."""
+    for stmt in _import_time_nodes(ast.parse(read(os.path.join(mcp_dir, name + ".py")))):
+        if isinstance(stmt, ast.Import):
+            if any(alias.name.split(".")[0] == "mcp" for alias in stmt.names):
+                return True
+        elif isinstance(stmt, ast.ImportFrom):
+            if not stmt.level and (stmt.module or "").split(".")[0] == "mcp":
+                return True
+    return False
+
+
+mcp_needing = {name for name in mcp_modules if binds_mcp_at_import_time(name)}
+mcp_free = set(mcp_modules) - mcp_needing
+check_true("mcp/both dependency buckets are populated", bool(mcp_needing) and bool(mcp_free),
+           "needing=%s free=%s" % (sorted(mcp_needing), sorted(mcp_free)))
+
+# The sentence is read as two clauses split on the semicolon, so the gate knows which bucket each
+# inlined module name belongs to. `mcp` is inlined in the same sentence ("without the ``mcp``
+# dependency"), so names are compared against the real submodules, not against every literal.
+_buckets = (ast.get_docstring(mcp_init) or "").split(";")
+check_true("mcp/docstring keeps the two-clause dependency sentence this gate reads",
+           len(_buckets) == 2, repr(ast.get_docstring(mcp_init)))
+_raw_free = set(re.findall(r"``(\w+)``", _buckets[0]))
+_raw_needing = set(re.findall(r"``(\w+)``", _buckets[1])) if len(_buckets) > 1 else set()
+_declared_free = _raw_free & set(mcp_modules)
+_declared_needing = _raw_needing & set(mcp_modules)
+check("mcp/docstring's extra-free list is exactly the submodules that bind no mcp import",
+      sorted(_declared_free), sorted(mcp_free))
+check("mcp/docstring's extra list is exactly the submodules that bind mcp at import",
+      sorted(_declared_needing), sorted(mcp_needing))
+# A name the sentence claims that is not on disk is as wrong as one it omits: it sends a reader to
+# `python -m laya.mcp.<name>` for a file that does not exist. `mcp` is the dependency the same
+# sentence names in the same breath ("without the ``mcp`` dependency"), so it is excused.
+check("mcp/docstring names no submodule that is not on disk",
+      sorted((_raw_free | _raw_needing) - set(mcp_modules) - {"mcp"}), [])
 
 requires_python = re.search(r'requires-python\s*=\s*"[>=~^]*\s*([\d.]+)"', pyproject)
 check_true("pyproject/declares requires-python", requires_python is not None)
@@ -103,6 +319,7 @@ for label, match in (("pyproject", static_version), ("laya/__init__", init_versi
     parts = value.split(".")
     check_true("%s/version is X.Y.Z" % label, len(parts) == 3 and all(p.isdigit() for p in parts), "got %r" % value)
 
+require_repo(os.path.join(".github", "workflows", "ci.yml"))
 workflow = read(os.path.join(".github", "workflows", "ci.yml"))
 ci_versions = [version_tuple(v) for v in re.findall(r'"(\d+\.\d+)"', workflow)]
 stale = [".".join(str(p) for p in v) for v in ci_versions if v < floor]
@@ -121,6 +338,7 @@ check("ci/tests every advertised Python version", missing_from_ci, [])
 # the supply-chain risk the pins exist to remove. Enforced here so the next `uses:` cannot float.
 _workflow_dir = os.path.join(ROOT, ".github", "workflows")
 _unpinned = []
+require_repo(os.path.join(".github", "workflows"))
 for _wf_name in sorted(os.listdir(_workflow_dir)):
     if not _wf_name.endswith((".yml", ".yaml")):
         continue
@@ -208,6 +426,9 @@ def _invoked_workflow_tests(yaml_text):
     return invoked
 
 
+require_repo(os.path.join(".github", "workflows", "docker.yml"),
+             os.path.join(".github", "workflows", "release.yml"),
+             os.path.join("scripts", "test_suites.py"))
 docker_workflow = read(os.path.join(".github", "workflows", "docker.yml"))
 release_workflow = read(os.path.join(".github", "workflows", "release.yml"))
 # The Linux `test` job and the release gate both invoke `scripts/test_suites.py` instead of naming
@@ -239,10 +460,196 @@ untested_suites = [
     if f not in EXEMPT_TEST_SUITES and f not in registered_test_files
 ]
 check("ci/wires every non-exempt test suite", untested_suites, [])
-# The point of the shared list is that CI and the publish gate run the same suites. Both invoking
-# the script is the entire mechanism, so assert neither workflow dropped back to an inline list.
-check_true("ci and the release gate share one suite list",
-           "scripts/test_suites.py" in workflow and "scripts/test_suites.py" in release_workflow, "")
+# Linux, Windows and the publish gate must invoke the shared list in their own jobs. A mention
+# elsewhere in the workflow (including a comment) cannot prove that a lane runs those suites.
+for label, source, job in (("ci/linux", workflow, "test"),
+                           ("ci/windows", workflow, "test-windows"),
+                           ("release/build", release_workflow, "build")):
+    job_block = re.search(r"^  %s:\s*\n(.*?)(?=^  [\w-]+:|\Z)" % re.escape(job), source, re.M | re.S)
+    check_true("%s runs the shared suite list" % label,
+               job_block is not None and re.search(r"^\s+run:\s+python scripts/test_suites\.py\s*$",
+                                                   job_block.group(1), re.M) is not None,
+               "expected run: python scripts/test_suites.py in %s" % job)
+
+
+# -------------------------------------------------- the runner's own failure surface
+# A suite does not always get to report. `tests (windows)` has printed
+# `1 suite invocation(s) failed: tests/test_runtime_fixes.py` with not one line of that suite's
+# output above it, and no exit status below -- a child's stdout is a pipe, CPython block-buffers a
+# pipe, and a process that leaves by a native fault never flushes. So the log could not tell a
+# crash from a failed assertion, which is a red lane nobody can diagnose. Pinned on both halves:
+# the child runs unbuffered so its evidence reaches the log first, and the summary carries the exit
+# status.
+require_repo(os.path.join("scripts", "test_suites.py"))
+_runner_spec = importlib.util.spec_from_file_location(
+    "laya_test_suites", os.path.join(ROOT, "scripts", "test_suites.py"))
+suites_runner = importlib.util.module_from_spec(_runner_spec)
+_runner_spec.loader.exec_module(suites_runner)
+
+# Through `getattr`, so a runner that lacks the surface reports which check failed instead of
+# aborting the suite on an AttributeError -- the thing this section exists to make impossible.
+check("harness/the child runs unbuffered",
+      getattr(suites_runner, "CHILD_ENV", {}).get("PYTHONUNBUFFERED"), "1")
+# The banner labels stay the bare suite paths the CI log has always printed, so a reader who greps
+# for a suite by name still finds it after the runner's own command line changes.
+check("harness/a command still labels as its suite paths",
+      suites_runner._commands()[0][1:], [suites_runner.SCRIPT_SUITES[0]])
+
+# The mechanism itself, not just the constant that asks for it: a child that dies by `os._exit`
+# has already written its line when the runner's env is used, and loses it when it is not.
+_DEATH = "import os; print('EVIDENCE'); os._exit(7)"
+
+
+def _die(env):
+    proc = subprocess.run([sys.executable, "-c", _DEATH], stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, env=env)
+    return proc.stdout.decode(), proc.returncode
+
+
+_strip = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+_buffered_out, _buffered_rc = _die(_strip)
+_unbuffered_out, _unbuffered_rc = _die(getattr(suites_runner, "CHILD_ENV", None) or _strip)
+check_true("harness/a buffered child loses its evidence when it dies",
+           "EVIDENCE" not in _buffered_out, repr(_buffered_out))
+check_true("harness/the unbuffered child has already written it",
+           "EVIDENCE" in _unbuffered_out, repr(_unbuffered_out))
+check("harness/and the exit status survives either way",
+      (_buffered_rc, _unbuffered_rc), (7, 7))
+
+_death_note = getattr(suites_runner, "_death_note", None)
+
+
+def _note(code):
+    return _death_note(code) if _death_note is not None else None
+
+
+check("harness/a plain failure says exit", _note(1), "exit 1")
+check("harness/a signal says what did it", _note(-11), "killed by signal 11")
+check("harness/an NTSTATUS prints the form a reader recognises",
+      _note(3221225477), "exit 3221225477 (0xC0000005)")
+
+# End to end, because the note and the env only matter if `main` uses them: every child faked to
+# crash the way the Windows lane does, with the call recorded. Nothing here runs a real suite.
+_real_run = suites_runner.subprocess.run
+_calls = []
+
+
+def _crash(*args, **kwargs):
+    _calls.append(kwargs)
+    return types.SimpleNamespace(returncode=3221225477)
+
+
+suites_runner.subprocess.run = _crash
+try:
+    _summary_buf = io.StringIO()
+    with contextlib.redirect_stdout(_summary_buf):
+        _main_rc = suites_runner.main([])
+finally:
+    suites_runner.subprocess.run = _real_run
+check_true("harness/every child is given the unbuffered env",
+           _calls and all((call.get("env") or {}).get("PYTHONUNBUFFERED") == "1" for call in _calls),
+           "%d children, %d of them unbuffered"
+           % (len(_calls), sum(1 for c in _calls if (c.get("env") or {}).get("PYTHONUNBUFFERED"))))
+_summary = _summary_buf.getvalue()
+_last_line = (_summary.strip().splitlines() or ["<empty>"])[-1]
+check("harness/a crashed suite still fails the run", _main_rc, 1)
+check_true("harness/the summary names the suite", "tests/test_router.py" in _summary, _last_line)
+check_true("harness/the summary says how it died",
+           "exit 3221225477 (0xC0000005)" in _summary, _last_line)
+
+
+# -------------------------------------------------- CONTRIBUTING.md's "Running the tests" section
+# That section is what a new contributor runs, and it had drifted in three ways at once: it sent
+# readers to `.github/workflows/ci.yml` for "the full set" (ci.yml names 21 suite paths while the
+# shared list holds 86, and the two checks just above assert the workflows invoke the module instead
+# of naming suites), transcribed three of ten `PYTEST_SUITES` members as if that were the set, and
+# named three of the seven suites `EXEMPT_TEST_SUITES` exempts. So bind the page to the same lists
+# the gate uses. This also keeps #374's trap off the page: `python tests/<name>.py` on a pytest suite
+# defines the test functions, asserts nothing and exits 0, so an example run in the wrong style is a
+# contributor who believes they tested something.
+require_repo("CONTRIBUTING.md", os.path.join(".github", "workflows"),
+             os.path.join("scripts", "test_suites.py"))
+_contrib = read("CONTRIBUTING.md")
+
+
+def _shared_list(name):
+    """One of `scripts/test_suites.py`'s two lists, as bare file names."""
+    found = re.search(name + r" = \[(.*?)\n\]", shared_suites, re.S)
+    if not found:
+        return set()
+    return {p.split("/")[-1] for p in re.findall(r'"(tests/[^"]+\.py)"', found.group(1))}
+
+
+_script_suites = _shared_list("SCRIPT_SUITES")
+_pytest_suites = _shared_list("PYTEST_SUITES")
+# A suite is pytest-based if the shared list says so or a lane runs it under pytest. Workflow
+# *comments* mention pytest too (evals.yml explains its ONNX export there), so only run lines count.
+_pytest_lanes = set()
+for _wf_name in sorted(os.listdir(os.path.join(ROOT, ".github", "workflows"))):
+    if not _wf_name.endswith((".yml", ".yaml")):
+        continue
+    for _line in read(os.path.join(".github", "workflows", _wf_name)).splitlines():
+        if "pytest" in _line and not _line.strip().startswith("#"):
+            _pytest_lanes.update(re.findall(r"\btests/(test_[a-zA-Z0-9_]+\.py)\b", _line))
+
+check_true("contrib/the two shared lists parse",
+           len(_script_suites) >= 50 and len(_pytest_suites) >= 5,
+           "%d script, %d pytest" % (len(_script_suites), len(_pytest_suites)))
+
+
+def _contrib_examples():
+    """(names the page runs as scripts, names it runs under pytest), from its bash blocks."""
+    scripts, under_pytest = set(), set()
+    for block in re.findall(r"```bash\n(.*?)```", _contrib, re.S):
+        for line in block.splitlines():
+            if re.match(r"^\s*python\s+-m\s+pytest\b", line):
+                under_pytest.update(re.findall(r"tests/(test_[a-zA-Z0-9_]+\.py)", line))
+            elif re.match(r"^\s*python\s+tests/", line):
+                scripts.update(re.findall(r"tests/(test_[a-zA-Z0-9_]+\.py)", line))
+    return scripts, under_pytest
+
+
+def _contrib_exempt_bullets():
+    """The exempt suites the page lists, or None when it no longer has that list at all."""
+    lines = _contrib.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if "not part of the PR `test` job" in line)
+    except StopIteration:
+        return None
+    names = []
+    for line in lines[start + 1:]:
+        if not line.strip():
+            if names:
+                break
+            continue
+        if not line.startswith("- `tests/"):
+            break
+        names.append(line.split("`")[1].split("/")[-1])
+    return names
+
+
+_contrib_paths = set(re.findall(r"\btests/(test_[a-zA-Z0-9_]+\.py)\b", _contrib))
+_missing_paths = sorted(_contrib_paths - set(all_test_files))
+_example_scripts, _example_pytest = _contrib_examples()
+_stale_pointer = [line.strip() for line in _contrib.splitlines()
+                  if "full set" in line and ".github/workflows/" in line]
+_exempt_list = _contrib_exempt_bullets()
+
+check_true("contrib/the page points at the one shared suite list",
+           "scripts/test_suites.py" in _contrib, "CONTRIBUTING.md never names it")
+check("contrib/no sentence sends readers to a workflow for the full set", _stale_pointer, [])
+check("contrib/every suite the page names exists", _missing_paths, [])
+check("contrib/every script example is a script suite",
+      sorted(_example_scripts - _script_suites), [])
+check("contrib/every pytest example is a pytest-based suite",
+      sorted(_example_pytest - (_pytest_suites | _pytest_lanes)), [])
+# A set difference, so a suite that gains an exemption without a line on the page is as red as one
+# that loses an exemption and keeps its line.
+if _exempt_list is None:
+    _exempt_diff = ["the page no longer carries the exempt-suite list"]
+else:
+    _exempt_diff = sorted(set(_exempt_list) ^ set(EXEMPT_TEST_SUITES))
+check("contrib/the page lists every exempt suite, and only those", _exempt_diff, [])
 
 
 # --------------------------------------------------------------- markdown links
@@ -279,6 +686,7 @@ for _dirpath, _dirnames, _filenames in os.walk("."):
 _md = sorted(_md)
 _heading_cache = {p: _headings(p) for p in _md}
 
+require_repo("BENCHMARKS.md", "docs")
 check_true("md/at least the README, BENCHMARKS and docs are scanned", len(_md) >= 8, _md)
 check_true("md/no build directory scanned",
            not any(".pytest_cache" in p for p in _md), _md)
@@ -305,6 +713,7 @@ check("md/no anchor that matches no heading", _broken_anchors, [])
 # repo-relative target 404s there; the same is true of the npm-published `sdk/typescript` and
 # `laya-ts` READMEs. The check above only proves the target exists in-repo, which is exactly why
 # this went unnoticed -- a relative link is a local success and a published failure.
+require_repo("README.md")
 for _pub in ("README.md", "sdk/typescript/README.md", "laya-ts/README.md"):
     if not os.path.exists(os.path.join(ROOT, _pub)):
         continue
@@ -317,6 +726,8 @@ for _pub in ("README.md", "sdk/typescript/README.md", "laya-ts/README.md"):
 # read on its own. These checks are textual because the suite takes no third-party
 # dependency and PyYAML is not one; the real validation is `docker compose config`,
 # which the Docker workflow runs for every file combination.
+require_repo("compose.http.yaml", "compose.yaml", "compose.cuda.yaml", "Dockerfile",
+             "compose.modelscope.yaml")
 http = read("compose.http.yaml")
 base = read("compose.yaml")
 cuda = read("compose.cuda.yaml")
@@ -427,6 +838,7 @@ check_true("docker/prefetch_modelscope.py exists", os.path.exists("docker/prefet
 # these textual checks are the only gate on the two files a NixOS host deploys from. Same style
 # as the compose checks above: no nix binary, no third-party dependency.
 
+require_repo(os.path.join("nix", "package.nix"), os.path.join("nix", "laya-serve.nix"))
 nix_pkg = read(os.path.join("nix", "package.nix"))
 nix_version = re.search(r'^\s*version\s*=\s*"([^"]+)"', nix_pkg, re.M)
 check_true("nix/package.nix declares a version", nix_version is not None, nix_pkg[:200])
@@ -594,7 +1006,8 @@ def option_type(opt):
 # Every new knob is opt-in: unset means the unit exports nothing and the runtime's own default
 # applies, so a host that ignores them gets today's behaviour byte for byte.
 for opt in ("rootPath", "logLevel", "maxConcurrent", "cudaAmp", "cpuAmp", "mpsAmpMinRows",
-            "maxLoaded", "maxTokenBudget", "revision", "defaultModel", "idleUnloadSeconds"):
+            "maxLoaded", "maxTokenBudget", "revision", "defaultModel", "idleUnloadSeconds",
+            "tournamentGroup"):
     _t = option_text(opt)
     check_true("nix/module declares %s" % opt, _t != "", "option not found")
     check_true("nix/%s is opt-in (nullOr, default null)" % opt,
@@ -678,6 +1091,7 @@ check_true("nix/CUDA and CPU accept different dtype spellings", _cuda != _cpu,
 # The runtime error in laya/structured.py tells users to install `laya[structured]`, and the
 # docs and README repeat it. A reference to an extra pyproject.toml does not declare is a dead
 # end for anyone who follows it, so every `laya[...]` in the code and docs must resolve (#348).
+require_repo("pyproject.toml")
 _extra_section = pyproject.split("[project.optional-dependencies]")[1].split("\n[")[0]
 _declared_extras = set(re.findall(r"^([a-z][\w-]*)\s*=\s*\[", _extra_section, re.M))
 _referenced_extras = {}
@@ -715,6 +1129,10 @@ def _concurrency_block(text):
 
 
 _concurrency_workflows = ["ci.yml", "docker.yml", "security.yml"]
+require_repo(os.path.join(".github", "workflows", "ci.yml"),
+             os.path.join(".github", "workflows", "docker.yml"),
+             os.path.join(".github", "workflows", "security.yml"),
+             os.path.join(".github", "workflows", "docs.yml"))
 _docs_workflow = read(os.path.join(".github", "workflows", "docs.yml"))
 _docs_concurrency = _concurrency_block(_docs_workflow)
 if _docs_concurrency and _PER_COMMIT in _docs_concurrency:
@@ -748,6 +1166,7 @@ for _wf in _concurrency_workflows:
 # never collided: its ref is the tag (`refs/tags/<tag_name>`), so each release had its own group.
 # The job spends 60 minutes downloading weights and the dataset, and a cancelled run uploads no
 # report, so a cancellation reads as a clean gate.
+require_repo(os.path.join(".github", "workflows", "evals.yml"))
 _EVALS_WORKFLOW = read(os.path.join(".github", "workflows", "evals.yml"))
 # Non-vacuity, independent of the concurrency block: if evals.yml is renamed or its triggers
 # change, this reports instead of the check below passing on a file it did not understand.
@@ -790,6 +1209,7 @@ def _exported_names():
     return []
 
 
+require_repo("docs")
 _docs_pages = [p for p in _md if p.split(os.sep)[0] == "docs"]
 _docs_text = "".join(read(p) for p in _docs_pages)
 _export_list = _exported_names()
@@ -803,9 +1223,42 @@ _unreferenced = [n for n in _export_list if not re.search(r"\b%s\b" % re.escape(
 check_true("docs/every exported name appears on a docs page",
            not _unreferenced, "named nowhere in docs/: %s" % _unreferenced)
 
+def _prove_guard_skips_when_files_missing():
+    """An empty tree is the published-sdist shape: every repo-only path skips."""
+    with tempfile.TemporaryDirectory() as empty:
+        present = [rel for rel in _GUARD_SAMPLES if not _missing_repo((rel,), empty)]
+        check("guard/every repo-only path skips when the tree does not have it", present, [])
+        sample = os.path.join(".github", "workflows", "ci.yml")
+        reason = _repo_skip_reason(_missing_repo((sample,), empty))
+        check_true("guard/skip reason names the published sdist and the missing file",
+                   bool(reason) and "published sdist" in reason and sample in reason, reason)
+        with open(os.path.join(empty, "pyproject.toml"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        check("guard/a file this tree ships is not skipped",
+              _missing_repo(("pyproject.toml",), empty), [])
+
+
+def test_guard_skips_when_repo_files_missing(tmp_path, monkeypatch):
+    """require_repo skips, and names the sdist, when the repo-only file is absent."""
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", str(tmp_path))
+    monkeypatch.setattr(sys.modules[__name__], "_SUSPENDED", _SUSPENDED)
+    import pytest
+    with pytest.raises(pytest.skip.Exception, match="published sdist"):
+        require_repo(os.path.join(".github", "workflows", "ci.yml"), as_test=True)
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    assert require_repo("pyproject.toml") is True
+    assert not FAIL, "\n".join(FAIL)
+
+
+require_repo("pyproject.toml")
+_prove_guard_skips_when_files_missing()
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
+for skipped in SKIPPED:
+    print("  SKIP", skipped)
 if not FAIL:
     print("all packaging tests passed")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    sys.exit(1 if FAIL else 0)

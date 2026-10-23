@@ -43,7 +43,7 @@ function makeRouter(extra: Record<string, unknown> = {}) {
       return { model: "laya-rl-agent", answers: {}, usage: { input_tokens: 5, output_tokens: 0 } };
     },
   });
-  const router = new Router({ loader, ...extra } as never);
+  const router = new Router({ default: "english", loader, ...extra } as never);
   return { router, calls };
 }
 
@@ -524,6 +524,131 @@ describe("BaseHook and process-wide default hooks (py #276 parity)", () => {
       ]);
     } finally {
       clearDefaultHooks();
+    }
+  });
+});
+
+describe("hook timeout", () => {
+  class SlowHook {
+    async onPredictStart(): Promise<void> {
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+    }
+  }
+
+  /** Settle `pending` without an unhandled rejection if the call fails. */
+  function capture(pending: Promise<unknown>): Promise<unknown> {
+    return pending.then(
+      (value) => value,
+      (err: unknown) => err,
+    );
+  }
+
+  it("names the hook and the event when a hook times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = makeAgent([], { hooks: [new SlowHook()], hooksTimeout: 0.05 }).systemOne("hi", QUESTIONS);
+      const settled = capture(pending);
+      await vi.advanceTimersByTimeAsync(50);
+      const err = await settled;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).name).toBe("TimeoutError");
+      expect((err as Error).message).toBe("laya: hook SlowHook.onPredictStart exceeded 0.05s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the timer when an async hook finishes before the deadline", async () => {
+    vi.useFakeTimers();
+    const armed = vi.spyOn(globalThis, "setTimeout");
+    const cleared = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      class FastHook {
+        async onPredictStart(): Promise<void> {
+          await Promise.resolve();
+        }
+      }
+      const agent = makeAgent([], { hooks: [new FastHook()], hooksTimeout: 1 });
+      await agent.systemOne("hi", QUESTIONS);
+      expect(armed).toHaveBeenCalled();
+      for (const id of armed.mock.results.map((result) => result.value)) {
+        expect(cleared).toHaveBeenCalledWith(id);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      armed.mockRestore();
+      cleared.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start a timer for a synchronous hook", async () => {
+    vi.useFakeTimers();
+    const armed = vi.spyOn(globalThis, "setTimeout");
+    try {
+      class SyncHook {
+        onPredictStart(): void {}
+      }
+      const agent = makeAgent([], { hooks: [new SyncHook()], hooksTimeout: 0.05 });
+      await agent.systemOne("hi", QUESTIONS);
+      expect(armed).not.toHaveBeenCalled();
+    } finally {
+      armed.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("hooksRaise false reports the timeout and continues", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const pending = makeAgent([], {
+        hooks: [new SlowHook()],
+        hooksTimeout: 0.05,
+        hooksRaise: false,
+      }).systemOne("hi", QUESTIONS);
+      await vi.advanceTimersByTimeAsync(50);
+      const r = await pending;
+      expect(r.answers).toHaveProperty("q");
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("laya: hook SlowHook.onPredictStart exceeded 0.05s"),
+      );
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("a per-call hooksTimeout overrides the agent default", async () => {
+    vi.useFakeTimers();
+    try {
+      class BoundedHook {
+        async onPredictStart(): Promise<void> {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+      }
+
+      const shortCall = capture(
+        makeAgent([], { hooks: [new BoundedHook()], hooksTimeout: 5 }).systemOne("hi", QUESTIONS, {
+          hooksTimeout: 0.05,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      const err = await shortCall;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).name).toBe("TimeoutError");
+      expect((err as Error).message).toBe("laya: hook BoundedHook.onPredictStart exceeded 0.05s");
+
+      const longCall = makeAgent([], { hooks: [new BoundedHook()], hooksTimeout: 0.05 }).systemOne(
+        "hi",
+        QUESTIONS,
+        { hooksTimeout: 5 },
+      );
+      await vi.advanceTimersByTimeAsync(200);
+      const r = await longCall;
+      expect(r.answers).toHaveProperty("q");
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

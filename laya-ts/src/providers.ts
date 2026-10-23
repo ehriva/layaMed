@@ -416,10 +416,19 @@ export interface WebBundle {
   revision: string | null;
 }
 
+// Scanning from the ends avoids quadratic backtracking over interior slash runs.
+function trimSlashes(value: string, leading = false): string {
+  let start = 0;
+  let end = value.length;
+  if (leading) while (start < end && value[start] === "/") start++;
+  while (end > start && value[end - 1] === "/") end--;
+  return value.slice(start, end);
+}
+
 function baseUrlFor(repoOrUrl: string, subfolder?: string | null, revision?: string | null): string {
-  const sub = subfolder ? `/${subfolder.replace(/^\/+|\/+$/g, "")}` : "";
+  const sub = subfolder ? `/${trimSlashes(subfolder, true)}` : "";
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(repoOrUrl)) {
-    return `${repoOrUrl.replace(/\/+$/, "")}${sub}`;
+    return `${trimSlashes(repoOrUrl)}${sub}`;
   }
   return `https://huggingface.co/${repoOrUrl}/resolve/${revision ?? "main"}${sub}`;
 }
@@ -571,7 +580,7 @@ export async function createNodeProvider(
 /** Best-effort fetch of a `<model>.data` sidecar; null when the model is single-file. */
 async function fetchSidecar(url: string): Promise<{ path: string; data: Uint8Array } | null> {
   const name = `${url.split("/").pop()}.data`;
-  const sidecarUrl = `${url.replace(/\/+$/, "").split("/").slice(0, -1).join("/")}/${name}`;
+  const sidecarUrl = `${trimSlashes(url).split("/").slice(0, -1).join("/")}/${name}`;
   try {
     const buf = await fetchArrayBuffer(sidecarUrl);
     return { path: name, data: new Uint8Array(buf) };
@@ -587,7 +596,7 @@ export async function createWebProvider(
   const spec = "onnxruntime-" + "web";
   const ort: any = await import(/* @vite-ignore */ spec);
   applyNumThreads(ort, opts?.numThreads);
-  const base = modelUrl.replace(/\/+$/, "");
+  const base = trimSlashes(modelUrl);
   const encUrl = `${base}/encoder.onnx`;
   const headUrl = `${base}/head.onnx`;
   // (Re-)read through fetchArrayBuffer so repeat reads hit CacheStorage.

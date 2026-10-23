@@ -13,6 +13,12 @@ the test functions and exits 0, having asserted nothing (#374):
 * ``SCRIPT_SUITES`` print their own PASS/FAIL summary and exit non-zero on failure.
 * ``PYTEST_SUITES`` are collected and run by pytest in a single invocation.
 
+A suite that crashes, rather than failing, still has to leave evidence: children run with
+``PYTHONUNBUFFERED`` (their stdout is a pipe here, and a process that dies in native code never
+flushes it, so a buffered run loses every line it had already printed) and the failure summary
+carries each child's exit status, which is the only thing that tells a crash apart from a failed
+assertion.
+
 ``tests/test_langchain_real_mode.py`` is in ``SCRIPT_SUITES`` and fails (it does not skip) when
 ``langchain-core`` is missing, so a lane that runs this list needs the ``langchain`` extra -- which
 is why the release build installs the same extras as the CI `test` job.
@@ -35,6 +41,7 @@ SCRIPT_SUITES = [
     "tests/test_state_budget.py",
     "tests/test_hooks.py",
     "tests/test_hooks_api.py",
+    "tests/test_option_stability.py",
     "tests/test_structured.py",
     "tests/test_structured_api.py",
     "tests/test_structured_docs.py",
@@ -55,6 +62,7 @@ SCRIPT_SUITES = [
     "tests/test_audit_scope.py",
     "tests/test_doc_tables.py",
     "tests/test_env_docs.py",
+    "tests/test_doc_citations.py",
     "tests/test_tokenizer_cache.py",
     "tests/test_tokenizer_concurrency.py",
     "tests/test_question_token_reuse.py",
@@ -85,6 +93,7 @@ SCRIPT_SUITES = [
     "tests/test_mcp.py",
     "tests/test_mcp_device.py",
     "tests/test_langchain.py",
+    "tests/test_agno.py",
     "tests/test_portability.py",
     "tests/test_guard_document_781.py",
     "tests/test_training.py",
@@ -101,10 +110,13 @@ SCRIPT_SUITES = [
     "tests/test_llamaindex.py",
     "tests/test_langchain_real_mode.py",
     "tests/test_email.py",
+    "tests/test_tools.py",
 ]
 
 PYTEST_SUITES = [
+    "tests/test_lang_diagnostics.py",
     "tests/test_evals_agreement.py",
+    "tests/test_evals_tournament.py",
     "tests/test_serve.py",
     "tests/test_mcp_remote.py",
     "tests/test_router_batch.py",
@@ -129,6 +141,26 @@ def _commands():
     return commands
 
 
+# A child's stdout here is a pipe, and CPython block-buffers a pipe: a suite that dies in native
+# code never flushes it, so the log loses every line it had printed and is left naming a suite
+# that said nothing. Unbuffered, the evidence reaches the log before the crash does.
+CHILD_ENV = dict(os.environ, PYTHONUNBUFFERED="1")
+
+
+def _death_note(returncode):
+    """How a suite invocation ended, in the one number the child actually left behind.
+
+    A `FAILED`/`ERROR` line says *which* assertion did not hold; a signal (negative, POSIX) or an
+    NTSTATUS (Windows) says the suite never reached its own report. Hex goes alongside the decimal
+    for those because 3221225477 means nothing while 0xC0000005 is a name.
+    """
+    if returncode < 0:
+        return "killed by signal %d" % -returncode
+    if returncode > 0xFF:
+        return "exit %d (0x%08X)" % (returncode, returncode)
+    return "exit %d" % returncode
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Run the shared CI/release test suite list.")
     parser.add_argument("--list", action="store_true", help="print the suites and exit")
@@ -148,13 +180,14 @@ def main(argv=None):
     for command in _commands():
         label = " ".join(command[1:])
         print("\n===== %s =====" % label, flush=True)
-        if subprocess.run(command, cwd=ROOT).returncode != 0:
-            failed.append(label)
+        returncode = subprocess.run(command, cwd=ROOT, env=CHILD_ENV).returncode
+        if returncode != 0:
+            failed.append((label, returncode))
 
     if failed:
         print("\n%d suite invocation(s) failed:" % len(failed))
-        for label in failed:
-            print("  - %s" % label)
+        for label, returncode in failed:
+            print("  - %s [%s]" % (label, _death_note(returncode)))
         return 1
     print("\nall %d suites passed" % len(suites()))
     return 0

@@ -57,16 +57,22 @@ def _reviewed_pin(model_id_or_path: str) -> Optional[str]:
 def resolve_revision(model_id_or_path: str, revision: Optional[str] = None) -> Optional[str]:
     """Pick the revision to download.
 
-    An explicit `revision` is returned unchanged. Otherwise ``LAYA_REVISION``, stripped; empty or
-    unset means "not asked for". The variable holds either a commit SHA/branch/tag, applied to
+    Both the argument and ``LAYA_REVISION`` are stripped, and the argument wins when it is truthy.
+    That has one sharp edge, pinned by `tests/test_revision_pinning.py`: a truthy-but-blank
+    `revision` ("   ") wins the `or` and then strips away, so it suppresses the environment and
+    returns None -- a blank argument is "no pin from me, and no pin from the deployment either",
+    not a way to ask for ``LAYA_REVISION``. An empty or unset one means "not asked for", so the
+    variable applies. The variable holds either a commit SHA/branch/tag, applied to
     every checkpoint load the way `Router(revision=)` applies one, or the word ``reviewed``, which
     looks `model_id_or_path` up in `PINNED_REVISIONS` -- case-insensitively, the way the Hub
     itself reads repo ids, so `laya.load("ConvaiInnovations/Laya")` finds its pin.
 
     ``reviewed`` for a repository the table has no entry for raises rather than loading it
     unpinned: a pin that quietly resolves to nothing is the failure mode this control exists to
-    prevent, and `verify_digests` refuses on the same principle. Everything else returns None so
-    huggingface_hub applies its normal default, preserving existing online/offline caches.
+    prevent, and `verify_digests` refuses on the same principle. The refusal names whichever of the
+    two asked for it, because telling a caller who passed `revision='reviewed'` to unset a variable
+    they never set sends them to the wrong file. Everything else returns None so huggingface_hub
+    applies its normal default, preserving existing online/offline caches.
     """
     value = (revision or os.environ.get("LAYA_REVISION", "")).strip()
     if not value:
@@ -74,6 +80,11 @@ def resolve_revision(model_id_or_path: str, revision: Optional[str] = None) -> O
     if value == REVIEWED:
         pinned = _reviewed_pin(model_id_or_path)
         if pinned is None:
+            if revision:
+                raise ValueError(
+                    "laya: revision= asked for 'reviewed', but %r has no reviewed SHA in "
+                    "PINNED_REVISIONS; pass a commit, branch or tag in revision= instead"
+                    % model_id_or_path)
             raise ValueError(
                 "laya: LAYA_REVISION=reviewed, but %r has no reviewed SHA in "
                 "PINNED_REVISIONS; set LAYA_REVISION to a commit or unset it"

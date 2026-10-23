@@ -23,8 +23,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import laya  # noqa: E402
-from laya import Agent, BaseHook, PredictContext, PredictHook, Router, load  # noqa: E402
-from laya.hooks import HOOK_EVENTS, Hook  # noqa: E402
+from laya import Agent, AsyncHook, BaseHook, OptionStabilityHook, PredictContext, PredictHook, Router, load  # noqa: E402
+from laya.hooks import HOOK_EVENTS, Hook, calibrate_reliability, decide_reliability  # noqa: E402
 from laya.onnx_agent import ONNXAgent  # noqa: E402
 from laya.router import _question_schema  # noqa: E402
 
@@ -70,6 +70,10 @@ HOOK_KEYS = {
 }
 
 # --------------------------------------------------------------- constructors
+check("HTTP SDK stays outside core exports", "LayaClient" in laya.__all__, False)
+check("HTTP batch response stays outside core exports", "BatchPrediction" in laya.__all__, False)
+check("core does not import the HTTP SDK", "laya_client" in sys.modules, False)
+
 for label, fn in (("Agent.__init__", Agent.__init__), ("load", load),
                   ("Router.__init__", Router.__init__), ("ONNXAgent.__init__", ONNXAgent.__init__)):
     for param, default in HOOK_KEYS.items():
@@ -79,6 +83,19 @@ for label, fn in (("Agent.__init__", Agent.__init__), ("load", load)):
     check_param(label, fn, "compile_warmup", True)
     check_param(label, fn, "compile_cache", False)
     check_param(label, fn, "compile_mode", "default")
+
+# Python and TypeScript share the 0.4.0 fallback for unidentified text.
+check_param("Router.__init__", Router.__init__, "default", "multilingual")
+
+# OptionStabilityHook parameters (#635)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "accept", inspect.Parameter.empty, inspect.Parameter.KEYWORD_ONLY)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "escalate", inspect.Parameter.empty, inspect.Parameter.KEYWORD_ONLY)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "probes", None, inspect.Parameter.KEYWORD_ONLY)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "n_shuffles", 3, inspect.Parameter.KEYWORD_ONLY)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "relabel", True, inspect.Parameter.KEYWORD_ONLY)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "rename_max_options", 20, inspect.Parameter.KEYWORD_ONLY)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "variants", "full", inspect.Parameter.KEYWORD_ONLY)
+check_param("OptionStabilityHook.__init__", OptionStabilityHook.__init__, "seed", None, inspect.Parameter.KEYWORD_ONLY)
 
 # Router keeps lang_guess and explicit per-model revisions too
 check_param("Router.__init__", Router.__init__, "lang_guess", None)
@@ -90,6 +107,37 @@ check_param("Router.__init__", Router.__init__, "sha256_digests", None)
 # ...and the checkpoints a caller registers beside the built-ins: `resolve` and `unregister` are the instance side
 check_true("Router/resolve", callable(getattr(Router, "resolve", None)))
 check_param("Router.unregister", Router.unregister, "name", inspect.Parameter.empty)
+
+# The MCP batch tool's controls are public too, so they are pinned here rather than only in the
+# forwarding test: `min_confidence` is unset as None (not the old -1) so a value out of range
+# reaches the tools layer's validator instead of being folded into "unset" (#707), and
+# `hooks_timeout` keeps 0 as the unset marker an eager MCP client sends for the default.
+try:
+    from laya.mcp.server import laya_predict_batch_tool as _mcp_batch_tool
+except ImportError:                     # the mcp extra is optional; the core install skips this
+    _mcp_batch_tool = None
+if _mcp_batch_tool is not None:
+    check_param("laya_predict_batch_tool", _mcp_batch_tool, "batch_size", 0)
+    check_param("laya_predict_batch_tool", _mcp_batch_tool, "hooks_timeout", 0)
+    check_param("laya_predict_batch_tool", _mcp_batch_tool, "min_confidence", None)
+    check_param("laya_predict_batch_tool", _mcp_batch_tool, "sort_by_length", False)
+
+from laya.mcp.tools import laya_tournament  # noqa: E402
+
+check_param("laya_tournament", laya_tournament, "group_size", 16)
+check_param("laya_tournament", laya_tournament, "model", "auto")
+for param in ("state", "questions"):
+    check_param("laya_tournament", laya_tournament, param, inspect.Parameter.empty)
+for param in ("task", "lang", "lang_guess", "max_len", "head_max_len", "min_confidence", "router", "agent"):
+    check_param("laya_tournament", laya_tournament, param, None, inspect.Parameter.KEYWORD_ONLY)
+
+if _mcp_batch_tool is not None:
+    from laya.mcp.server import laya_tournament_tool  # noqa: E402
+
+    check_param("laya_tournament_tool", laya_tournament_tool, "group_size",
+                sig(laya.predict_tournament)["group_size"].default)
+    for param in ("model", "task", "lang", "lang_guess", "max_len", "head_max_len", "min_confidence"):
+        check_param("laya_tournament_tool", laya_tournament_tool, param, None)
 
 # What the constructor does NOT raise over is part of its contract too: a shared
 # `agent_kwargs["expected_sha256"]` overlapping a per-checkpoint `sha256_digests` entry on one file
@@ -118,6 +166,41 @@ check_true("Agent.backend_object is a property", isinstance(Agent.backend_object
 
 # ONNXAgent downloads the same Hub artifacts as Agent, so it authenticates the same way
 check_param("ONNXAgent.__init__", ONNXAgent.__init__, "token", None)
+
+# AsyncHook wraps async hooks with an optional loop
+check_param("AsyncHook.__init__", AsyncHook.__init__, "loop", None)
+
+# OptionStabilityHook (issue #635)
+check_true("OptionStabilityHook is a BaseHook", issubclass(OptionStabilityHook, BaseHook))
+
+# Public calibration cuts retain input precision through JSON serialization. Replaying
+# the cuts must not merge distinct scores that happen to share a four-place display.
+_precise_scores = json.loads(json.dumps([0.80001, 0.80002]))
+_precise_cuts = calibrate_reliability(_precise_scores, [False, True], target_accuracy=1.0)
+_precise_cuts = json.loads(json.dumps(_precise_cuts))
+check("calibrate_reliability returns an observed full-precision cut", _precise_cuts[0], 0.80002)
+check("serialized calibration cuts preserve accepted membership",
+      [decide_reliability(score, *_precise_cuts) for score in _precise_scores],
+      ["VERIFY", "ACCEPT"])
+
+# Invalid calibration evidence raises at the public boundary instead of fitting a gate.
+for _name, _scores, _labels, _kwargs, _error in (
+    ("empty", [], [], {}, ValueError),
+    ("unmatched labels", [0.9, 0.9], [True], {}, ValueError),
+    ("unmatched scores", [0.9], [True, False], {}, ValueError),
+    ("nonfinite score", [0.9, float("nan")], [True, False], {}, ValueError),
+    ("nonboolean labels", [0.9, 0.9], [2, 0], {}, TypeError),
+    ("invalid target", [0.9], [False], {"target_accuracy": -0.1}, ValueError),
+    ("invalid escalation target", [0.9], [False], {"max_escalate_accuracy": float("nan")}, ValueError),
+):
+    try:
+        calibrate_reliability(_scores, _labels, **_kwargs)
+    except _error:
+        check_true("calibrate_reliability rejects " + _name, True)
+    except Exception as _exc:
+        check_true("calibrate_reliability rejects " + _name, False, repr(_exc))
+    else:
+        check_true("calibrate_reliability rejects " + _name, False, "did not raise")
 
 # --------------------------------------------------------------- predict surfaces
 from laya.mcp.remote import RemoteRouter  # noqa: E402
@@ -158,6 +241,8 @@ check_param("Agent.predict_batch", Agent.predict_batch, "batch_size", None)
 check_param("Agent.predict_batch", Agent.predict_batch, "sort_by_length", False)
 check_param("Router.predict_batch", Router.predict_batch, "batch_size", None)
 check_param("Router.predict_batch", Router.predict_batch, "sort_by_length", False)
+# the #1111 report: an out-dict the batch fills with the per-group sort outcome
+check_param("Router.predict_batch", Router.predict_batch, "diagnostics", None)
 
 # per-call token-budget overrides
 for label, fn in (("Agent.predict_batch", Agent.predict_batch),
@@ -178,8 +263,28 @@ for param in ("max_len", "head_max_len"):
 check_param("shortlist_choice", laya.shortlist_choice, "return_scores", False,
             inspect.Parameter.KEYWORD_ONLY)
 
-# predict_tournament splits a choice into groups of 16 labels unless the caller picks a size
-check_param("predict_tournament", laya.predict_tournament, "group_size", 16)
+# The TypeScript helper follows this positional contract; both default to groups of 16.
+check_param("predict_tournament", laya.predict_tournament, "group_size", 16,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD)
+check("predict_tournament/positional prefix",
+      [p.name for p in sig(laya.predict_tournament).values()
+       if p.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD],
+      ["agent", "state", "questions", "group_size"])
+check_param("predict_tournament", laya.predict_tournament, "predict_kwargs", inspect.Parameter.empty,
+            inspect.Parameter.VAR_KEYWORD)
+
+# Detection diagnostics are opt-in and do not replace existing analysis fields.
+from laya.lang import analyse, latin_profile  # noqa: E402
+
+for label, fn in (("analyse", analyse), ("Router.route", Router.route),
+                  ("Router.route_batch", Router.route_batch)):
+    check_param(label, fn, "explain", False, inspect.Parameter.KEYWORD_ONLY)
+check("latin_profile keeps its signature", list(sig(latin_profile)), ["text"])
+_plain_analysis = analyse("Turn lights off")
+_explained_analysis = analyse("Turn lights off", explain=True)
+check("analyse opts into one extra key", set(_explained_analysis) - set(_plain_analysis), {"diagnostic"})
+check("analyse diagnostic fields", set(_explained_analysis.pop("diagnostic")), {"stage", "reason", "source"})
+check("analyse retains original fields", _explained_analysis, _plain_analysis)
 
 # route() and route_batch() take per-call hooks so a hook can pin a checkpoint for one call
 for label, fn in (("Router.route", Router.route),
@@ -243,6 +348,13 @@ check_true("laya.hooks/run_coroutine_sync exists",
 # integrity guide; `laya.revisions` is not the documented path.
 check_true("__all__/PINNED_REVISIONS", "PINNED_REVISIONS" in laya.__all__)
 check_true("laya.PINNED_REVISIONS exists", hasattr(laya, "PINNED_REVISIONS"))
+
+# The three confidence quantities are one family, and `x_jev_confidence` is only half of it: the
+# server publishes the third (#302), so a caller running Laya in-process has to be able to compute
+# it from the library. Pin all three as attributes, not just as `__all__` entries.
+for _confidence_name in ("answer_confidence", "confidence_from_probs", "jev_confidence"):
+    check_true("__all__/%s" % _confidence_name, _confidence_name in laya.__all__)
+    check_true("laya.%s exists" % _confidence_name, hasattr(laya, _confidence_name))
 
 # BaseHook is the concrete no-op base class; all six events exist and are callable.
 for event in HOOK_EVENTS:
@@ -330,7 +442,8 @@ for label, cls in (("LayaRouter", LayaRouter), ("LayaGuardrail", LayaGuardrail),
 from laya.integrations.langchain import LayaDecision  # noqa: E402
 
 for param, default in (("return_details", False), ("state_key", None), ("agent", None),
-                       ("base_url", None), ("api_key", None), ("model", None)):
+                       ("base_url", None), ("api_key", None), ("model", None),
+                       ("task", None), ("lang_guess", None)):
     check_param("LayaDecision.__init__", LayaDecision.__init__, param, default)
 check_param("LayaDecision.__init__", LayaDecision.__init__, "decision_schema",
             inspect.Parameter.empty, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -538,6 +651,85 @@ for path, namespace in TAUGHT[1:]:
     check("%s/per-state like the example" % path,
           key_of(namespace, cache_ctx(Q_ORDER_A, states=BATCH), 1),
           key_of(TAUGHT[0][1], cache_ctx(Q_ORDER_A, states=BATCH), 1))
+
+# ------------------------------------------- every taught copy imports what its body reads
+# `taught_cache` slices from `CACHE = {` and execs that in a namespace which already holds `json`
+# and `hashlib` -- the stand-in for the module-level imports the real `examples/hooks/cache.py`
+# has. So the exec never sees a page that dropped its import line, and `docs/hooks/api.md` had
+# none: the block on the page that documents `ctx.skip()` reads both names and imports neither,
+# which means the copy a reader pastes raises NameError on the first call while this suite stayed
+# green. Read the same block from its fence up, and require every standard-library name the exec'd
+# slice reads to be imported above it.
+import ast as _ast  # noqa: E402
+import builtins as _builtins  # noqa: E402
+
+
+def taught_head_and_body(path):
+    """`(head, body)` of one taught copy: `body` is what `taught_cache` execs, `head` its imports."""
+    with open(os.path.join(REPO, path), encoding="utf-8") as handle:
+        text = handle.read()
+    start = text.index("CACHE = {")
+    stop = len(text)
+    for cut in ("\nlaya.load", "\nagent = laya.load", "\n```"):
+        found = text.find(cut, start)
+        if found != -1:
+            stop = min(stop, found)
+    try:
+        head_start = text.rindex("```python", 0, start) + len("```python\n")
+    except ValueError:                       # a real module: the file's own head is the head
+        head_start = 0
+    return text[head_start:start], text[start:stop]
+
+
+def read_stdlib_names(src):
+    """Standard-library modules the slice reads but never binds -- a reader needs an import."""
+    tree = _ast.parse(src)
+    bound = set(dir(_builtins))
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+            bound.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, _ast.Name) and isinstance(node.ctx, (_ast.Store, _ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, _ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, _ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+    used = {n.id for n in _ast.walk(tree)
+            if isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Load)}
+    return sorted((used - bound) & set(sys.stdlib_module_names))
+
+
+def imported_names(head):
+    """What the head's import lines bind, parsed line by line so a fence-less head still counts."""
+    bound, unparsed = set(), []
+    for line in head.splitlines():
+        line = line.split("#")[0].strip()
+        if not (line.startswith("import ") or line.startswith("from ")):
+            continue
+        try:
+            node = _ast.parse(line).body[0]
+        except SyntaxError:
+            unparsed.append(line)
+            continue
+        if isinstance(node, _ast.Import):
+            bound.update((a.asname or a.name).split(".")[0] for a in node.names)
+        else:
+            bound.update(a.asname or a.name for a in node.names)
+    return sorted(bound), unparsed
+
+
+for _imports_path, _ in TAUGHT:
+    _head, _body = taught_head_and_body(_imports_path)
+    _bound, _unparsed = imported_names(_head)
+    check("%s/its import lines parse" % _imports_path, _unparsed, [])
+    # All four copies are the same pattern, so what they read is the same pair; pinning it keeps
+    # the missing-import check from passing vacuously if a copy ever stops using them.
+    check("%s/reads the same two stdlib names as the example" % _imports_path,
+          read_stdlib_names(_body), ["hashlib", "json"])
+    check("%s/imports every stdlib name its body reads" % _imports_path,
+          sorted(set(read_stdlib_names(_body)) - set(_bound)), [])
 
 
 # ------------------------------------------- what the cache example's own demo claims
@@ -961,6 +1153,22 @@ check_param("evaluate_shortlist", evaluate_shortlist, "k", 20)
 check_param("evaluate_shortlist", evaluate_shortlist, "dataset_path", None)
 for param in ("checkpoint_id", "embedder_id"):
     check_param("evaluate_shortlist", evaluate_shortlist, param, inspect.Parameter.empty)
+# The framework integrations send the two routing hints (`task`, `lang_guess`) in the same body, so
+# "a chain step and a raw HTTP client get the same answer" has to hold of them too. If serve dropped
+# one from `BODY_CONTROLS`, a wrapper sending it would get a 422 its caller cannot fix from the
+# integrations -- this says so at the shared declaration instead of at a request.
+from laya.integrations._controls import ROUTER_ONLY_CONTROLS as _router_only  # noqa: E402
+
+check("serve accepts every routing hint an integration sends",
+      [key for key in _router_only if key not in _http_controls], [])
+check("routing hints are not among serve's refusals",
+      sorted(set(_router_only) & set(_http_refusals)), [])
+
+from laya.evals_tournament import evaluate_tournament  # noqa: E402
+
+check_param("evaluate_tournament", evaluate_tournament, "group_size", 16)
+check_param("evaluate_tournament", evaluate_tournament, "dataset_path", None)
+check_param("evaluate_tournament", evaluate_tournament, "checkpoint_id", inspect.Parameter.empty)
 
 
 # docs/hooks/examples.md ## Composition teaches one scope ordering contract; the pre-fix wording
@@ -1429,6 +1637,14 @@ from laya import hooks as _hooks_mod  # noqa: E402
 
 check_true("hooks module exports compose_hooks", callable(_hooks_mod.compose_hooks))
 
+# The local TypeScript stability port consumes these reference helper contracts.
+check("stability/make_variants reference parameters", list(sig(_hooks_mod.make_variants)),
+      ["labels", "seed_key", "n_shuffles", "relabel", "include", "reorder"])
+check("stability/calibrate_reliability reference parameters", list(sig(_hooks_mod.calibrate_reliability)),
+      ["soft_scores", "correct", "target_accuracy", "max_escalate_accuracy"])
+check("stability/decide_reliability reference parameters", list(sig(_hooks_mod.decide_reliability)),
+      ["soft_stability", "accept", "escalate"])
+
 _patterns_md = os.path.join(REPO, "docs", "hooks", "patterns.md")
 with open(_patterns_md, encoding="utf-8", newline="") as _pmf:
     _patterns_text = _pmf.read().replace("\r\n", "\n")
@@ -1521,6 +1737,14 @@ check("evaluate_agreement signature", list(inspect.signature(evaluate_agreement)
 check("agreement provenance is required",
       inspect.signature(evaluate_agreement).parameters["student_provenance"].default,
       inspect.Parameter.empty)
+
+# The TypeScript HTTP confidence extension follows this core contract, not entropy confidence.
+from laya.confidence import jev_confidence  # noqa: E402
+
+check("jev_confidence signature", list(inspect.signature(jev_confidence).parameters), ["answer"])
+check("Jev choice confidence", round(jev_confidence({"type": "choice", "probabilities": {"a": 0.8, "b": 0.2}}), 4), 0.6)
+check("Jev score confidence", round(jev_confidence({"type": "score", "probabilities": {"0": 0.1, "1": 0.8, "2": 0.1}}), 4), 0.7)
+check("Jev noul confidence absent", jev_confidence({"type": "noul", "noul": 0.9}), None)
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:

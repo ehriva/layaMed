@@ -102,6 +102,35 @@ public static class SequenceBuilder
         ILayaTokenizer tokenizer, object? state, Question question,
         int maxLen, int headMaxLen, bool truncateLeft = false)
     {
+        var built = BuildDetailed(tokenizer, state, question, maxLen, headMaxLen, truncateLeft);
+        return (built.Ids, built.Markers);
+    }
+
+    internal readonly record struct SequenceDetails(
+        int[] Ids, int[] Markers, int StateTokens, int StateTokensDropped, OptionUsage Options);
+
+    internal static SequenceDetails BuildDetailed(
+        ILayaTokenizer tokenizer, object? state, Question question,
+        int maxLen, int headMaxLen, bool truncateLeft = false, int[]? stateIds = null)
+    {
+        var (ids, markers, options) = BuildHead(tokenizer, question, headMaxLen);
+        var room = Math.Max(0, maxLen - ids.Count - 1);
+        stateIds ??= tokenizer.Encode(Scrub(PythonJson.State(state), tokenizer.MaskToken));
+        ids.AddRange(SliceState(stateIds, room, truncateLeft));
+        ids.Add(tokenizer.SepId);
+
+        if (ids.Count > maxLen) ids = ids[..maxLen];
+        markers.RemoveAll(m => m >= maxLen);
+        return new(ids.ToArray(), markers.ToArray(), stateIds.Length,
+                   Math.Max(0, stateIds.Length - room), options);
+    }
+
+    internal static int StateRoom(ILayaTokenizer tokenizer, Question question, int maxLen, int headMaxLen) =>
+        Math.Max(0, maxLen - BuildHead(tokenizer, question, headMaxLen).Ids.Count - 1);
+
+    private static (List<int> Ids, List<int> Markers, OptionUsage Options) BuildHead(
+        ILayaTokenizer tokenizer, Question question, int headMaxLen)
+    {
         ArgumentNullException.ThrowIfNull(tokenizer);
         ArgumentNullException.ThrowIfNull(question);
 
@@ -124,9 +153,11 @@ public static class SequenceBuilder
         }
 
         var optBudget = headMaxLen - optionIds.Sum(o => o.Count);
+        int? perOption = null;
         if (optBudget < 16)
         {
             var per = Math.Max(4, FloorDiv(headMaxLen - 16, Math.Max(1, optionIds.Count)));
+            perOption = per;
             for (var i = 0; i < optionIds.Count; i++)
                 if (optionIds[i].Count > per)
                     optionIds[i] = optionIds[i][..per];
@@ -136,7 +167,7 @@ public static class SequenceBuilder
         var headTake = Math.Max(MinHeadTokens, optBudget);
         if (headIds.Count > headTake) headIds = headIds[..headTake];
 
-        var ids = new List<int>(maxLen) { tokenizer.ClsId };
+        var ids = new List<int> { tokenizer.ClsId };
         ids.AddRange(headIds);
         ids.Add(tokenizer.SepId);
 
@@ -148,14 +179,8 @@ public static class SequenceBuilder
         }
         ids.Add(tokenizer.SepId);
 
-        var room = Math.Max(0, maxLen - ids.Count - 1);
-        var stateIds = tokenizer.Encode(Scrub(PythonJson.State(state), mask));
-        ids.AddRange(SliceState(stateIds, room, truncateLeft));
-        ids.Add(tokenizer.SepId);
-
-        if (ids.Count > maxLen) ids = ids[..maxLen];
-        markers.RemoveAll(m => m >= maxLen);
-        return (ids.ToArray(), markers.ToArray());
+        var distinct = optionIds.Select(o => string.Join(",", o)).Distinct(StringComparer.Ordinal).Count();
+        return (ids, markers, new OptionUsage(options.Count, distinct, perOption));
     }
 
     private static string Scrub(string text, string maskToken) =>

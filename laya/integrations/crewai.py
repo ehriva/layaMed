@@ -59,6 +59,9 @@ from ._controls import decision_kwargs as _decision_kwargs  # noqa: E402
 from ._controls import predict_kwargs as _predict_kwargs, reject_remote_hooks as _reject_remote_hooks  # noqa: E402
 from ._guard import score_violation_probability as _score_violation_probability  # noqa: E402
 from ..confidence import _gate_confidence  # noqa: E402
+from ._controls import reject_remote_lang_guess as _reject_remote_lang_guess  # noqa: E402
+from ._controls import require_router_controls as _require_router_controls  # noqa: E402
+from ._controls import router_kwargs as _router_kwargs  # noqa: E402
 
 # One class for every integration, so `except LayaLowConfidenceError` catches all of them.
 from ._errors import LayaLowConfidenceError  # noqa: E402
@@ -151,13 +154,18 @@ def _call_remote(
     head_max_len: Optional[int] = None,
     lang: Optional[str] = None,
     min_confidence: Optional[float] = None,
+    task: Optional[str] = None,
+    lang_guess: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send decision request to a remote laya-serve HTTP instance using standard library urllib.
 
     `max_len` / `head_max_len` travel in the body; laya-serve applies them up to its
     `LAYA_MAX_TOKEN_BUDGET` ceiling and answers a larger value with 422. `lang` / `min_confidence`
     ride in the same body (they are laya-serve `BODY_CONTROLS` too): the language codes the state
-    is routed and answered in, and core's abstention gate.
+    is routed and answered in, and core's abstention gate. `task` names the checkpoint that answers
+    and `lang_guess` is the language code routing reads before its own detection -- both are
+    laya-serve body controls too, and only `lang_guess`'s string form has a wire representation
+    (`reject_remote_lang_guess` refuses the callable before the request).
     """
     url = base_url.rstrip("/")
     if not url.endswith("/v1/systemone"):
@@ -174,6 +182,10 @@ def _call_remote(
         payload["lang"] = lang
     if min_confidence is not None:
         payload["min_confidence"] = min_confidence
+    if task is not None:
+        payload["task"] = task
+    if lang_guess is not None:
+        payload["lang_guess"] = lang_guess
 
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -184,12 +196,24 @@ def _call_remote(
     opener = urllib.request.build_opener(_SameOriginRedirectHandler())
     try:
         with opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            parsed = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Laya server error {e.code}: {body}") from e
     except Exception as e:
         raise RuntimeError(f"Failed to connect to Laya server at {url}: {e}") from e
+    # A remote laya-serve answers with a JSON object, but `json.loads` accepts any top-level value:
+    # a gateway, a mis-pointed `base_url`, or a proxy error page can reply with a bare array, string,
+    # number or `true`/`null`. Consumers read the result with `res.get("answers", …)` (the delegation
+    # lookup and the guardrail screen), so a non-object leaks ``AttributeError: 'list' object has no
+    # attribute 'get'`` instead of the ``RuntimeError`` every other remote failure here already
+    # raises. The check sits after the ``try`` so it is not swallowed by the catch-all above.
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"Malformed decision response from Laya server at {url}: "
+            f"expected a JSON object, got {type(parsed).__name__}"
+        )
+    return parsed
 
 
 _DEFAULT_ROUTER = None
@@ -217,6 +241,8 @@ def _execute_decision(
     head_max_len: Optional[int] = None,
     lang: Optional[str] = None,
     min_confidence: Optional[float] = None,
+    task: Optional[str] = None,
+    lang_guess: Optional[Any] = None,
     hooks: Optional[Any] = None,
     on_predict_start: Optional[Any] = None,
     on_predict_end: Optional[Any] = None,
@@ -229,14 +255,17 @@ def _execute_decision(
     LlamaIndex wrappers -- they end at the same `predict` call and the same request body.
     """
     hook_kwargs = _hook_kwargs(hooks, on_predict_start, on_predict_end, hooks_raise, hooks_timeout)
+    router_kwargs = _router_kwargs(task, lang_guess)
     if base_url:
         _reject_remote_hooks(hook_kwargs, base_url)
+        _reject_remote_lang_guess(router_kwargs, base_url)
         budget = _budget_kwargs(max_len, head_max_len)
         decision = _decision_kwargs(lang, min_confidence)
         return _call_remote(base_url, state, questions, api_key=api_key, model=model,
-                            **budget, **decision)
+                            **budget, **decision, **router_kwargs)
     runner = agent if agent is not None else _get_default_router()
     kwargs = _predict_kwargs(model, max_len, head_max_len, lang, min_confidence)
+    kwargs.update(_require_router_controls(runner, "predict", router_kwargs))
     kwargs.update(hook_kwargs)
     return runner.predict(state, questions, **kwargs)
 
@@ -262,6 +291,8 @@ class LayaCrewRouter:
         head_max_len: Optional[int] = None,
         lang: Optional[str] = None,
         min_confidence: Optional[float] = None,
+        task: Optional[str] = None,
+        lang_guess: Optional[Any] = None,
         hooks: Optional[Any] = None,
         on_predict_start: Optional[Any] = None,
         on_predict_end: Optional[Any] = None,
@@ -280,6 +311,8 @@ class LayaCrewRouter:
         self.head_max_len = head_max_len
         self.lang = lang
         self.min_confidence = min_confidence
+        self.task = task
+        self.lang_guess = lang_guess
         self.hooks = hooks
         self.on_predict_start = on_predict_start
         self.on_predict_end = on_predict_end
@@ -318,6 +351,10 @@ class LayaCrewRouter:
             head_max_len=self.head_max_len,
             lang=self.lang,
             min_confidence=self.min_confidence,
+            # `task` here is core's checkpoint selector, not the CrewAI task being decided on --
+            # `task_str` above is that one. Both are on this call, and only one routes.
+            task=self.task,
+            lang_guess=self.lang_guess,
             hooks=self.hooks,
             on_predict_start=self.on_predict_start,
             on_predict_end=self.on_predict_end,
@@ -443,6 +480,8 @@ class LayaTaskGuard:
         head_max_len: Optional[int] = None,
         lang: Optional[str] = None,
         min_confidence: Optional[float] = None,
+        task: Optional[str] = None,
+        lang_guess: Optional[Any] = None,
         hooks: Optional[Any] = None,
         on_predict_start: Optional[Any] = None,
         on_predict_end: Optional[Any] = None,
@@ -463,6 +502,8 @@ class LayaTaskGuard:
         self.head_max_len = head_max_len
         self.lang = lang
         self.min_confidence = min_confidence
+        self.task = task
+        self.lang_guess = lang_guess
         self.hooks = hooks
         self.on_predict_start = on_predict_start
         self.on_predict_end = on_predict_end
@@ -490,6 +531,10 @@ class LayaTaskGuard:
             head_max_len=self.head_max_len,
             lang=self.lang,
             min_confidence=self.min_confidence,
+            # `task` here is core's checkpoint selector, not the CrewAI task being decided on --
+            # `task_str` above is that one. Both are on this call, and only one routes.
+            task=self.task,
+            lang_guess=self.lang_guess,
             hooks=self.hooks,
             on_predict_start=self.on_predict_start,
             on_predict_end=self.on_predict_end,

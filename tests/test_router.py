@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from laya.common import QTYPES, TEMP_MAX, TEMP_MIN, clamp_temperature, temp_bucket  # noqa: E402
 from laya.lang import analyse, detect_script, guess_latin_language, is_english, state_text  # noqa: E402
+from laya.lang import _non_english_segment  # noqa: E402
 from laya.router import (  # noqa: E402
     BUNDLE_REPO,
     DEFAULT_MODELS,
@@ -102,6 +103,13 @@ for label, text in [("english", "Please refund the duplicate charge"), ("hindi",
     check("analyse/keys " + label, set(analyse(text)), _KEYS)
 # A 0-0 tie between non-English stopword lists is no evidence for any of them
 check("latin_lang/zero tie invents nothing", guess_latin_language("Cât e ora acum la Tokyo"), None)
+# Plain English made of question words, auxiliaries and contractions used to match no English
+# function word at all, so it stayed undecided and took the router default (multilingual).
+for text in ["Why hasn't my card been delivered?",
+             "How long does a card delivery take?",
+             "Where should my refund show up?"]:
+    check("latin_lang/english question words " + text, guess_latin_language(text), "en")
+    check("route/english question words " + text, Router().route(text).model, "english")
 
 # Known limitation, kept visible on purpose: Romanian short enough to carry no diacritics and an
 # English function word ("in") still reads as English. A real LID model is the fix, not more
@@ -532,6 +540,19 @@ for label, state, segment in [
     check("mixed/routes multilingual: " + label, _r_lat.route(state).model, "multilingual")
 check("mixed/reason names the segment",
       "a line or field reads as 'pt'" in _r_lat.route(_TRACE).reason, True)
+# ...but only the segment scan fills it. `_non_english_segment` reads 4,000 characters in all across
+# every leaf, so a long English first field can leave a foreign one unread; the per-value read that
+# then catches it (#384) keeps the leaf in a local and does not report it. `mixed_segment` is None
+# here even though `language` names the field's language -- asserted rather than assumed, because a
+# future change could fill it and no caller can tell the two provenances apart otherwise.
+_BUDGET_NOTE = "Thanks for reaching out. " * 200          # 5,000 chars, first leaf, all English
+_BUDGET_BODY = "WIE SPAET IST ES IN KOELN HEUTE ABEND"
+check("mixed/segment budget exhausted before the foreign field",
+      _non_english_segment({"note": _BUDGET_NOTE, "body": _BUDGET_BODY}), None)
+check("mixed/the per-value read still names the language",
+      analyse({"note": _BUDGET_NOTE, "body": _BUDGET_BODY})["language"], "de")
+check("mixed/and leaves mixed_segment None",
+      analyse({"note": _BUDGET_NOTE, "body": _BUDGET_BODY})["mixed_segment"], None)
 # English stays English: several English lines, a short foreign sign-off, and code pasted into a request
 # (`os.path` reads as Portuguese, `round(el, 2)` as Spanish, `np.mean(na)` as Portuguese)
 for label, state in [
@@ -702,6 +723,9 @@ for text in [
 from laya.lang import _STOP  # noqa: E402
 check("latin_lang/bn list shares no word with another list",
       sorted(w for w in _STOP.get("bn", ()) for lg, words in _STOP.items() if lg != "bn" and w in words), [])
+check("latin_lang/en list shares only in, is, as, was with another list",
+      sorted({w for w in _STOP["en"] for lg, words in _STOP.items() if lg != "en" and w in words}),
+      ["as", "in", "is", "was"])
 check("latin_lang/romanian with ei stays romanian",
       guess_latin_language("Ei nu sunt de acord cu factura, vreau o corecție"), "ro")
 
@@ -1026,6 +1050,114 @@ _load_stub(ra, "multilingual")
 check("attach/survives a later load", sorted(ra.loaded), ["english", "multilingual"])
 check("attach/still the same object", ra._agents["english"] is sentinel, True)
 check("attach/accepts aliases", stubbed_router(1).attach("en", _Stub("x")) is not None, True)
+
+
+# --------------------------------------------------------------------- run_ids per predict
+# docs/hooks/tracing.md tells a tracer to correlate a call's events by `run_id`, and claimed one
+# `Router.predict` "hands out three different `run_id`s". Three is the cold path only: `on_load` is
+# dispatched on a `PredictContext` of its own, so a call that finds its checkpoint resident -- every
+# call after the first, and `attach` fires no `on_load` -- hands out two, and a load that also evicts
+# an LRU checkpoint hands out four. The count is a property of the Router's cache rather than of
+# `predict`, so the gate runs the three cache states and then requires the page to state each
+# measured number beside the clause that earns it. Only `laya.agent.Agent` is stubbed, as above.
+import re as _re  # noqa: E402
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+
+
+class _RunIds:
+    """Records `(event, ctx.run_id)` for every Router event one call dispatches."""
+
+    def __init__(self):
+        self.seen = []
+
+    def _see(self, event, ctx):
+        self.seen.append((event, ctx.run_id))
+
+    def on_route(self, ctx):
+        self._see("on_route", ctx)
+
+    def on_load(self, ctx):
+        self._see("on_load", ctx)
+
+    def on_evict(self, ctx):
+        self._see("on_evict", ctx)
+
+    def on_predict_start(self, ctx):
+        self._see("on_predict_start", ctx)
+
+    def on_predict_end(self, ctx):
+        self._see("on_predict_end", ctx)
+
+
+def _one_predict(attach_name=None, max_loaded=2):
+    rec = _RunIds()
+    rr = Router(max_loaded=max_loaded, hooks=[rec])
+    if attach_name is not None:
+        rr.attach(attach_name, _Stub(attach_name))
+        del rec.seen[:]                    # the record starts at the call, and attach adds nothing
+    with patch("laya.agent.Agent", side_effect=lambda repo, **kw: _Stub(repo)):
+        rr.predict("I was charged twice", Q_GENERIC, model="english")
+    return rec.seen
+
+
+def _events(seen):
+    return [event for event, _ in seen]
+
+
+def _distinct(seen):
+    return len({run_id for _, run_id in seen})
+
+
+_warm = _one_predict(attach_name="english")
+_cold = _one_predict()
+_evicting = _one_predict(attach_name="multilingual", max_loaded=1)
+
+check("run_ids/attach dispatches no lifecycle event", _events(_warm),
+      ["on_route", "on_predict_start", "on_predict_end"])
+check("run_ids/a warm predict hands out two run_ids", _distinct(_warm), 2)
+check("run_ids/a cold predict adds on_load", _events(_cold)[:3],
+      ["on_route", "on_load", "on_predict_start"])
+check("run_ids/a cold predict hands out three run_ids", _distinct(_cold), 3)
+check("run_ids/an evicting cold predict adds on_evict too", _events(_evicting)[:3],
+      ["on_route", "on_evict", "on_load"])
+check("run_ids/an evicting cold predict hands out four run_ids", _distinct(_evicting), 4)
+check("run_ids/start and end share the call's run_id",
+      len({rid for e, rid in _cold if e.startswith("on_predict")}), 1)
+check("run_ids/on_route is not the prediction's run_id",
+      {rid for e, rid in _cold if e == "on_route"} == {rid for e, rid in _cold
+                                                      if e.startswith("on_predict")}, False)
+
+with open(os.path.join(_ROOT, "docs", "hooks", "tracing.md"), encoding="utf-8") as _trace_file:
+    _trace_page = _trace_file.read()
+check("run_ids/tracing.md keeps the run_id bullet the gate reads",
+      "**Not** shared with `on_route`" in _trace_page, True)
+_bullet = _re.sub(r"\s+", " ", _trace_page.split("**Not** shared with `on_route`", 1)[1]
+                  .split("\n- ", 1)[0])
+check("run_ids/the page states no single count for one predict",
+      _re.search(r"hands out \w+ different", _bullet) is None, True)
+# Each "N when ..." clause is read up to the next one, so a needle has to sit in exactly one of
+# them -- which is what makes the pairing a transcription check rather than a word search.
+_clauses = {}
+for _part in _re.split(r"(?=\b(?:one|two|three|four|five)\b when\b)", _bullet, flags=_re.I):
+    _m = _re.match(r"\b(one|two|three|four|five)\b when\b(.*)", _part, _re.I)
+    if _m:
+        _clauses[_m.group(2)] = _WORDS[_m.group(1).lower()]
+
+
+def _stated(needle):
+    """The count the page pairs with the clause holding `needle`, or None unless exactly one does."""
+    hits = {n for cond, n in _clauses.items() if needle in cond}
+    return hits.pop() if len(hits) == 1 else None
+
+
+check("run_ids/the page's resident clause states the measured warm count",
+      _stated("resident"), _distinct(_warm))
+check("run_ids/the page's on_load clause states the measured cold count",
+      _stated("on_load"), _distinct(_cold))
+check("run_ids/the page's on_evict clause states the measured evicting count",
+      _stated("on_evict"), _distinct(_evicting))
 
 
 # --------------------------------------------------------------------- thread safety (issue #95)
@@ -2063,6 +2195,95 @@ check("near-typo/warnings-as-errors names both",
       _roll_raised is not None and "englsh" in str(_roll_raised) and "english" in str(_roll_raised), True)
 check("near-typo/warnings-as-errors leaves the router unchanged",
       (dict(_roll.models), dict(_roll.descriptions), dict(_roll.sha256_digests)), _roll_before)
+
+
+# --------------------------------------------------------------------- sort report (#1111)
+# The reorder switches per checkpoint/question group inside predict_batch, on each group's own
+# state count -- a denominator no caller outside can see, which is why the shell's old note read
+# the file and went quiet exactly when auto-routing split a batch into smaller groups. The
+# `diagnostics` out-dict hands the per-group outcome back once the batch has run. Explicit
+# `model` overrides split the batch without loading anything and `load` is stubbed, so this
+# runs with no checkpoints.
+class _SortAgent:
+    def __init__(self, name):
+        self.name = name
+        self.calls = []
+
+    def predict_batch(self, states, questions, batch_size=None, sort_by_length=False):
+        chunk = batch_size if (batch_size and batch_size > 0) else len(states)
+        self.calls.append((len(states), batch_size, sort_by_length,
+                           bool(sort_by_length and 1 < chunk < len(states))))
+        return [{"model": self.name, "answers": {}, "usage": {}} for _ in states]
+
+
+_sr = Router()
+_sr_agents = {}
+
+
+def _sr_load(name, _rr=_sr):
+    key = _rr.resolve(name)
+    if key not in _sr_agents:
+        _sr_agents[key] = _SortAgent(key)
+    return _sr_agents[key]
+
+
+_sr.load = _sr_load
+# Six requests like the issue's file: four that route to one checkpoint, two to another.
+_sr_requests = [{"state": {"body": "line %d" % i}, "questions": Q_GENERIC,
+                 "model": "english" if i < 4 else "multilingual"} for i in range(6)]
+
+_report = {}
+_sr.predict_batch(_sr_requests, batch_size=5, sort_by_length=True, diagnostics=_report)
+check("sort report/two groups, a batch wider than both reorders neither", _report,
+      {"sort_by_length": {"groups": 2, "reordered": 0, "smallest": 2, "largest": 4}})
+check("sort report/each group still got the knob and kept its own size",
+      [_sr_agents["english"].calls, _sr_agents["multilingual"].calls],
+      [[(4, 5, True, False)], [(2, 5, True, False)]])
+
+for _a in _sr_agents.values():
+    _a.calls = []
+_report = {}
+_sr.predict_batch(_sr_requests, batch_size=3, sort_by_length=True, diagnostics=_report)
+check("sort report/a batch between the group sizes reorders exactly one", _report,
+      {"sort_by_length": {"groups": 2, "reordered": 1, "smallest": 2, "largest": 4}})
+check("sort report/only the group that cleared the gate reordered",
+      [_sr_agents["english"].calls, _sr_agents["multilingual"].calls],
+      [[(4, 3, True, True)], [(2, 3, True, False)]])
+
+_report = {}
+_sr.predict_batch(_sr_requests, batch_size=2, diagnostics=_report)
+check("sort report/untouched when the knob is off", _report, {})
+
+check("sort report/results keep input order regardless",
+      [r["routing"]["model"] for r in _sr.predict_batch(_sr_requests, batch_size=3,
+                                                        sort_by_length=True)],
+      ["english"] * 4 + ["multilingual"] * 2)
+
+
+# --------------------------------------------------------------------- predict input validation (#707)
+_r_val = Router()
+for label, state, qs, exc_type, err_match in [
+    ("state is None", None, Q_GENERIC, TypeError, "state must not be None"),
+    ("questions not dict", "text", ["q"], TypeError, "questions must be a dict"),
+]:
+    try:
+        _r_val.predict(state, qs)
+        FAIL.append("predict validation/%s: should have raised %s" % (label, exc_type.__name__))
+    except exc_type as _exc:
+        check("predict validation/%s raises %s" % (label, exc_type.__name__), err_match in str(_exc), True)
+    except Exception as _exc:  # noqa: BLE001
+        FAIL.append("predict validation/%s: raised %s instead of %s: %s" %
+                    (label, type(_exc).__name__, exc_type.__name__, _exc))
+check("predict validation/failed calls loaded nothing", _r_val.loaded, [])
+
+try:
+    _r_val.route("text", ["q"])
+    FAIL.append("route validation/questions not dict: should have raised TypeError")
+except TypeError as _exc:
+    check("route validation/questions not dict raises TypeError", "questions must be a dict" in str(_exc), True)
+except Exception as _exc:  # noqa: BLE001
+    FAIL.append("route validation/questions not dict: raised %s instead of TypeError: %s" %
+                (type(_exc).__name__, _exc))
 
 
 # --------------------------------------------------------------------- report

@@ -4,8 +4,12 @@ Run: python -m pytest tests/test_evals.py -q
 """
 import io
 import json
+import os
+import pathlib
 import re
+import subprocess
 import sys
+import types
 import warnings
 
 import numpy as np
@@ -86,6 +90,21 @@ def test_calibration_uses_answer_confidence():
     report = evaluate(StubRunner({"s": {"intent": answer}}),
                       Dataset([Example("s", Q, {"intent": "a"})]))
     assert report.overall["mean_confidence"] == pytest.approx(0.9)
+
+
+def test_a_boolean_confidence_is_not_a_probability():
+    # `bool` is a subclass of `int`, so a bare `isinstance(x, (int, float))` reads a JSON
+    # `"answer_confidence": true` as a confidence of 1.0 and hides the numeric `confidence`
+    # fallback below it. A yes/no flag is not a probability, so it is skipped exactly like an
+    # absent field -- the same exclusion the schema guards apply to every other probability.
+    assert evals._answer_confidence({"answer_confidence": True, "confidence": 0.3}) == pytest.approx(0.3)
+    assert evals._answer_confidence({"answer_confidence": False, "confidence": 0.3}) == pytest.approx(0.3)
+    assert evals._answer_confidence({"confidence": True}) is None
+    assert evals._answer_confidence({"confidence": False}) is None
+    # The numeric paths are unchanged: a real `answer_confidence` still wins, and a bound of 0.0
+    # is a genuine confidence, not a missing one.
+    assert evals._answer_confidence({"answer_confidence": 0.9, "confidence": 0.2}) == pytest.approx(0.9)
+    assert evals._answer_confidence({"answer_confidence": 0, "confidence": 0.5}) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------- which confidence a metric reads
@@ -757,6 +776,108 @@ def test_dataset_rejects_malformed_json_and_empty(tmp_path):
         Dataset.from_jsonl(str(empty))
 
 
+# A row built in Python never passes through `Example.from_dict`, which is the only place these three
+# checks were made: `questions` and `expected` must be objects, and every `expected` key must name a
+# question that is actually there. Every reader takes the two fields as mappings, so a row that
+# skipped the checks reached `evaluate`'s scoring loop (`laya/evals.py:1205`), `questions_fingerprint`
+# (`laya/evals.py:285`) or an opt-in door's `_validate_dataset` as an unhandled ``AttributeError`` --
+# or got as far as the runner and came back as a verdict *about the runner*. `Dataset` is the one door
+# all four readers share, so the refusal names the row and lands before a call is paid for.
+@pytest.mark.parametrize("field, value, fragment", [
+    ("expected", True, "'expected' must be an object keyed by question id, got bool"),
+    ("expected", "a", "'expected' must be an object keyed by question id, got str"),
+    ("expected", ["a"], "'expected' must be an object keyed by question id, got list"),
+    ("expected", 1, "'expected' must be an object keyed by question id, got int"),
+    ("questions", ["a"], "'questions' must be an object, got list"),
+    ("questions", None, "'questions' must be an object, got NoneType"),
+    ("questions", "a", "'questions' must be an object, got str"),
+    # A read-only Mapping walked every reader on `4ac226d5`, so refusing it is the one place this
+    # guard narrows what a Python caller could pass. It is the narrowing `Example.from_dict` already
+    # applies to a JSONL row and the shape `docs/evals.md` documents -- "a Laya question dict" -- so
+    # the two routes now ask for the same thing, and a duck-typed check would quietly reopen this.
+    ("questions", types.MappingProxyType(Q), "'questions' must be an object, got mappingproxy"),
+])
+def test_dataset_refuses_a_row_whose_maps_are_not_objects(field, value, fragment):
+    row = {"state": "s1", "questions": Q, "expected": {"intent": "a"}}
+    row[field] = value
+    with pytest.raises(EvalError) as exc:
+        Dataset([Example(**row)])
+    assert str(exc.value) == "example 0 " + fragment
+
+
+@pytest.mark.parametrize("expected, names", [
+    ({"nope": "a"}, "nope"),
+    # Sorted, so the same mistake in two runs reads as one error rather than two.
+    ({"intent": "a", "nope": "b", "also": "c"}, "also, nope"),
+])
+def test_dataset_refuses_an_expected_key_no_question_backs(expected, names):
+    with pytest.raises(EvalError) as exc:
+        Dataset([Example("s1", Q, expected)])
+    assert str(exc.value) == "example 0 'expected' names unknown question(s): " + names
+
+
+def test_the_row_refusal_names_the_offender_and_costs_no_inference():
+    class Counting:
+        """Answers the question ids it was handed, the way a real runner does."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def predict(self, state, questions, model=None):
+            self.calls += 1
+            return {"model": "stub",
+                    "answers": {qid: choice_answer("a") for qid in (questions or [])}}
+
+    runner, good, bad = Counting(), Example("s1", Q, {"intent": "a"}), Example("s2", Q, True)
+    with pytest.raises(EvalError) as exc:
+        evaluate(runner, Dataset([good, bad]))
+    assert "example 1 'expected'" in str(exc.value), "the offending row is named, not just the class"
+    assert runner.calls == 0, "the refusal lands before the dataset is run"
+    # All three refusals land with nothing paid for. Measured on `4ac226d5`, every one of these cost a
+    # runner call first: a `questions` list whose id is not an expected key came back as "runner
+    # returned no answer for question 'intent'", a list carrying the expected id scored and then died
+    # in `questions_fingerprint` on the way out, and an unbacked expected key is the same
+    # runner-verdict shape `from_dict` has always refused for a JSONL row.
+    for row in (Example("s1", ["a"], {"intent": "a"}),
+                Example("s1", ["intent"], {"intent": "a"}),
+                Example("s1", None, {"intent": "a"}),
+                Example("s1", Q, {"nope": "a"}),
+                Example("s1", Q, True)):
+        silent = Counting()
+        with pytest.raises(EvalError) as exc:
+            evaluate(silent, Dataset([row]))
+        assert silent.calls == 0, row
+        assert str(exc.value).startswith("example 0 "), row
+    with pytest.raises(EvalError):
+        evals.questions_fingerprint(Dataset([Example("s1", ["intent"], {"intent": "a"})]))
+    with pytest.raises(EvalError):
+        evals.questions_fingerprint(Dataset([bad]))
+    assert len(evals.questions_fingerprint(Dataset([good]))) == 64
+
+
+def test_the_jsonl_door_and_the_python_door_refuse_the_same_rows():
+    # `Example.from_dict` is the JSONL route's door and quotes the row as "row 0"; `Dataset` is the
+    # route every Python caller takes. Same check, same reason, different prefix -- which is what
+    # makes this one row shape with one meaning rather than two dialects.
+    for row in ({"state": "s1", "questions": Q, "expected": True},
+                {"state": "s1", "questions": ["intent"], "expected": {"intent": "a"}},
+                {"state": "s1", "questions": Q, "expected": {"nope": "a"}}):
+        with pytest.raises(EvalError) as via_jsonl:
+            Example.from_dict(dict(row), where="row 0")
+        with pytest.raises(EvalError) as via_python:
+            Dataset([Example(**row)])
+        reason = str(via_jsonl.value).removeprefix("row 0 ")
+        assert str(via_python.value).removeprefix("example 0 ").startswith(reason), row
+
+
+def test_a_row_with_an_empty_expected_map_is_still_accepted():
+    # Refusing the type is not refusing an unlabelled row: `expected={}` is a mapping, names no
+    # question, and scores nothing. That is the shape this guard has to leave alone.
+    dataset = Dataset([Example("s1", Q, {})])
+    report = evaluate(StubRunner({"s1": {"intent": choice_answer("a")}}), dataset)
+    assert report.cases == []
+
+
 # --------------------------------------------------------------- evaluate
 def test_evaluate_overall_and_slices():
     dataset = Dataset([
@@ -775,6 +896,161 @@ def test_evaluate_overall_and_slices():
     assert report.slices["language"]["de"]["choice_accuracy"] == pytest.approx(0.0)
     assert report.slices["qid"]["intent"]["choice_accuracy"] == pytest.approx(2 / 3)
     assert "choice_accuracy" in report.to_markdown()
+
+
+# --------------------------------------------------------------- markdown cells
+def _markdown_cells(line):
+    """Split one table row on its *unescaped* pipes, turning `\\|` back into a literal one.
+
+    Read left to right, a backslash escapes the character after it, so `\\\\\\|` is an escaped
+    backslash followed by a column boundary while `\\|` is a pipe inside the cell.
+    `str.split("|")` cannot tell the two apart -- it splits the escaped row this test is about,
+    which is the failure being reported -- so the scan is explicit here rather than in the product
+    code, where the writer has no reason to read its own output back.
+    """
+    cells, current, index = [], [], 0
+    while index < len(line):
+        char = line[index]
+        if char == "\\" and index + 1 < len(line):
+            current.append(line[index + 1])
+            index += 2
+            continue
+        if char == "|":
+            cells.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    cells.append("".join(current))
+    if line.startswith("|"):
+        cells = cells[1:]           # the text before the first pipe is empty
+    if line.endswith("|"):
+        cells = cells[:-1]          # ... and so is the text after the last
+    return [cell.strip() for cell in cells]
+
+
+def _markdown_slice_table(report, dimension):
+    """`{label: {metric: cell}}` for one `### by <dimension>` table, paired through its header."""
+    lines = report.to_markdown().splitlines()
+    body = lines[lines.index("### by %s" % dimension) + 1:]
+    header, rows = None, []
+    for line in body:
+        if line.startswith("###"):
+            break
+        if not line.startswith("|"):
+            continue
+        cells = _markdown_cells(line)
+        if all(cell and set(cell) <= set("-:") for cell in cells):
+            continue                                # the |---|---| separator row
+        if header is None:
+            header = cells
+            continue
+        assert len(cells) == len(header), \
+            "%r has %d cells for a %d-column header: %r" % (line, len(cells), len(header), cells)
+        rows.append(cells)
+    assert header and rows, "no %s table in the report" % dimension
+    return {cells[0]: dict(zip(header[1:], cells[1:])) for cells in rows}
+
+
+def _tagged_report(tags):
+    """A report whose `tag` slice has exactly these groups, two scored cases each.
+
+    Two cases per group land every metric in every cell (a single case leaves some of the
+    calibration columns empty), and each group gets its own confidence so the columns hold
+    different numbers -- a row shifted by one header then pairs a figure with the wrong name
+    instead of swapping two that happen to look alike.
+    """
+    examples, by_state = [], {}
+    for group, tag in enumerate(tags):
+        for case, expected in enumerate(("a", "b")):
+            state = "s%d%d" % (group, case)
+            # the group's first case answers right and its second wrong, so accuracy is 0.5
+            wrong = "b" if expected == "a" else "a"
+            examples.append(Example(state, Q, {"intent": expected}, tags=[tag]))
+            by_state[state] = {"intent": choice_answer(expected if case == 0 else wrong,
+                                                        confidence=0.9 - 0.05 * group)}
+    report = evaluate(StubRunner(by_state), Dataset(examples),
+                      evaluators=[ChoiceAccuracy(), MeanConfidence()])
+    assert sorted(report.slices["tag"]) == sorted(str(t) for t in tags)
+    return report
+
+
+def _assert_columns_pair(report, dimension, groups):
+    """Every figure sits under its own metric name, for every group in the table.
+
+    `groups` maps each rendered label to the key the slice is stored under; the two differ only for
+    a label whose line break was flattened into a space.
+    """
+    table = _markdown_slice_table(report, dimension)
+    assert sorted(table) == sorted(groups)
+    for label, data_label in groups.items():
+        row = table[label]
+        scores = report.slices[dimension][data_label]
+        assert sorted(row) == sorted(scores)
+        for metric, value in scores.items():
+            assert row[metric] == "%.4f" % value, "%s / %s" % (label, metric)
+
+
+def test_markdown_escapes_a_pipe_in_a_slice_label():
+    """A `|` in a group label is cell content, not a column boundary.
+
+    `tags` are any string the dataset author wrote -- `Example.from_dict` coerces them with `str`
+    rather than restricting them -- and this report is what a reader of `laya-evals run --markdown`
+    pairs numbers against. An unescaped pipe made that row one cell wider than its header, so every
+    figure after the label moved one header to the left and the last was dropped: `choice_accuracy`
+    showed the label's own second half, and the row that lost a value lost it silently.
+    """
+    report = _tagged_report(["risk|high", "plain"])
+    assert "| risk\\|high |" in report.to_markdown()
+    _assert_columns_pair(report, "tag", {"plain": "plain", "risk|high": "risk|high"})
+
+
+def test_markdown_keeps_a_label_with_a_line_break_on_one_row():
+    """A newline (or carriage return) in a label ends the row, taking its numbers out of the table.
+
+    `splitlines()` counts the physical rows the way a Markdown parser does: an unescaped break put
+    half a label on one line and the rest of the row, numbers included, on an unnumbered second
+    line that no header covers. Both breaks become spaces, which keeps the row intact and leaves
+    the label readable -- at the cell only, since the slice stays keyed by the label the dataset
+    wrote, so `--json` and `--markdown` still describe the same group.
+    """
+    report = _tagged_report(["two\nlines", "cr\rreturn", "plain"])
+    lines = report.to_markdown().splitlines()
+    table_rows = [line for line in lines[lines.index("### by tag"):] if line.startswith("|")]
+    assert len(table_rows) == 5, table_rows          # header, separator, one row per group
+    _assert_columns_pair(report, "tag", {"two lines": "two\nlines",
+                                         "cr return": "cr\rreturn", "plain": "plain"})
+
+
+def test_markdown_escapes_a_backslash_before_the_pipe_escape():
+    """`\\` is doubled first, so a trailing backslash cannot swallow the escape that follows it.
+
+    A label ending in a backslash is ordinary data (`C:\\temp\\`), and writing only the pipe would
+    put that backslash in front of the escape for the *next* cell's boundary. The reader would then
+    take the boundary as a literal pipe and join the row -- so the doubling is what makes the pipe
+    escape mean one thing, and the round trip through `_markdown_cells` is the witness.
+    """
+    report = _tagged_report(["win\\path", "trailing\\", "back\\|pipe"])
+    markdown = report.to_markdown()
+    assert "| win\\\\path |" in markdown
+    assert "| trailing\\\\ |" in markdown
+    _assert_columns_pair(report, "tag", {"win\\path": "win\\path", "trailing\\": "trailing\\",
+                                         "back\\|pipe": "back\\|pipe"})
+
+
+def test_markdown_leaves_an_ordinary_label_untouched():
+    """The escape is invisible on the labels a report normally carries.
+
+    Nothing here rewrites a plain checkpoint name, language code or question id, so every existing
+    report -- and the doc-table parity checks that read the repository's own Markdown -- keeps the
+    bytes it had before.
+    """
+    report = _tagged_report(["english", "multilingual"])
+    markdown = report.to_markdown()
+    assert "| english |" in markdown and "| multilingual |" in markdown
+    assert "\\" not in markdown.split("### by tag")[1]
+    _assert_columns_pair(report, "tag", {"english": "english", "multilingual": "multilingual"})
 
 
 def test_model_slice_follows_the_routed_checkpoint():
@@ -1249,6 +1525,151 @@ def test_cli_min_confidence_zero_is_accepted(monkeypatch, tmp_path):
     assert seen["min_confidence"] == 0.0
 
 
+# ------------------------------------------------- per-example model (#1107 guard)
+#
+# `Example.model` names an explicit checkpoint, and the single-row path used to forward it
+# unconditionally -- `model=chunk[0].model`, even when the value was `None`. `Agent.predict` is
+# `system_one`, which takes neither `model` nor `**kwargs`, so every row raised `TypeError` and
+# `on_error="skip"` published a zero-case, empty-overall, exit-0 report: the batch half of this
+# exact bug was `_batch_form`'s founding case, the single-row path was left outside it.
+
+
+class AgentShapedRunner:
+    """What `laya.load()` returns: `predict` is `system_one` -- no `model`, no `**kwargs`."""
+
+    def __init__(self, by_state):
+        self.by_state = by_state
+
+    def predict(self, state, questions, lang=None, min_confidence=None):
+        return {"answers": self.by_state[state]}
+
+    def predict_batch(self, states, questions, batch_size=None, lang=None):
+        return [self.predict(s, questions) for s in states]
+
+
+class NotIntrospectableRunner:
+    """Entry points whose signature cannot be read -- a C-level or hand-rolled ``__call__``
+    (#1112 review): `_batch_form` keeps the batch call there, so `_takes_model` must too."""
+
+    class _Callable:
+        __signature__ = None
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+        def __get__(self, obj, cls):
+            return self
+
+    predict = _Callable()
+    predict_batch = _Callable()
+
+
+def test_an_agent_shaped_runner_scores_instead_of_a_zero_case_report():
+    """Every row of the issue's report: a runner whose `predict` predates `model` used to fail
+    row by row and -- under the default skip -- publish 0 cases with an empty `overall`."""
+    report = evaluate(AgentShapedRunner(ANSWERS3), _three(), evaluators=[ChoiceAccuracy()],
+                      batch_size=4, on_error="skip")
+    assert len(report.cases) == 3, "the rows score; they do not vanish into on_error"
+    assert report.overall["choice_accuracy"] == pytest.approx(1.0)
+    assert not report.config.get("errored"), "a scoring run is not an erroring one"
+
+
+def test_the_model_kwarg_is_dropped_for_a_runner_without_one():
+    """With `on_error="fail"` the dropped kwarg is observable: had the harness still sent
+    `model=None`, every call here would raise `TypeError` instead of scoring."""
+    report = evaluate(AgentShapedRunner(ANSWERS3), _three(), evaluators=[ChoiceAccuracy()],
+                      batch_size=4)
+    assert len(report.cases) == 3
+    assert report.overall["choice_accuracy"] == pytest.approx(1.0)
+
+
+def test_a_runner_that_takes_model_still_receives_it():
+    """The guard drops the kwarg only for a runner without the parameter: a `Router`-shaped
+    `predict(state, questions, model=...)` keeps seeing the call the docstring promises."""
+    seen = {}
+
+    class Recording(StubRunner):
+        def predict(self, state, questions, model=None):
+            seen[state] = model
+            return StubRunner.predict(self, state, questions, model)
+
+    report = evaluate(Recording(ANSWERS3), _three(), evaluators=[ChoiceAccuracy()], batch_size=2)
+    assert set(seen.values()) == {None}, "no example names a checkpoint, so `None` is the value"
+    assert len(report.cases) == 3
+
+
+class BatchOnlyRouting(StubRunner):
+    """Routes in the batch entry point but not in the single one -- the shape `_batch_form`
+    approves (#1112 review)."""
+
+    def predict(self, state, questions):
+        return {"model": "single", "answers": self.by_state[state]}
+
+    def predict_batch(self, states, questions, model=None, batch_size=None):
+        return [{"model": model or "batched", "answers": self.by_state[s]} for s in states]
+
+
+def test_a_runner_that_routes_only_in_batch_survives_a_chunk_of_one():
+    """Chunking splits on (model, questions), so a differing row lands on the single `predict`.
+    `takes_model` reads `predict` alone, so this runner keeps batching and survives: the shape
+    that made the bug read as intermittent rather than as a contract mismatch."""
+    mixed = Dataset([Example("s1", Q, {"intent": "a"}),
+                     Example("s3", QNOUL, {"flag": True}),
+                     Example("s2", Q, {"intent": "a"})])
+    answers = {"s1": {"intent": choice_answer("a")}, "s2": {"intent": choice_answer("a")},
+               "s3": {"flag": noul_answer(0.9)}}
+    report = evaluate(BatchOnlyRouting(answers), mixed,
+                      evaluators=[ChoiceAccuracy(), NoulAccuracy()], batch_size=8)
+    assert not report.config.get("errored")
+    assert report.overall["choice_accuracy"] == 1.0
+
+
+def test_an_explicit_model_on_a_runner_without_the_parameter_is_refused():
+    """Dropping the kwarg when an example names a checkpoint would score the row on whatever the
+    runner answers with while the `model` slice labels it with the named one -- a lying report.
+    The pre-flight refuses instead, before any weights load, even under `on_error="skip"`, and
+    names the offending row and checkpoint so a large dataset is not a grep hunt."""
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}, model="english"),
+                       Example("s2", Q, {"intent": "a"})])
+    with pytest.raises(EvalError) as exc:
+        evaluate(AgentShapedRunner(ANSWERS3), dataset, evaluators=[ChoiceAccuracy()],
+                 batch_size=4, on_error="skip")
+    assert "model" in str(exc.value)
+    assert "does not accept" in str(exc.value)
+    assert "example 0" in str(exc.value)
+    assert "'english'" in str(exc.value)
+
+
+def test_an_unreadable_signature_answers_both_guards_the_same_way():
+    """A C-level entry point cannot be read, and both guards then keep the call the harness makes
+    (#1112 review): with `_takes_model` on `_takes_min_confidence`'s ``False`` fallback, `model`
+    was sent on the batch path and dropped on the single one, and a named checkpoint was refused
+    even though the batch entry point would have carried it."""
+    assert evals._batch_form(NotIntrospectableRunner()) == evals._BATCH_STATES
+    assert evals._takes_model(NotIntrospectableRunner()) is True
+
+
+def test_a_named_model_runs_on_a_runner_with_unreadable_entry_points():
+    """The refusal is about a guard saying no, not about introspection failing: on the same
+    C-level runner the run goes through, batch path and all."""
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}, model="english")])
+    report = evaluate(NotIntrospectableRunner(), dataset, evaluators=[ChoiceAccuracy()],
+                      batch_size=4, on_error="skip")
+    assert report.config["timing"]["batch_form"] == "states"
+    assert report.config["timing"]["chunks"] == 1
+
+
+def test_an_explicit_model_still_reaches_a_runner_that_takes_it():
+    """The refusal is scoped to runners without the parameter; a named checkpoint keeps flowing
+    through both entry points of a `Router`-shaped runner."""
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}, model="english"),
+                       Example("s2", Q, {"intent": "a"}, model="english")])
+    report = evaluate(StubRunner({"s1": {"intent": choice_answer("a")},
+                                  "s2": {"intent": choice_answer("a")}}),
+                      dataset, evaluators=[ChoiceAccuracy()], batch_size=2)
+    assert report.overall["choice_accuracy"] == 1.0
+
+
 # --------------------------------------------------------------- timing (#585)
 FORWARD_MS = 100.0
 SHARED = 0.6                      # a batch of n costs SHARED * n * FORWARD_MS, as one call
@@ -1542,6 +1963,148 @@ def test_a_nan_metric_fails_every_gate():
     assert healthy.compare({"overall": {"choice_accuracy": 0.9}})[0]
 
 
+def test_compare_refuses_a_document_the_gate_cannot_subtract_through():
+    """`--baseline` and the report path name files this function does arithmetic on.
+
+    Every shape that is not a metric name to number map used to reach the subtraction and raise
+    `AttributeError`/`TypeError` there, and a baseline that simply had no metrics compared nothing
+    and returned a pass. A bool was the quietest of the group: `float(True)` is 1.0, so
+    `"choice_accuracy": true` was read as a measurement of 100%.
+    """
+    report = EvalReport(overall={"choice_accuracy": 0.9})
+
+    for baseline in (None, [], [{"accuracy": 0.9}], "reviewed baseline", 5, True):
+        with pytest.raises(EvalError, match="baseline report must be a JSON object"):
+            report.compare(baseline)
+
+    for overall in (None, [], "abc", 5):
+        with pytest.raises(EvalError, match="baseline metrics must be an object"):
+            report.compare({"overall": overall})
+
+    for empty in ({}, {"overall": {}}):
+        with pytest.raises(EvalError, match="no metrics to compare"):
+            report.compare(empty)
+
+    # A report-shaped document with no `overall` falls back to its top level as the metric map, so
+    # the schema tag is what gets subtracted.
+    with pytest.raises(EvalError, match="baseline metric 'schema' is not a number"):
+        report.compare({"schema": "laya-eval/1", "config": {}})
+    for value, kind in (("0.9", "str"), (None, "NoneType"), ({"v": 1}, "dict"), (True, "bool")):
+        with pytest.raises(EvalError, match="is not a number, got %s" % kind):
+            report.compare({"overall": {"choice_accuracy": value}})
+
+    # The candidate side is read from disk by the same command, so it is checked the same way.
+    with pytest.raises(EvalError, match="report metric 'ece' is not a number"):
+        EvalReport(overall={"ece": "0.02"}).compare({"overall": {"ece": 0.02}})
+
+    # NaN stays a comparison, not a shape error: it fails the gate rather than refusing it.
+    assert not report.compare({"overall": {"choice_accuracy": float("nan")}})[0]
+
+    # And a run that lost a metric a baseline still has is still a result, not a usage error.
+    ok, deltas = EvalReport(overall={}).compare({"overall": {"choice_accuracy": 0.9}})
+    assert not ok and deltas["choice_accuracy"]["missing"]
+
+
+def test_compare_refuses_a_tolerance_that_cannot_fail():
+    """The caller's tolerance map is the third document the gate does arithmetic on.
+
+    The metric maps have refused broken shapes since ``_metric_map``; the tolerances were read with
+    a bare ``float(tolerances.get(metric, 0.0))`` inside the loop. They arrive as a dict the caller
+    built -- `research/evals/check_regression.py` reads them from a committed thresholds.json with
+    ``json.load``, which parses an ``Infinity`` literal -- so this is the same artifact class, on the
+    side that decides whether the gate can fail at all.
+    """
+    report = EvalReport(overall={"choice_accuracy": 0.8})
+    baseline = {"overall": {"choice_accuracy": 0.90}}
+
+    # The harm: a limit every possible drift fits inside greens a 0.10 drop, and the run still
+    # exits 0 with the line that says the gate ran. `1e999` is the spelling that arrives without
+    # anyone typing "inf" -- it overflows to Infinity and raises nothing.
+    for value in (float("inf"), 1e999):
+        with pytest.raises(EvalError, match="accepts a drift of any size") as exc:
+            report.compare(baseline, {"choice_accuracy": value})
+        assert "'choice_accuracy'" in str(exc.value), "the message names the metric it refuses"
+
+    # A bool was the quietest of the rest: `float(True)` is 1.0, which is a tolerance no
+    # [0, 1] metric can breach. Everything else used to die in the subtraction as a TypeError.
+    for value, kind in ((True, "bool"), (False, "bool"), ("0.1", "str"), (None, "NoneType"),
+                        ([0.1], "list"), ({"v": 1}, "dict"), (0j, "complex")):
+        with pytest.raises(EvalError, match="is not a number, got %s" % kind):
+            report.compare(baseline, {"choice_accuracy": value})
+
+    # The map itself: a list or string of pairs, a number, and the falsy shapes `0`, `0.0`, `""`
+    # and `()`, which `tolerances or {}` used to read as "no tolerances at all" -- a gate parameter
+    # silently replaced by its absence.
+    for bad in ([("choice_accuracy", 0.1)], "0.1", 5, 0, 0.0, "", ()):
+        with pytest.raises(EvalError, match="tolerances must be an object"):
+            report.compare(baseline, bad)
+
+    # Checked for every entry, not only the ones this baseline happens to consult: a gate
+    # parameter that is broken is broken whether or not the run reaches it.
+    with pytest.raises(EvalError, match="accepts a drift of any size"):
+        report.compare(baseline, {"ece_ms": float("inf")})
+    # And not only the first entry: this is a committed thresholds.json where one metric's limit
+    # was replaced by a value that cannot fail, next to a limit the run does check and passes.
+    both = EvalReport(overall={"choice_accuracy": 0.8, "ece": 0.10})
+    with pytest.raises(EvalError, match="accepts a drift of any size"):
+        both.compare({"overall": {"choice_accuracy": 0.90, "ece": 0.08}},
+                     {"choice_accuracy": 0.2, "ece": float("inf")})
+
+    # `assert_regression` is the other public door, and it refuses rather than raising the
+    # AssertionError its callers catch on a real regression.
+    with pytest.raises(EvalError, match="accepts a drift of any size"):
+        assert_regression(report, baseline, {"choice_accuracy": float("inf")})
+
+    # The boundary that stays a comparison: NaN, -Infinity and a negative number each fail every
+    # `abs(diff) <= allowed` test, so they report a gate that did not pass rather than refuse one.
+    assert not report.compare(baseline, {"choice_accuracy": float("nan")})[0]
+    assert not report.compare(baseline, {"choice_accuracy": float("-inf")})[0]
+    assert not report.compare(baseline, {"choice_accuracy": -0.5})[0]
+
+    # And no tolerances at all is a complete answer: everything shared must match exactly.
+    assert not report.compare(baseline)[0]
+    assert not report.compare(baseline, {})[0]
+    assert not report.compare(baseline, None)[0]
+    assert report.compare({"overall": {"choice_accuracy": 0.8}}, {"choice_accuracy": 0.2})[0]
+
+
+def test_cli_exits_2_for_a_malformed_baseline_or_report(tmp_path, capsys):
+    """A broken artifact is exit code 2; exit 1 is what a quality failure is worth.
+
+    Before, `laya-evals compare report.json --baseline {}` exited 0 with nothing compared, and
+    `--baseline 5` died in a traceback that exited 1 -- indistinguishable from a regression to the
+    CI job reading it.
+    """
+    from laya import evals_cli
+
+    fresh = tmp_path / "report.json"
+    fresh.write_text(json.dumps({"overall": {"choice_accuracy": 0.9}}))
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"overall": {"choice_accuracy": 0.9}}))
+
+    for raw in ("{}", "null", "[]", '"reviewed baseline"', "5", '{"overall": {}}',
+                '{"overall": null}', '{"overall": {"choice_accuracy": "0.9"}}',
+                '{"overall": {"choice_accuracy": true}}'):
+        broken = tmp_path / "baseline.json"
+        broken.write_text(raw)
+        assert evals_cli.main(["compare", str(fresh), "--baseline", str(broken)]) == 2, raw
+    # The candidate document carries the same shapes.
+    for raw in ('{"overall": "abc"}', '{"overall": {"choice_accuracy": "0.9"}}'):
+        broken = tmp_path / "candidate.json"
+        broken.write_text(raw)
+        assert evals_cli.main(["compare", str(broken), "--baseline", str(good)]) == 2, raw
+
+    printed = capsys.readouterr().err
+    assert "laya-evals: baseline has no metrics to compare" in printed
+    assert "Traceback" not in printed
+
+    # A well-formed pair still compares, and still exits 1 only when the numbers moved.
+    assert evals_cli.main(["compare", str(fresh), "--baseline", str(good)]) == 0
+    drifted = tmp_path / "drifted.json"
+    drifted.write_text(json.dumps({"overall": {"choice_accuracy": 0.5}}))
+    assert evals_cli.main(["compare", str(fresh), "--baseline", str(drifted)]) == 1
+
+
 def test_cli_rejects_a_nan_limit_or_tolerance(capsys):
     from laya import evals_cli
 
@@ -1557,6 +2120,56 @@ def test_cli_rejects_a_nan_limit_or_tolerance(capsys):
     args = evals_cli._build_parser().parse_args(["run", "data.jsonl", "--min-accuracy", "0.8",
                                                  "--max-ece", "0.1"])
     assert (args.min_accuracy, args.max_ece) == (0.8, 0.1)
+
+
+def test_cli_rejects_an_infinite_limit_or_tolerance(capsys):
+    """`inf` disables a gate exactly as `nan` does, and arrives without anyone typing "inf"."""
+    from laya import evals_cli
+
+    # Every spelling `float()` answers with a non-finite number, plus the overflow that is the
+    # reason this is not only a typo case: `--max ece=1e999` parses clean and means no cap.
+    for raw in ("inf", "-inf", "+inf", "Infinity", "-Infinity", "1e999", "inf ", " INF"):
+        with pytest.raises(EvalError, match="is not a number") as exc:
+            evals_cli._parse_pairs(["ece=%s" % raw])
+        assert raw in str(exc.value), "the message names the value the caller typed"
+
+    # The two dedicated flags bypass `_parse_pairs`, and exit 2 rather than a traceback.
+    for flag in ("--min-accuracy", "--max-ece"):
+        for raw in ("inf", "1e999"):
+            with pytest.raises(SystemExit) as exc:
+                evals_cli.main(["run", "data.jsonl", flag, raw])
+            assert exc.value.code == 2
+            assert "not a number" in capsys.readouterr().err
+        # A leading "-" is argparse's own refusal here, not `_limit`'s: the value reads as the
+        # next option. Still exit 2, and `--min accuracy=-inf` -- the form that reaches
+        # `_parse_pairs` -- is refused above.
+        with pytest.raises(SystemExit) as exc:
+            evals_cli.main(["run", "data.jsonl", flag, "-inf"])
+        assert exc.value.code == 2
+        assert "expected one argument" in capsys.readouterr().err
+
+    # Only the two non-finite kinds are refused: a boundary number is still a limit.
+    assert evals_cli._parse_pairs(["ece=0.0", "choice_accuracy=1.0", "brier=-0.0"]) == {
+        "ece": 0.0, "choice_accuracy": 1.0, "brier": 0.0}
+    assert evals_cli._limit("1e308") == 1e308
+
+
+def test_an_infinite_limit_would_have_decided_nothing():
+    """The harm the guard above prevents, pinned so relaxing it cannot go quiet.
+
+    Without the refusal these are the values `_check_thresholds` computes from a non-finite limit,
+    and each one is a pass: `laya-evals` would exit 0 having gated nothing. A test that asserts them
+    is not asserting correct behaviour -- it is the witness that the guard's absence was a defect.
+
+    `compare` had the same hole on its tolerance map, one layer below the CLI guard, and it no
+    longer computes a pass from Infinity: it refuses it. See
+    `test_compare_refuses_a_tolerance_that_cannot_fail`.
+    """
+    from laya import evals_cli
+
+    inf = float("inf")
+    assert evals_cli._check_thresholds({"ece": 0.42}, {}, {"ece": inf}) == []
+    assert evals_cli._check_thresholds({"choice_accuracy": 0.10}, {"choice_accuracy": -inf}, {}) == []
 
 
 def test_default_evaluators_cover_the_three_types():
@@ -1626,11 +2239,11 @@ def test_questions_fingerprint_covers_the_instructions():
     """`instructions` is the prompt. Excluding it made the fingerprint say "same question" for
     two questions the model answers differently.
 
-    `laya/common.py:158-159` renders `"%s question: %s" % (q["type"], instructions)` into the
-    tokenized head, `laya/agent.py:633-634` makes the field mandatory ("add the text the model
-    should answer"), and Laya's own identity key for sharing forward passes
-    (`Router._question_schema`, `laya/router.py:141`) hashes the whole questions dict,
-    instructions included -- as does this module's own batch grouping at `laya/evals.py:529`.
+    `laya/common.py::build_head` renders `"%s question: %s" % (q["type"], instructions)` into the
+    tokenized head, `laya/agent.py::Agent._check_question` makes the field mandatory ("add the
+    text the model should answer"), and Laya's own identity key for sharing forward passes,
+    `laya/router.py::_question_schema`, hashes the whole questions dict, instructions included --
+    as does this module's own batch grouping at `laya/evals.py::evaluate`.
     `tests/test_router_batch.py:543` pins that rewording alone moves a row to its own batch group.
     Leaving it out made the one field this contract exists to protect the one field it ignored.
     """
@@ -1656,10 +2269,95 @@ def test_questions_fingerprint_covers_the_instructions():
     assert evals.questions_fingerprint(spaced) != evals.questions_fingerprint(judged)
 
 
+def test_questions_fingerprint_hashes_every_distinct_question_not_the_last_row_per_id():
+    """One `qid` asked two ways is two questions, and both have to reach the digest.
+
+    `laya/evals.py::questions_fingerprint` collects each question's canonical JSON into a *set*,
+    not a `{qid: schema}` map. That distinction is load-bearing rather than incidental: a dataset
+    may carry the same `qid` under different bodies, because `laya/evals.py::Dataset.from_jsonl`
+    parses each row's `questions` on its own and never compares rows to rows -- verified against a
+    two-row file that reuses `intent` with different `criteria`, which loads -- and
+    `laya/evals.py::evaluate` groups rows by their own questions dict. A map would then keep only
+    the last row's spelling and drop the variant from the identity, so a run that asked both would
+    hash alike with a baseline that asked one. That is the comparison this key exists to refuse.
+
+    The two rows reversed must also digest alike: which variant a row order happens to hit last is
+    not part of what was asked.
+    """
+    variant = {"intent": dict(Q["intent"], criteria={"a": "x", "b": "y", "c": "z"})}
+    both = Dataset([Example("s1", Q, {"intent": "a"}), Example("s2", variant, {"intent": "a"})])
+    reversed_ = Dataset([Example("s1", variant, {"intent": "a"}), Example("s2", Q, {"intent": "a"})])
+    narrow = Dataset([Example("s1", Q, {"intent": "a"})])
+    last_row_only = Dataset([Example("s1", variant, {"intent": "a"})])
+
+    fingerprint = evals.questions_fingerprint
+    assert fingerprint(both) != fingerprint(narrow), "the added variant left the identity unchanged"
+    assert fingerprint(both) != fingerprint(last_row_only), \
+        "a question id-keyed digest would drop the first variant and collide here"
+    assert fingerprint(both) == fingerprint(reversed_), "row order moved the identity"
+
+
+def test_questions_fingerprint_is_the_same_digest_in_every_process():
+    """The schemas are hashed in sorted order, so two runs of one dataset agree.
+
+    CPython salts `str` hashes per process (`PYTHONHASHSEED`), and a `set` iterates in hash order,
+    so `laya/evals.py::questions_fingerprint` sorting its schemas before feeding `sha256` is what
+    makes the digest a run identity rather than a per-process artefact. Drop the `sorted()` and one
+    dataset still digests to a single value inside the process that asked for it, so nothing that only
+    re-reads its own fingerprint notices. What breaks is the identity between two builds of the *same*
+    schema set: a `set` iterates in hash-table order, so re-encountering the questions in another row
+    order can feed `sha256` in a different sequence -- but only when two of the canonical schemas share
+    a bucket, which depends on the process's salt. Measured on the mutant: at `PYTHONHASHSEED` 0, 1 and
+    7 the row-order asserts below fire, at 2 and 42 the process happens to avoid the collision and it is
+    the children that disagree with this one. Either way the digest is not portable, and
+    `questions_sha256` is the field `laya/evals.py::EvalReport.comparable_to` refuses a baseline on, so
+    two invocations of `laya-evals run` over an unchanged dataset would disagree and no run could be
+    compared to a baseline. That is why this test pins both the in-process order and a committed
+    literal read by fresh interpreters: neither alone fails at every salt.
+    """
+    def question(index):
+        return {"type": "choice", "instructions": "Question %d" % index,
+                "criteria": {"a": "alpha %d" % index, "b": "beta %d" % index}}
+
+    def dataset(order):
+        return Dataset([Example("s%d" % position, {"q%d" % index: question(index)},
+                                {"q%d" % index: "a"})
+                        for position, index in enumerate(order)])
+
+    orders = [list(range(8)), list(range(8))[::-1], [3, 0, 6, 1, 7, 2, 5, 4]]
+    parent = evals.questions_fingerprint(dataset(orders[0]))
+    for order in orders[1:]:
+        assert evals.questions_fingerprint(dataset(order)) == parent, \
+            "the order questions are encountered in moved the identity"
+
+    # An eight-question dataset, hashed by a fresh interpreter with a salted string hash.
+    root = pathlib.Path(laya.__file__).resolve().parent.parent
+    child = """
+from laya.evals import Dataset, Example, questions_fingerprint
+def question(index):
+    return {"type": "choice", "instructions": "Question %d" % index,
+            "criteria": {"a": "alpha %d" % index, "b": "beta %d" % index}}
+order = list(range(8))
+dataset = Dataset([Example("s%d" % position, {"q%d" % index: question(index)},
+                           {"q%d" % index: "a"}) for position, index in enumerate(order)])
+print(questions_fingerprint(dataset))
+"""
+    for seed in ("0", "1"):
+        result = subprocess.run([sys.executable, "-B", "-c", child], capture_output=True, text=True,
+                                cwd=str(root), env=dict(os.environ, PYTHONHASHSEED=seed,
+                                                         PYTHONPATH=str(root)))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == parent, \
+            "PYTHONHASHSEED=%s produced a different digest than this process" % seed
+
+    # Measured on `main` with the eight-question dataset above.
+    assert parent == "b7f11c70d38341c0425f0297b88c4a3c155c1040de745f3363e51b278b49a990"
+
+
 def test_questions_fingerprint_normalizes_instructions_the_way_the_engine_does():
     """Two questions that render the same text are the same question, whatever their JSON shape.
 
-    `Agent._to_internal` (`laya/agent.py:736-748`) turns a non-string `instructions` into
+    `laya/agent.py::Agent._to_internal` turns a non-string `instructions` into
     `json.dumps(ins, ensure_ascii=False)` before tokenizing, and `tests/test_criteria.py:229-251`
     pins why: the default `ensure_ascii=True` escaped non-ASCII to literal `\\uXXXX` and a German
     question answered noul=0.1652 as a dict against 0.2650 as the identical plain string. The
@@ -1956,6 +2654,133 @@ def test_cli_run_records_the_run_identity(monkeypatch, tmp_path):
     assert config["thresholds"]["baseline_tolerance"] == {"choice_accuracy": 0.02}
 
 
+def test_cli_run_an_unwritable_output_path_is_a_usage_error(monkeypatch, tmp_path, capsys):
+    """`--json`/`--markdown` to a path that cannot hold a file is the caller's mistake.
+
+    The module docstring reserves exit 1 for "a threshold or a baseline tolerance fails", and the
+    `EvalError` handler in `main` exists precisely so a broken request cannot read as a regression.
+    `_cmd_agreement` already raises `EvalError` for an unwritable report; `_cmd_run` opened both of
+    its outputs bare. Only one shape of that is caught by accident: a missing parent directory
+    raises `FileNotFoundError`, which `main` narrows to exit 2, while a path that *is* a directory
+    raises `IsADirectoryError` (PermissionError on Windows) -- an `OSError` that is not a
+    `FileNotFoundError`, so it escapes every handler and leaves a traceback and exit 1 for a run
+    that wrote nothing. Same mistake, two different codes.
+    """
+    from laya import evals_cli
+
+    real_open = open                      # captured before any patch below delegates to it
+    _patch_router(monkeypatch)
+    dataset = _write_dataset(tmp_path, RUN_ROWS)
+    spool = str(tmp_path / "spooled.json")
+    cases = [
+        ("a directory that does not exist", str(tmp_path / "no-such-dir" / "report.json"), None),
+        ("a path that is a directory, not a file", str(tmp_path), None),
+        # A full disk, a read-only mount, an expired quota: the errno names no path, so the only
+        # words that can say which output failed are the CLI's own. This is what the `%r` in the
+        # message buys, and `open` really is the call that raises for it.
+        ("a volume that refuses the write", spool, OSError(28, "No space left on device")),
+    ]
+
+    def make_refuser(wanted, err):
+        """`open` for real, except that one path raises. A factory, so nothing binds late."""
+        def refuse(target, *a, **k):
+            if str(target) == wanted:
+                raise err
+            return real_open(target, *a, **k)
+        return refuse
+
+    for flag in ("--json", "--markdown"):
+        for label, path, error in cases:
+            if error is not None:
+                monkeypatch.setattr("builtins.open", make_refuser(path, error))
+            capsys.readouterr()
+            assert evals_cli.main(["run", dataset, flag, path]) == 2, "%s: %s" % (flag, label)
+            err = capsys.readouterr().err
+            assert "Traceback" not in err, "%s %s leaked a traceback" % (flag, label)
+            assert "cannot write" in err, "%s %s: %s" % (flag, label, err)
+            assert path in err, "%s %s did not name the path it could not write: %s" % (
+                flag, label, err)
+            if error is not None:
+                assert "No space left on device" in err, (
+                    "%s %s lost the errno the caller needs: %s" % (flag, label, err))
+                # Put `open` back: a later row must not inherit a refuser aimed at this path.
+                monkeypatch.setattr("builtins.open", real_open)
+
+
+def test_cli_report_reads_refuse_an_unreadable_report_with_code_2(monkeypatch, tmp_path, capsys):
+    """`main` promises an unreadable report is a usage error; only one shape of it kept that promise.
+
+    Every report read goes through `_load_report` -- `compare`'s report and baseline, and `run`'s
+    baseline -- and it opened bare. A path that does not exist raised `FileNotFoundError`, which
+    `main` narrows to exit 2, but the other ways a file fails to be a report each escaped: a path
+    that *is* a directory (`IsADirectoryError`), text that is not JSON (`JSONDecodeError`), JSON
+    that is valid but not an object (`AttributeError` one call later), and an errno that names no
+    path at all. Each left a traceback and exit 1 -- the code this CLI reserves for "a threshold or
+    a baseline tolerance failed" -- so a CI job could not tell a corrupt artifact from a regression.
+    The message has to name the path, because three of those four errors do not.
+    """
+    from laya import evals_cli
+
+    real_open = open                      # captured before any patch below delegates to it
+    document = json.dumps({"overall": {"choice_accuracy": 0.5}, "slices": {}, "cases": []})
+    good = tmp_path / "good.json"
+    good.write_text(document, encoding="utf-8")
+    not_json = tmp_path / "not-json.json"
+    not_json.write_text("{nope", encoding="utf-8")
+    not_object = tmp_path / "not-object.json"
+    not_object.write_text("[1, 2]", encoding="utf-8")
+    a_directory = tmp_path / "a-directory"
+    a_directory.mkdir()
+    denied = tmp_path / "denied.json"
+    denied.write_text(document, encoding="utf-8")
+
+    cases = [
+        ("a path that is a directory, not a file", str(a_directory), None),
+        ("a file that is not JSON", str(not_json), None),
+        ("a file that is valid JSON but not an object", str(not_object), None),
+        ("a volume that refuses the read", str(denied), OSError(13, "Permission denied")),
+    ]
+
+    def make_refuser(wanted, err):
+        """`open` for real, except that one path raises. A factory, so nothing binds late."""
+        def refuse(target, *a, **k):
+            if str(target) == wanted:
+                raise err
+            return real_open(target, *a, **k)
+        return refuse
+
+    for label, path, error in cases:
+        for position in ("report", "baseline"):
+            monkeypatch.setattr("builtins.open", real_open)
+            if error is not None:
+                monkeypatch.setattr("builtins.open", make_refuser(path, error))
+            argv = (["compare", path, "--baseline", str(good)] if position == "report" else
+                    ["compare", str(good), "--baseline", path])
+            capsys.readouterr()
+            assert evals_cli.main(argv) == 2, "%s as %s: %s" % (label, position, argv)
+            err = capsys.readouterr().err
+            assert "Traceback" not in err, "%s as %s leaked a traceback: %s" % (label, position, err)
+            assert "cannot read report" in err, "%s as %s: %s" % (label, position, err)
+            assert path in err, "%s as %s did not name the path: %s" % (label, position, err)
+            if error is not None:
+                assert "Permission denied" in err, (
+                    "%s as %s lost the errno the caller needs: %s" % (label, position, err))
+
+    # `run` reads the same function, on the same two shapes, after a whole evaluation pass.
+    _patch_router(monkeypatch)
+    dataset = _write_dataset(tmp_path, RUN_ROWS)
+    for label, path, error in cases[:2]:
+        monkeypatch.setattr("builtins.open", real_open)
+        if error is not None:
+            monkeypatch.setattr("builtins.open", make_refuser(path, error))
+        capsys.readouterr()
+        assert evals_cli.main(["run", dataset, "--baseline", path]) == 2, "%s under run" % label
+        err = capsys.readouterr().err
+        assert "Traceback" not in err, "%s under run leaked a traceback: %s" % (label, err)
+        assert "cannot read report" in err and path in err, "%s under run: %s" % (label, err)
+    monkeypatch.setattr("builtins.open", real_open)
+
+
 def test_cli_run_refuses_a_baseline_from_a_different_dataset(monkeypatch, tmp_path, capsys):
     """The gate that a promotion decision rests on: two different runs cannot pass as one.
 
@@ -2026,9 +2851,10 @@ def test_questions_fingerprint_covers_labels():
     """`labels` decides the option text, so it belongs in the key.
 
     The same argument `test_questions_fingerprint_covers_the_instructions` makes for
-    `instructions`. `labels` is validated (`laya/agent.py:722-726` -> `_resolve_noul_labels`),
-    carried into the internal question (`laya/agent.py:748-749`), and resolved into the option
-    text the model actually reads (`laya/common.py:92`). Two question sets differing only in
+    `instructions`. `laya/agent.py::Agent._check_question` validates `labels` through
+    `laya/common.py::_resolve_noul_labels`, `laya/agent.py::Agent._to_internal` carries it into
+    the internal question, and the resolver is what produces the option text the model actually
+    reads. Two question sets differing only in
     `labels` therefore ask the model different things, and hashing them alike let the gate pass
     a comparison it exists to refuse.
     """
@@ -2053,8 +2879,8 @@ def test_questions_fingerprint_covers_labels():
 def test_questions_fingerprint_keeps_criteria_order():
     """A choice question's criteria order is positional, so two orders are two questions.
 
-    `examples/hooks/cache.py:22-25` states the rule and `Router._question_schema`
-    (`laya/router.py:141`) applies it with `sort_keys=False`. Worth pinning here for the dict
+    `examples/hooks/cache.py:22-25` states the rule and `laya/router.py::_question_schema`
+    applies it with `sort_keys=False`. Worth pinning here for the dict
     form: `json.dumps(sort_keys=True)` reorders *dict keys* and leaves *lists* alone, so a
     list-valued `criteria` -- the shape a dataset row has -- was already safe. The flag only
     mattered for a dict-valued one, where folding is the wrong direction to be wrong in.
@@ -2067,6 +2893,47 @@ def test_questions_fingerprint_keeps_criteria_order():
         evals.questions_fingerprint(with_criteria(["beta", "alpha"]))
     assert evals.questions_fingerprint(with_criteria({"a": "alpha", "b": "beta"})) != \
         evals.questions_fingerprint(with_criteria({"b": "beta", "a": "alpha"}))
+
+
+def test_questions_fingerprint_covers_option_order():
+    """`option_order` moves what the model reads and re-maps the answer, so it is a fifth field.
+
+    `laya/agent.py::Agent._check_question` accepts only a permutation of the option indices,
+    `Agent._to_internal` copies it into the internal question, and from there it reaches
+    `laya/common.py::build_sequence` (the tokenized head) and `unpermute_probs` on the way back, so
+    a permuted question is a different question in exactly the sense this key exists to notice.
+    `research/eval/metamorphic.py::permute_options` is one of that harness's two transforms, and
+    this suite's own `test_questions_fingerprint_follows_the_question_not_the_row` states "option
+    order and label rename flip answers" while the hash looked past the first of the two.
+
+    The literal digest at the end is the other half of the contract: a question set that never names
+    the field keeps the digest its committed baseline already carries, so adding a field to the key
+    moves no existing report's identity.
+    """
+    def question(order=None):
+        q = {"type": "choice", "instructions": "Pick one", "criteria": {"a": "alpha", "b": "beta"}}
+        if order is not None:
+            q["option_order"] = order
+        return {"pick": q}
+
+    def with_order(order=None):
+        return Dataset([Example("s", question(order), {"pick": "a"})])
+
+    plain = evals.questions_fingerprint(with_order())
+    assert evals.questions_fingerprint(with_order([1, 0])) != plain, \
+        "a permutation of the options left the fingerprint unchanged"
+    assert evals.questions_fingerprint(with_order([0, 1])) != plain, \
+        "naming an identity permutation left the fingerprint unchanged"
+    assert evals.questions_fingerprint(with_order([0, 1])) != \
+           evals.questions_fingerprint(with_order([1, 0])), "two orders hashed alike"
+
+    # The field is real on the way in, not an artefact of the hash: the engine carries it.
+    from laya.agent import Agent
+    assert "option_order" not in Agent._to_internal(question()["pick"])
+    assert Agent._to_internal(question([1, 0])["pick"])["option_order"] == [1, 0]
+
+    # Measured on `main` before `option_order` joined the key.
+    assert plain == "8263dfd11d6593803f61d78fe6ccc629924f01e85e9e8a2bac5ce629ebb97ff4"
 
 
 def test_a_top_level_schema_on_the_candidate_still_refuses(tmp_path, capsys):
@@ -2264,8 +3131,9 @@ SHA = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
 def _fake_router(monkeypatch, recorded):
     """Replace `laya.Router` with a weight-free stand-in that records how `_cmd_run` built it.
 
-    It validates checkpoint names the way `Router.__init__` does, by calling the same
-    `normalise_name`, so the fake refuses a typo for the real reason.
+    It validates checkpoint names the way `Router.__init__` does and resolves a forced `--model` the
+    way `Router.resolve` does, both by calling the same `normalise_name`, so the fake refuses a typo
+    for the real reason.
     """
     import laya
 
@@ -2274,6 +3142,13 @@ def _fake_router(monkeypatch, recorded):
             from laya.router import normalise_name
             recorded.update(device=device, preload=preload, revision=revision,
                             revisions={normalise_name(k): v for k, v in (revisions or {}).items()})
+
+        def resolve(self, name):
+            # `_cmd_run` resolves `--model` against the Router that answers, so the stand-in has to
+            # resolve too. It takes no `models=`, so its registry is the built-in table, and that is
+            # exactly what `normalise_name` checks.
+            from laya.router import normalise_name
+            return normalise_name(name)
 
         def predict(self, state, questions, model=None, min_confidence=None):
             # The gate is a real part of the Router interface since #361; a stub without it would
@@ -2351,6 +3226,50 @@ def test_cli_accepts_a_checkpoint_alias_in_a_pin(tmp_path, monkeypatch):
     dataset = _write_dataset(tmp_path, [{"state": "s", "questions": Q, "expected": {"intent": "a"}}])
     assert evals_cli.main(["run", dataset, "--revision", "en=" + SHA]) == 0
     assert recorded["revisions"] == {"english": SHA}
+
+
+# ------------------------------------------------------------------ --model checkpoint name
+def test_cli_rejects_a_typo_in_the_forced_checkpoint_name(tmp_path, monkeypatch, capsys):
+    """`--model` is resolved by the first row, so a typo used to escape as a traceback and exit 1."""
+    from laya import evals_cli
+
+    recorded = {}
+    _fake_router(monkeypatch, recorded)
+    ran = []
+    real_evaluate = evals_cli.evals.evaluate
+
+    def spy(runner, ds, **kwargs):
+        ran.append(ds)
+        return real_evaluate(runner, ds, **kwargs)
+
+    monkeypatch.setattr(evals_cli.evals, "evaluate", spy)
+    dataset = _write_dataset(tmp_path, [{"state": "s", "questions": Q, "expected": {"intent": "a"}}])
+    assert evals_cli.main(["run", dataset, "--model", "englishg"]) == 2
+    err = capsys.readouterr().err
+    assert "unknown model 'englishg'" in err
+    assert "choose one of" in err, "the message comes from core, with the option list"
+    assert "Traceback" not in err, "a mistyped checkpoint is a usage error, not a crash"
+    assert not ran, "and it fails before a row is predicted"
+
+
+def test_cli_accepts_a_checkpoint_alias_for_the_forced_model(tmp_path, monkeypatch):
+    """Resolution is `Router.resolve`, which owns aliases and casing -- an exact-match check would fail here."""
+    from laya import evals_cli
+
+    recorded = {}
+    _fake_router(monkeypatch, recorded)
+    asked = {}
+    real_evaluate = evals_cli.evals.evaluate
+
+    def spy(runner, ds, **kwargs):
+        asked["model"] = ds.examples[0].model
+        return real_evaluate(runner, ds, **kwargs)
+
+    monkeypatch.setattr(evals_cli.evals, "evaluate", spy)
+    dataset = _write_dataset(tmp_path, [{"state": "s", "questions": Q, "expected": {"intent": "a"}}])
+    assert evals_cli.main(["run", dataset, "--model", "EN "]) == 0
+    # Validated, not rewritten: the spelling asked for is what the row and the report carry.
+    assert asked["model"] == "EN "
 
 
 # --------------------------------------------------------------- opt-in slice gates
@@ -2631,6 +3550,9 @@ def test_slice_gate_fails_closed_on_identity_or_skipped_cases(tmp_path):
     ([SHA, SHA], (SHA, {})),                      # repeating one commit is agreement, not a clash
     (["en=" + SHA], (None, {"en": SHA})),
     (["en=" + SHA, SHA], (SHA, {"en": SHA})),     # both forms at once: Router lets the pair win
+    (["en=" + SHA, "en=" + SHA], (None, {"en": SHA})),           # one pin twice is agreement
+    (["en=" + SHA, "fr=" + SHA], (None, {"en": SHA, "fr": SHA})),  # two names are not a clash
+    (["en=" + SHA, "english=" + SHA], (None, {"en": SHA, "english": SHA})),  # one commit, two spellings
 ])
 def test_parse_revisions_accepts_both_forms(pairs, expected):
     from laya import evals_cli
@@ -2655,9 +3577,109 @@ def test_parse_revisions_rejects_half_a_pair(pair, fragment):
     assert fragment in str(exc.value)
 
 
+@pytest.mark.parametrize("pairs, spelled", [
+    (["english=abc", "english=def"], None),
+    (["English=abc", "english=def"], ("English", "english")),    # case folds onto one checkpoint
+    (["en=abc", "english=def"], ("en", "english")),              # `en` is an alias of `english`
+    (["laya=abc", "default=def"], ("laya", "default")),          # two aliases, neither a real key
+])
+def test_parse_revisions_rejects_two_commits_for_one_checkpoint(pairs, spelled):
+    """The `NAME=SHA` form refuses the clash the bare form already refuses.
+
+    `--revision english=abc --revision english=def` named one checkpoint and two commits for it. The
+    run loads one commit, so one of them is dropped -- and the report's `revisions` block records the
+    commit that answered, never the request, so the survivor is the only thing left to read.
+    `Router.resolve` folds case and aliases onto the key it loads, so the same is true however the
+    checkpoint is spelled; the refusal follows the checkpoint, not the spelling.
+    """
+    from laya import evals_cli
+
+    with pytest.raises(EvalError) as exc:
+        evals_cli._parse_revisions(pairs)
+    message = str(exc.value)
+    assert "two commits" in message and "'english'" in message
+    # named in the order they were given, the way the bare-form message reports its two commits
+    assert message.index("'abc'") < message.index("'def'")
+    if spelled is None:
+        assert "given as" not in message
+    else:
+        assert "given as %r and %r" % spelled in message
+
+
 def test_parse_revisions_rejects_two_different_bare_commits():
     from laya import evals_cli
 
     with pytest.raises(EvalError) as exc:
         evals_cli._parse_revisions(["abc", "def"])
     assert "two commits" in str(exc.value)
+
+
+def _criteria_rows(criteria_first, criteria_second):
+    first = {"pick": {"type": "choice", "instructions": "Pick", "criteria": criteria_first}}
+    second = {"pick": {"type": "choice", "instructions": "Pick", "criteria": criteria_second}}
+    return Dataset([Example("s1", first, {"pick": "a"}),
+                    Example("s2", second, {"pick": "a"})])
+
+
+ANSWER_A = {"s1": {"pick": choice_answer("a")}, "s2": {"pick": choice_answer("a")}}
+
+
+def test_chunking_keeps_criteria_key_order_on_the_positional_form():
+    """A `predict_batch(states, questions, ...)` runner receives ONE questions dict for the
+    whole chunk. Two rows whose criteria dicts differ only in key order must NOT be grouped
+    there: grouping hands row 2 row 1's positional `criteria` order, and the harness would
+    then report a metric for a question that row never declared. The fold is gated on the
+    call shape precisely so this path keeps `sort_keys=False`."""
+    class OrderRecording(StubRunner):
+        def __init__(self, by_state):
+            super().__init__(by_state)
+            self.orders = []
+
+        def predict_batch(self, states, questions, model=None, batch_size=None):
+            self.orders.append(list(questions["pick"]["criteria"]))
+            return [{"model": "m", "answers": self.by_state[s]} for s in states]
+
+    runner = OrderRecording(ANSWER_A)
+    report = evaluate(runner, _criteria_rows({"a": "alpha", "b": "beta"},
+                                             {"b": "beta", "a": "alpha"}),
+                      evaluators=[ChoiceAccuracy()], batch_size=2)
+    # Not grouped: the two rows score through their own single predicts, so the batch call
+    # -- the one that would have imposed row 0's order on row 1 -- never runs.
+    assert runner.orders == [], "the positional form must not batch key-order-different rows"
+    assert report.config["timing"]["rows_grouped"] == 0
+    assert report.overall["choice_accuracy"] == 1.0
+
+    listed = OrderRecording(ANSWER_A)
+    listed_report = evaluate(listed, _criteria_rows(["alpha", "beta"], ["beta", "alpha"]),
+                             evaluators=[ChoiceAccuracy()], batch_size=2)
+    assert listed_report.config["timing"]["rows_grouped"] == 0, \
+        "a reordered list criteria is a different question and still chunks alone"
+
+
+def test_chunking_folds_criteria_key_order_on_the_request_form():
+    """The per-request `predict_batch(requests)` shape carries each row's own `questions`, so
+    folding dict key order is safe here -- these two rows share one call and each request still
+    rides with its own criteria order. This is the only path the canonicalisation belongs on."""
+    class ReqRecording(StubRunner):
+        def __init__(self, by_state):
+            super().__init__(by_state)
+            self.orders = []
+
+        def predict_batch(self, requests, batch_size=None):
+            self.orders.append([list(r["questions"]["pick"]["criteria"]) for r in requests])
+            return [{"model": "m", "answers": self.by_state[r["state"]]} for r in requests]
+
+    runner = ReqRecording(ANSWER_A)
+    report = evaluate(runner, _criteria_rows({"a": "alpha", "b": "beta"},
+                                             {"b": "beta", "a": "alpha"}),
+                      evaluators=[ChoiceAccuracy()], batch_size=2)
+    assert report.config["timing"]["rows_grouped"] == 2, "one shared call, not two singles"
+    # Each request keeps its own criteria order -- row 0 a,b; row 1 b,a -- nothing was rewritten.
+    assert runner.orders == [[["a", "b"], ["b", "a"]]], repr(runner.orders)
+    assert report.overall["choice_accuracy"] == 1.0
+
+    listed = ReqRecording(ANSWER_A)
+    listed_report = evaluate(listed, _criteria_rows(["alpha", "beta"], ["beta", "alpha"]),
+                             evaluators=[ChoiceAccuracy()], batch_size=2)
+    assert listed_report.config["timing"]["rows_grouped"] == 0, \
+        "a reordered list criteria stays positional even for the request form"

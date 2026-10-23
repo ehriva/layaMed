@@ -20,9 +20,12 @@ bookkeeping.
 - Shared by every predict-event hook of that call: `on_predict_start`, `on_predict_end` and
   `on_error` see one `PredictContext`, so one `run_id`.
 - **Not** shared with `on_route`, `on_load` or `on_evict`. Each is dispatched with a context of
-  its own, so a single `Router.predict` hands out three different `run_id`s. Correlate a routing
-  decision with its prediction through `ctx.decision`, which `on_predict_start` also carries, not
-  through `run_id`.
+  its own, so the count one `Router.predict` hands out is the number of contexts that call makes:
+  two when the checkpoint is already resident (`on_route` plus the prediction), three when it has
+  to load one (the load adds `on_load`), and four when that load also evicts an LRU checkpoint
+  (`on_evict` adds another). Three is the cold path; a warm Router gives two per call. Correlate a
+  routing decision with its prediction through `ctx.decision`, which `on_predict_start` also
+  carries, not through `run_id`.
 - Not global and not persisted: it identifies a call within the process. Put it in your logs and
   outbound payloads to correlate across systems.
 - Distinct per call, so two calls never collide.

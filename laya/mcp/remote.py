@@ -203,6 +203,7 @@ class RemoteRouter(Router):
         on_predict_start=None,
         on_predict_end=None,
         hooks_raise: Optional[bool] = None,
+        diagnostics: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """One ``/v1/systemone`` call per request, answers in input order.
 
@@ -210,7 +211,9 @@ class RemoteRouter(Router):
         while a Router batch lets each request carry its own questions and controls, so the general
         form is the per-request call. ``batch_size`` and ``sort_by_length`` shape forward passes and
         have no meaning here; they are accepted and ignored so callers written against ``Router``
-        keep working. The server applies its own batching inside each call.
+        keep working, and ``diagnostics`` is the same kind of tolerance: a remote run has no local
+        checkpoint grouping to report (#1111), so the dict is accepted and left untouched.
+        The server applies its own batching inside each call.
         """
         results: List[Dict[str, Any]] = []
         if hooks_timeout is not None:

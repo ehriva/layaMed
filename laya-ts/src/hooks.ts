@@ -334,31 +334,74 @@ function reportHookFailure(hook: Hook, event: HookEvent, err: unknown): void {
  * `dispatchAsync` waits and applies `raiseErrors` to it.
  */
 
-/** Run a promise with a timeout, returning void if it completes or throwing on timeout. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return typeof (value as PromiseLike<unknown> | null | undefined)?.then === "function";
+}
+
+function trimTrailingZeros(decimal: string): string {
+  const dot = decimal.indexOf(".");
+  if (dot < 0) return decimal;
+  let end = decimal.length;
+  while (end > 0 && decimal.charAt(end - 1) === "0") end--;
+  if (end > 0 && decimal.charAt(end - 1) === ".") end--;
+  return decimal.slice(0, end);
+}
+
+/** Seconds the way CPython prints `"%g"`: `exceeded 0.05s` and `exceeded 1s`, not `1.0s`. */
+function formatTimeoutSeconds(timeoutMs: number): string {
+  const value = timeoutMs / 1000;
+  if (!Number.isFinite(value)) return String(value);
+  const scientific = value.toExponential(5);
+  const marker = scientific.indexOf("e");
+  if (marker < 0) return scientific;
+  const exponent = Number(scientific.slice(marker + 1));
+  if (exponent < -4 || exponent >= 6) {
+    const sign = exponent < 0 ? "-" : "+";
+    return (
+      trimTrailingZeros(scientific.slice(0, marker)) +
+      `e${sign}${String(Math.abs(exponent)).padStart(2, "0")}`
+    );
+  }
+  return trimTrailingZeros(value.toFixed(5 - exponent));
+}
+
+/** JS has no `TimeoutError` class; Python raises that builtin, so the name is set to match. */
+function hookTimeoutError(operationName: string, timeoutMs: number): Error {
+  const err = new Error(`laya: hook ${operationName} exceeded ${formatTimeoutSeconds(timeoutMs)}s`);
+  err.name = "TimeoutError";
+  return err;
+}
+
+/**
+ * Await one hook result. The return value is discarded: nothing reads it.
+ *
+ * A non-thenable has already finished, so a configured timeout starts no timer. A thenable is
+ * raced against `timeoutMs`, and the timer is cleared whether the hook settles or the deadline
+ * wins. The deadline matches Python: `TimeoutError`, `laya: hook <Class.event> exceeded <N>s`.
+ */
 async function runWithTimeout(
-  promise: unknown,
+  result: unknown,
   timeoutMs: number | null,
   operationName: string,
 ): Promise<void> {
   if (timeoutMs === null || timeoutMs === undefined) {
-    await promise;
+    await result;
     return;
   }
-  
-  const abortController = new AbortController();
-  const timeoutId = setTimeout(() => abortController.abort(), timeoutMs);
-  
+  if (!isThenable(result)) return;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      Promise.resolve(promise),
+      result,
       new Promise<never>((_, reject) => {
-        abortController.signal.addEventListener("abort", () => {
-          reject(new Error(`hook ${operationName} timed out after ${timeoutMs}ms`));
-        });
+        timer = setTimeout(() => {
+          reject(hookTimeoutError(operationName, timeoutMs));
+        }, timeoutMs);
       }),
     ]);
   } finally {
-    clearTimeout(timeoutId);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -368,15 +411,13 @@ export function dispatch(
   ctx: PredictContext,
   opts: { raiseErrors?: boolean; timeoutMs?: number | null; hook?: Hook } = {},
 ): void {
-  const timeoutMs = opts.timeoutMs ?? null;
-  const operationName = `${((opts.hook as object | undefined)?.constructor?.name ?? "hook")}.`;
   const raiseErrors = opts.raiseErrors ?? true;
   for (const hook of hooks) {
     const method = hook?.[event];
     if (typeof method !== "function") continue;
     try {
       const result: unknown = method.call(hook, ctx);
-      if (typeof (result as PromiseLike<unknown> | null)?.then === "function") {
+      if (isThenable(result)) {
         Promise.resolve(result).catch((err) => reportHookFailure(hook, event, err));
       }
     } catch (err) {
@@ -395,11 +436,11 @@ export async function dispatchAsync(
   opts: { raiseErrors?: boolean; timeoutMs?: number | null; hook?: Hook } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? null;
-  const operationName = `${((opts.hook as object | undefined)?.constructor?.name ?? "hook")}.`;
   const raiseErrors = opts.raiseErrors ?? true;
   for (const hook of hooks) {
     const method = hook?.[event];
     if (typeof method !== "function") continue;
+    const operationName = `${(hook as object)?.constructor?.name ?? "hook"}.${event}`;
     try {
       await runWithTimeout(method.call(hook, ctx), timeoutMs, operationName);
     } catch (err) {

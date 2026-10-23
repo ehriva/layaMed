@@ -7,7 +7,9 @@ train/eval path already persists:
 
 - a checkpoint directory's ``rl_agent_config.json`` (``training.laya_train`` and
   ``training.laya_train_calibration`` as written by merged #931/#933);
-- an existing ``laya-evals`` report JSON (identity semantics from `laya.evals`).
+- an existing ``laya-evals`` report JSON (its identity vocabulary and the rule for reading it --
+  ``config`` first, the document itself as a fallback -- are a copy of `laya.evals`' own, pinned
+  against it by `tests/test_evidence.py`).
 
 Every state it assigns is either derived directly from an upstream artifact or
 marked UNKNOWN. It never manufactures a healthy-looking state from absent input.
@@ -24,11 +26,7 @@ INSUFFICIENT = "INSUFFICIENT"
 UNKNOWN = "UNKNOWN"
 INCOMPARABLE = "INCOMPARABLE"
 
-# Documented upstream floors/thresholds. `laya.calibrate.MIN_TYPE_N` and
-# `laya.train.CALIB_WARN_N` live in modules that import torch at module scope, so a
-# read-only command cannot import them without pulling torch in. We prefer the live
-# constants when torch is importable and fall back to the documented values with an
-# explicit provenance note when it is not; we never silently duplicate.
+
 def _entry(state: str, reason: str, detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     out = {"state": state, "reason": reason}
     if detail:
@@ -46,7 +44,11 @@ def inspect_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
         return _entry(UNKNOWN, "training metadata present but no calibration block; checkpoint predates #933")
     types: Dict[str, Any] = {}
     for name, entry in calibration.items():
-        if not isinstance(entry, dict) or not isinstance(entry.get("items"), int):
+        # `isinstance(True, int)` is True, so a JSON `true` in `items` read as a count of one and a
+        # `false` as zero. Both are type errors, unlike a negative count, which stays reported
+        # because #964 deleted the floor that judged the number.
+        if (not isinstance(entry, dict) or isinstance(entry.get("items"), bool)
+                or not isinstance(entry.get("items"), int)):
             types[name] = _entry(UNKNOWN, "calibration entry is malformed")
             continue
         items = entry["items"]
@@ -55,12 +57,18 @@ def inspect_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
             continue
         # Persisted issues are the authoritative limitation text (#933 writes
         # not-fitted/below-floor/clamped/unchanged-fit there); we do not keep a
-        # second numeric source of truth.
+        # second numeric source of truth. `laya/calibrate.py::MIN_TYPE_N` and
+        # `laya/train.py::CALIB_WARN_N` could not be imported here even if a recomputed
+        # floor were wanted: both modules import torch at module scope, and this read-only
+        # path has to run without it.
         issues = entry.get("issues")
         if not isinstance(issues, list):
             types[name] = _entry(UNKNOWN, "calibration entry has no issues list; cannot tell limitations")
         elif issues:
-            types[name] = _entry(INSUFFICIENT, "fitted with recorded limitations: " + "; ".join(str(i) for i in issues),
+            # The prefix says nothing about whether a fit ran: `calibration_report` writes
+            # "not fitted: N calibration items..." into this same list, so "fitted with ..." here
+            # would contradict the limitation it is quoting a line below.
+            types[name] = _entry(INSUFFICIENT, "limitations recorded: " + "; ".join(str(i) for i in issues),
                                  {"items": items, "issues": issues})
         else:
             types[name] = _entry(PRESENT, "fitted with no recorded issues on %d items" % items,
@@ -74,23 +82,57 @@ def inspect_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def inspect_report(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Evidence state of an eval report's identity fields (reuses EvalReport semantics)."""
-    config = report.get("config")
-    if not isinstance(config, dict):
-        return _entry(UNKNOWN, "report has no config block; identity unknown")
-    fields = {}
-    for key in ("schema", "dataset_sha256", "questions_sha256", "laya_version"):
-        value = config.get(key)
-        if value is None and report.get(key) is not None:
-            value = report.get(key)
-        fields[key] = _entry(PRESENT, "recorded", {"value": value}) if value is not None else _entry(UNKNOWN, "not recorded in this report")
-    identity_keys = [fields["schema"], fields["dataset_sha256"], fields["questions_sha256"]]
-    overall = PRESENT if all(f["state"] == PRESENT for f in identity_keys) else UNKNOWN
-    return {"state": overall, "fields": fields}
+#: The report-identity vocabulary, copied from `laya.evals._IDENTITY_KEYS`. The copy is deliberate:
+#: `laya.evals` imports numpy at module scope, and this module reads a checkpoint directory and a
+#: report JSON with nothing but `json` and `os` on its import path. That is also why
+#: `tests/test_evidence.py` holds the copy against the original in both directions -- a key renamed
+#: upstream would make every report read as identity-incomplete here, and a key added upstream would
+#: read as complete, and neither would fail anything else.
+_IDENTITY_KEYS = ("schema", "dataset_sha256", "questions_sha256")
 
+#: Read as provenance, never required for the identity verdict, because `laya.evals` records
+#: `laya_version` in `config` and deliberately does not compare it
+#: (`laya/evals.py::EvalReport.comparable_to`): a patch release must not invalidate a baseline.
+_PROVENANCE_KEYS = ("laya_version",)
 
+#: The part of that vocabulary two artifacts can actually disagree on. `schema` tags the report, not
+#: the checkpoint, so it is identity for a report and never a checkpoint <-> report conflict.
 _IDENTITY_CONFLICT_KEYS = ("dataset_sha256", "questions_sha256")
+
+
+def _report_identity(report: Dict[str, Any]) -> Dict[str, Any]:
+    """The report's identity fields, wherever that report shape puts them.
+
+    A report may state its identity in ``config`` or at the top level: `laya.evals._identity_of`
+    reads ``config`` and falls back to the document for each key, and
+    `laya/evals_cli.py::_cmd_compare` had to switch to it for exactly that reason. This module
+    copies `laya.evals`' vocabulary rather than importing it (see `_IDENTITY_KEYS`), so it has to
+    copy the read as well -- and copy it once. Read through ``config`` alone, the same document
+    answers differently depending on which half of the toolchain parses it: an identity stated at
+    the top level reads as absent, and a `dataset_sha256` that disagrees with the checkpoint reads
+    as "no shared identity" instead of `INCOMPARABLE`. `tests/test_evidence.py` holds the copy
+    against `_identity_of` in both directions, the way it holds `_IDENTITY_KEYS`.
+
+    `_PROVENANCE_KEYS` ride along because `inspect_report` reports them; they are never compared,
+    so this does not widen what `relate` can conflict on.
+    """
+    config = report.get("config")
+    found = dict(config) if isinstance(config, dict) else {}
+    for key in _IDENTITY_KEYS + _PROVENANCE_KEYS:
+        if found.get(key) is None and report.get(key) is not None:
+            found[key] = report[key]
+    return found
+
+
+def inspect_report(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Evidence state of an eval report's identity fields, on the vocabulary declared above."""
+    identity = _report_identity(report)
+    fields = {}
+    for key in _IDENTITY_KEYS + _PROVENANCE_KEYS:
+        value = identity.get(key)
+        fields[key] = _entry(PRESENT, "recorded", {"value": value}) if value is not None else _entry(UNKNOWN, "not recorded in this report")
+    overall = PRESENT if all(fields[key]["state"] == PRESENT for key in _IDENTITY_KEYS) else UNKNOWN
+    return {"state": overall, "fields": fields}
 
 
 def _field(config_like: Any, key: str) -> Any:
@@ -114,8 +156,12 @@ def relate(config: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     infers a PRESENT match from `laya_version` (which names the software, not the
     checkpoint). Everything else is UNKNOWN -- current artifacts expose no immutable
     shared checkpoint identity.
+
+    "expose" is read through `_report_identity`, so a report that states its digests at the top
+    level of the document rather than under ``config`` conflicts exactly like one that states them
+    in ``config``. The disagreement itself is what the state claims, not where it was written.
     """
-    report_config = report.get("config") if isinstance(report.get("config"), dict) else {}
+    report_config = _report_identity(report)
     conflicts = []
     for key in _IDENTITY_CONFLICT_KEYS:
         a = _field(config, key)
@@ -127,21 +173,36 @@ def relate(config: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     return _entry(UNKNOWN, "no immutable shared checkpoint identity between this checkpoint artifact and the report")
 
 
+def _read_json_object(path: str) -> Dict[str, Any]:
+    """One artifact's JSON object, or a failure that names the file it came from.
+
+    A `json.JSONDecodeError` says what is wrong with the text and nothing about which file, and a
+    `UnicodeDecodeError` says the same about the encoding. `inspect_checkpoint` reads two of them
+    from two different arguments, so a refusal that omits the path cannot say which artifact is
+    broken -- the only thing the caller can act on. Same reason `laya/evals.py:155` prefixes its
+    dataset rows with the path.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValueError("%s is not valid JSON: %s" % (path, exc)) from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError("%s is not UTF-8 text: %s" % (path, exc)) from exc
+    if not isinstance(document, dict):
+        raise ValueError("%s is not a JSON object" % path)
+    return document
+
+
 def inspect_checkpoint(checkpoint_dir: str, report_path: Optional[str] = None) -> Dict[str, Any]:
     """Full read-only evidence inspection for one checkpoint (optionally one report)."""
     config_path = os.path.join(checkpoint_dir, "rl_agent_config.json")
     if not os.path.isdir(checkpoint_dir) or not os.path.isfile(config_path):
         raise FileNotFoundError("no rl_agent_config.json under %r" % checkpoint_dir)
-    with open(config_path, "r", encoding="utf-8") as handle:
-        config = json.load(handle)
-    if not isinstance(config, dict):
-        raise ValueError("%s is not a JSON object" % config_path)
+    config = _read_json_object(config_path)
     out: Dict[str, Any] = {"checkpoint": checkpoint_dir, "calibration": inspect_calibration(config)}
     if report_path is not None:
-        with open(report_path, "r", encoding="utf-8") as handle:
-            report = json.load(handle)
-        if not isinstance(report, dict):
-            raise ValueError("%s is not a JSON object" % report_path)
+        report = _read_json_object(report_path)
         out["report"] = inspect_report(report)
         out["relationship"] = relate(config, report)
     return out

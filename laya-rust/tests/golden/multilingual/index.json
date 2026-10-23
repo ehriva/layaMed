@@ -1,0 +1,166 @@
+[
+  {
+    "name": "quickstart",
+    "file": "case_quickstart.json",
+    "expects_error": false
+  },
+  {
+    "name": "dict_state",
+    "file": "case_dict_state.json",
+    "expects_error": false
+  },
+  {
+    "name": "list_state",
+    "file": "case_list_state.json",
+    "expects_error": false
+  },
+  {
+    "name": "criterion_shapes",
+    "file": "case_criterion_shapes.json",
+    "expects_error": false
+  },
+  {
+    "name": "choice_criteria_list",
+    "file": "case_choice_criteria_list.json",
+    "expects_error": false
+  },
+  {
+    "name": "cjk",
+    "file": "case_cjk.json",
+    "expects_error": false
+  },
+  {
+    "name": "arabic",
+    "file": "case_arabic.json",
+    "expects_error": false
+  },
+  {
+    "name": "json_escaping",
+    "file": "case_json_escaping.json",
+    "expects_error": false
+  },
+  {
+    "name": "nonstring_instructions",
+    "file": "case_nonstring_instructions.json",
+    "expects_error": false
+  },
+  {
+    "name": "single_option",
+    "file": "case_single_option.json",
+    "expects_error": false
+  },
+  {
+    "name": "many_options",
+    "file": "case_many_options.json",
+    "expects_error": false
+  },
+  {
+    "name": "long_state",
+    "file": "case_long_state.json",
+    "expects_error": false
+  },
+  {
+    "name": "mask_injection",
+    "file": "case_mask_injection.json",
+    "expects_error": false
+  },
+  {
+    "name": "sample_app_english",
+    "file": "case_sample_app_english.json",
+    "expects_error": false
+  },
+  {
+    "name": "sample_app_hindi",
+    "file": "case_sample_app_hindi.json",
+    "expects_error": false
+  },
+  {
+    "name": "options_exceed_head",
+    "file": "case_options_exceed_head.json",
+    "expects_error": true
+  },
+  {
+    "name": "shortlist_many_options",
+    "file": "case_shortlist_many_options.json",
+    "expects_error": false,
+    "kind": "shortlist"
+  },
+  {
+    "name": "long_short",
+    "file": "case_long_short.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_exact_limit",
+    "file": "case_long_exact_limit.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_room_fast_path",
+    "file": "case_long_room_fast_path.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_multi_chunk",
+    "file": "case_long_multi_chunk.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_punctuation",
+    "file": "case_long_punctuation.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_dict",
+    "file": "case_long_dict.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_list",
+    "file": "case_long_list.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_clamp",
+    "file": "case_long_clamp.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_special_tokens",
+    "file": "case_long_special_tokens.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_empty_questions",
+    "file": "case_long_empty_questions.json",
+    "expects_error": false,
+    "kind": "long"
+  },
+  {
+    "name": "long_invalid_stride",
+    "file": "case_long_invalid_stride.json",
+    "expects_error": true,
+    "kind": "long"
+  },
+  {
+    "name": "long_invalid_aggregate",
+    "file": "case_long_invalid_aggregate.json",
+    "expects_error": true,
+    "kind": "long"
+  },
+  {
+    "name": "long_no_state_room",
+    "file": "case_long_no_state_room.json",
+    "expects_error": true,
+    "kind": "long"
+  }
+]

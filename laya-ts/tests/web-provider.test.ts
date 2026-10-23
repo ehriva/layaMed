@@ -14,7 +14,7 @@ vi.mock("onnxruntime-web", () => ({
   InferenceSession: { create: (...args: unknown[]) => ortMocks.create(...args) },
 }));
 
-import { createWebProvider } from "../src/providers.js";
+import { createWebProvider, loadWebBundle } from "../src/providers.js";
 
 const batch: any = {
   inputIds: [[1]],
@@ -89,5 +89,70 @@ describe("web provider external data", () => {
     // Second run goes straight to WASM: no new session, no new fetch.
     await provider.runEncoder(batch);
     expect(encFetches()).toBe(2);
+  });
+});
+
+describe("web provider URL slashes", () => {
+  function stubFiles() {
+    const fetchMock = vi.fn(async (_url: string) => ({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => new TextEncoder().encode("{}").buffer,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    ortMocks.create.mockResolvedValue({ run: async () => ({}) });
+    return fetchMock;
+  }
+
+  it.each([
+    ["https://example.com/m///", "/v1//child///", "https://example.com/m/v1//child"],
+    ["https://example.com/m", "", "https://example.com/m"],
+    ["https://example.com/m", null, "https://example.com/m"],
+    ["https://example.com/m///", "///", "https://example.com/m/"],
+    ["https://example.com/m/\n", "/sub/\n", "https://example.com/m/\n/sub/\n"],
+    ["https://example.com/m", "/∕sub\\///", "https://example.com/m/∕sub\\"],
+    ["owner/model", "/v1//child///", "https://huggingface.co/owner/model/resolve/pinned/v1//child"],
+    ["owner/model", "///", "https://huggingface.co/owner/model/resolve/pinned/"],
+  ])("keeps bundle URL semantics for %s and subfolder %s", async (repo, subfolder, base) => {
+    const fetchMock = stubFiles();
+    const bundle = await loadWebBundle(repo!, { subfolder, revision: "pinned" });
+    expect(bundle.dir).toBe(base);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      `${base}/rl_agent_config.json`, `${base}/tokenizer.json`,
+    ]);
+  });
+
+  it.each([
+    ["https://example.com/m///", "https://example.com/m"],
+    ["//example.com/a//b///", "//example.com/a//b"],
+    ["", ""],
+    ["///", ""],
+    ["https://example.com/m/\n", "https://example.com/m/\n"],
+    ["https://example.com/m∕\\///", "https://example.com/m∕\\"],
+  ])("keeps model and sidecar paths for %s", async (url, base) => {
+    const fetchMock = stubFiles();
+    await createWebProvider(url);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      `${base}/encoder.onnx`, `${base}/encoder.onnx.data`,
+      `${base}/head.onnx`, `${base}/head.onnx.data`,
+    ]);
+    expect(ortMocks.create.mock.calls.map(call => call[1].externalData[0].path))
+      .toEqual(["encoder.onnx.data", "head.onnx.data"]);
+  });
+
+  it("handles long interior slash runs before a non-slash suffix", async () => {
+    const fetchMock = stubFiles();
+    const slashes = "/".repeat(100_000);
+    const repo = `https://example.com/${slashes}model`;
+    const subfolder = `${slashes}sub${slashes}leaf${slashes}`;
+    const base = `${repo}/sub${slashes}leaf`;
+    const bundle = await loadWebBundle(`${repo}${slashes}`, { subfolder });
+    expect(bundle.dir).toBe(base);
+    await createWebProvider(`${base}${slashes}`);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      `${base}/rl_agent_config.json`, `${base}/tokenizer.json`,
+      `${base}/encoder.onnx`, `${base}/encoder.onnx.data`,
+      `${base}/head.onnx`, `${base}/head.onnx.data`,
+    ]);
   });
 });

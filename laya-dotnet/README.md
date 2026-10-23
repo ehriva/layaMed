@@ -31,6 +31,7 @@ hallucinate.
 - [Quickstart](#quickstart)
 - [Writing questions](#writing-questions)
 - [Supplying state](#supplying-state)
+- [Long prediction](#long-prediction)
 - [Reading results](#reading-results)
 - [Confidence gating](#confidence-gating)
 - [Built-in presets](#built-in-presets)
@@ -254,7 +255,8 @@ its position. `Add` throws instead.
 |---|---|
 | `string` | used as written |
 | `IDictionary`, `IEnumerable<KeyValuePair<string, object?>>` | a JSON object, in the dictionary's enumeration order |
-| any other `IEnumerable` (arrays, lists, conversation turns) | a JSON array |
+| `IList` (arrays, `List<T>`, conversation turns) and tuples (`ValueTuple`, `Tuple`) | a JSON array; only an `IList` is left-truncated when over budget, as Python truncates a `list` (a tuple keeps its start) |
+| a set, a `Queue<T>`, a LINQ iterator or any other non-list enumerable | **not accepted**: serializing it throws `JsonException`, as Python's `json.dumps` rejects a set or a generator. Pass `ToList()` / `ToArray()` |
 | `null`, `bool`, integer types, `BigInteger`, `double`, `float`, `decimal` | the JSON scalar |
 
 Serialization matches Python's `json.dumps` byte for byte (`", "` / `": "` separators, float
@@ -288,6 +290,55 @@ engine.Predict(new[]                                                       // a 
   most important fields first.
 - A literal `<mask>` anywhere in state, instructions or options is replaced with a space, so user
   input can't forge a marker token.
+
+---
+
+## Long prediction
+
+`Predict` keeps only the state tokens that fit one sequence. To scan an entire long document,
+use the port of Python **`ONNXAgent.predict_long`** (there is no long-prediction API in `laya-ts`):
+
+```csharp
+LayaResult result = engine.PredictLong(document, questions, batchSize: 2);
+Console.WriteLine(result.Usage.Windows);
+if (result["churn_risk"].Window is { } deciding)
+    Console.WriteLine($"window {deciding.Index}: tokens {deciding.TokenStart}..{deciding.TokenEnd}");
+
+// The router routes the original document once, then scans it on that checkpoint.
+using var router = new LayaRouter();
+LayaResult routed = router.PredictLong(document, questions, model: "english", batchSize: 2);
+```
+
+- `window` is a state-token count, defaulting to `max(64, max_len - head_max_len - 8)`,
+  capped at the smallest state budget left by the questions. `stride` defaults to half the
+  effective window (at least 1). Nonpositive values select the defaults, as in Python.
+- Tokens are decoded back to text and scored as ordinary states, with the same overlapping
+  windows and re-tokenization as Python. `batchSize` caps windows per forward pass; without
+  a positive cap they share a run, except for Python's automatic cap when a small window
+  multiplies the batch by more than 2x.
+- `noul` takes the greatest rounded P(true). `choice` and `score` take the greatest rounded
+  `AnswerConfidence`. Ties use the first window. The complete deciding answer (including
+  probabilities, score legend and action) is preserved; it is **not** a calibrated probability
+  for the whole document.
+- `Answer.Window` reports zero-based index, start/end offsets into the original tokenized state
+  (end exclusive), and total window count. A state that fits the room the questions leave
+  (or, with an explicit `window`, that window) is scored unchanged by one `Predict` pass,
+  with `Usage.Windows == 1` and no answer attribution.
+- Scan usage sums `InputTokens`, `StateTokens`, `StateTokensDropped` and `Truncated`
+  (a window count, including 0/1 for a single window). `TruncatedQuestions` is the last
+  window's list; `Options` merges collapsed-option records by question id. These additional
+  diagnostics are currently populated only by `PredictLong`, not ordinary `Predict`.
+- `aggregate` accepts only `"auto"`. Null state, unsupported aggregation, no state room, or a
+  gap-causing stride throws `ArgumentException` (`ArgumentNullException` for null state).
+  A stride valid for a requested window that gets clamped is reduced to half its new size.
+  Window/stride clamps emit `System.Diagnostics.Trace` warnings; install a listener to see them.
+- The router's usual `model`, `task` and `lang` hints select a checkpoint. Attached predictors
+  must implement `ILayaLongPredictor`; otherwise the router throws `NotSupportedException`.
+  Language-temperature and hook arguments remain unported.
+
+The .NET adaptations are typed records instead of Python dictionaries, trace warnings instead of
+`RuntimeWarning`, and .NET argument/capability exceptions. The existing `"laya-rl-agent"` model
+identifier is kept, rather than Python ONNXAgent's `"laya-rl-agent-onnx"` suffix.
 
 ---
 
@@ -493,6 +544,15 @@ Console.WriteLine(result.Routing!.Reason);   // "English Latin text"
 or testing the routing logic in isolation. `Preload()` builds every checkpoint up front for a
 server or demo, so no request pays a cold load.
 
+**Language hints.** Precedence is explicit `model` > `task` > detected typed-decisions workflow (opt-in) >
+explicit `lang` > `LangGuess` > detection > default. An explicit `lang` decides only when its code names a
+language (`en`, `EN`, `en-US`, `en_US`, `en_US.UTF-8`, `pt-BR`); blank, `C`, `C.UTF-8`, `POSIX`, `und`, `zxx`
+and `mul` fall through to detection. A `LangGuess` is Python's `lang_guess`, a code or a callback of the state
+(a callback returning `null` abstains, so a language-identification model can decline); pass one per call
+to the `Route`/`Predict`/`PredictLong` overloads that end in `LangGuess? langGuess`, or install one for every
+request with `new LayaRouterOptions { LangGuess = LangGuess.FromCallback(state => Identify(state)) }`.
+Route reasons quote caller text with Python's `repr`, escaping non-printable characters.
+
 **Email cleaning** strips quoted history, signatures and disclaimers before you ask any questions:
 
 ```csharp
@@ -500,6 +560,11 @@ var cleaned = LayaEmail.CleanBody(rawBody);
 var state = LayaEmail.State(subject, rawBody, sender: "user@acme.com");
 var answers = router.Predict(state, LayaPresets.Email());
 ```
+
+`LayaEmail.State(subject, body, sender, clean, extra, maxChars)` takes Python's `max_chars` budget (default 3000).
+It is a slice budget, applied as Python slices: `0` gives an empty body and a negative value cuts from the end
+(`5 * |maxChars|` characters in all), so pass a number larger than the body to mean "no limit". It is ignored
+when `clean` is `false` and is never added to the state as a field.
 
 **Embedding shortlist** narrows a high-cardinality choice question before the model sees it, using
 a caller-supplied embedding function (bring your own bi-encoder — this SDK does not include one):
@@ -524,6 +589,7 @@ Python's `laya.Agent`.
 | `static LayaEngine Create(LayaOptions? options = null)` | Finds the artifacts (see [resolution order](https://github.com/NandhaKishorM/laya/blob/main/laya-dotnet/MODELS.md#5-where-the-engine-looks)), loads the config, and builds the ONNX session and tokenizer. May download if `AllowDownload` is set. |
 | `static LayaEngine FromDirectory(string directory)` | Shorthand for `Create(new LayaOptions { ModelDirectory = directory })`. |
 | `LayaResult Predict(object? state, QuestionSet questions)` | Answers every question about `state` in a single batched inference call. See [Supplying state](#supplying-state). |
+| `LayaResult PredictLong(object state, QuestionSet questions, int? window = null, int? stride = null, string aggregate = "auto", int? batchSize = null)` | Scans overlapping token windows. See [Long prediction](#long-prediction). |
 | `LayaConfig Config { get; }` | The loaded checkpoint's `rl_agent_config.json`. |
 | `ModelArtifacts Artifacts { get; }` | The paths the artifacts were loaded from. |
 | `void Dispose()` | Releases the session and tokenizer. Safe to call more than once. |
@@ -603,10 +669,11 @@ The contents of `rl_agent_config.json`. Missing keys fall back to the same defau
 | `string? Encoder` | The encoder the checkpoint was trained on. For information only. |
 | `int MaxLen` | Total sequence budget, in tokens (1024 on multilingual). |
 | `int HeadMaxLen` | Budget for instructions plus all option fragments (256 on multilingual). |
-| `IReadOnlyList<double> Temperature` | Per-question-type temperature `[choice, score, noul]`, clamped. Always 3 entries. |
+| `IReadOnlyList<double> Temperature` | Per-question-type temperature `[choice, score, noul]`, clamped; the entries of the config as written (a list shorter than three fails at the prediction that needs the missing one, as Python does). |
 | `IReadOnlyDictionary<string, double> TemperatureByOptions` | Per-bucket temperature, clamped. Keys look like `choice:3-5` (buckets `2`, `3-5`, `6-10`, `11+`). |
-| `IReadOnlyList<double> TemperatureRaw` / `TemperatureByOptionsRaw` | What the checkpoint shipped, before clamping. |
-| `IReadOnlyList<string> ClampedTemperatures` | Every temperature that was clamped into `[0.5, 5.0]`. A non-empty list means confidence from those buckets is uncalibrated. Each entry is also logged at load time via `Trace.TraceWarning`. |
+| `IReadOnlyList<double> TemperatureRaw` / `TemperatureByOptionsRaw` | What the checkpoint shipped, before clamping, as numbers (a value that is not a number reads `NaN`). |
+| `IReadOnlyList<object?> TemperatureRawValues` / `IReadOnlyDictionary<string, object?> TemperatureByOptionsRawValues` | The same entries as the JSON held them (`long`, `double`, `string`, `bool`, `null`, list). |
+| `IReadOnlyList<string> ClampedTemperatures` | Every temperature that was clamped into `[0.5, 5.0]`. A non-empty list means confidence from those buckets is uncalibrated. Entries read `name=<Python repr of the value> -> <applied>`, as Python's warning lists them. One `Trace.TraceWarning` listing every entry is raised at load time. |
 
 ```csharp
 foreach (var warning in engine.Config.ClampedTemperatures)
@@ -670,6 +737,7 @@ embedding.
 | `double Confidence` | 0..1. Entropy-based for choice and score, `max(p, 1-p)` for noul. |
 | `double AnswerConfidence` | 0..1. `max(p)`, the same quantity on every question type. |
 | `ActionInfo Action` | The action head's output. |
+| `WindowInfo? Window` | Deciding window for a multi-window scan; otherwise null. Token end is exclusive. |
 | `ChoiceAnswer AsChoice()` / `ScoreAnswer AsScore()` / `NoulAnswer AsNoul()` | Narrows to the typed answer. Throws `InvalidOperationException` on a mismatch. |
 
 - **`ChoiceAnswer`**: `string Choice`, `IReadOnlyList<KeyValuePair<string, double>> Probabilities`
@@ -684,6 +752,12 @@ embedding.
   acted on directly rather than escalated. It corresponds to Python's `action.act_probability`.
 - `Usage(int InputTokens, int OutputTokens)`: non-padding input tokens across the batch.
   `OutputTokens` is always 0.
+  Optional scan properties are `Windows`, `StateTokens`, `StateTokensDropped`, `Truncated`
+  (all `int?`), `TruncatedQuestions` (`IReadOnlyList<string>?`) and
+  `Options` (`IReadOnlyDictionary<string, OptionUsage>?`).
+- `WindowInfo(int Index, int TokenStart, int TokenEnd, int Count)` and
+  `OptionUsage(int Total, int Distinct, int? TokensPerOption)` are immutable record structs.
+  See [Long prediction](#long-prediction) for their semantics.
 
 ### `LayaPresets` (static)
 
@@ -863,21 +937,36 @@ with `--solution` rather than as a positional argument.
 
 ## Known gaps
 
-Default predictions and routing are verified against goldens regenerated from Python
-**0.3.24**. Language detection uses current script and mixed-language rules; `MixedSegment`
+Default and long predictions are verified against goldens regenerated from Python
+**0.4.11**, and routing against goldens from Python **0.4.12**. Language detection uses current script and mixed-language rules; `MixedSegment`
 identifies the foreign line or field that overrides a mostly-English state. Undetermined
 Latin text uses the router's configured default. Email cleaning follows current request,
 disclaimer, signature and reply-header rules, including Portuguese, Spanish and French markers.
 
 - **Opt-in features added in Python 0.3.21 are not ported yet:** abstention (`min_confidence`),
-  `predict_long`, and per-language temperatures (`lang_temperatures`). They are off by default in
+  and per-language temperatures (`lang_temperatures`). They are off by default in
   Python, so default predictions are unaffected. They are planned as follow-ups.
 - **Other Python-only APIs are not ported:** hooks, batching APIs, question option ordering and
   digest controls.
-- **Custom email-state body budgets:** `LayaEmail.State` does not expose Python's `max_chars`
-  keyword. Call `LayaEmail.CleanBody(body, maxChars)` and pass its result with `clean: false`.
 - **Usage diagnostics:** Python's `state_tokens`, `truncated`, `state_tokens_dropped` and
-  `truncated_questions` are not yet exposed by .NET's `Usage` record.
+  `truncated_questions` are exposed for `PredictLong` only; ordinary `Predict` still reports
+  just input/output tokens.
+
+## Differences from Python
+
+Where this SDK deliberately does not match the Python reference, so nobody has to find out from a failing load:
+
+- **`max_len` and `head_max_len` are checked when the config is loaded.** An integer `>= 0` or a boolean (`true` is 1,
+  `false` is 0, as in Python) is accepted. Any other value is refused by `LayaConfig.Parse` / `LayaEngine.Create` with
+  an `InvalidDataException`: a float, string, `null`, list or object gets the `TypeError` text Python raises at the first
+  prediction (head first, then `max_len`), and a negative integer gets a message naming the field and value, because
+  Python then slices from the end, which this port does not support. Python loads such a checkpoint and fails later. The
+  related corner: a small *fractional* `head_max_len` that Python happens to survive (roughly up to 8 plus 4 per option)
+  is refused here too.
+- **JSON nesting.** Config and tokenizer JSON is read like `json.loads`, with the nesting cut-off set to 2,997 levels,
+  what CPython 3.12 measured from a shallow call. Python's real limit depends on the call depth at the point of loading.
+- **Config files are decoded as strict UTF-8.** Python opens them with the locale's encoding (cp1252 on a default Windows
+  install), which only differs for non-ASCII bytes; a BOM is rejected, as `json.loads` does.
 
 ---
 

@@ -12,7 +12,7 @@ namespace Laya.Tests;
 /// which is why the tolerances sit a little above 1e-4 rather than at zero.
 /// </remarks>
 [Collection(AllEnginesCollection.Name)]
-public sealed class PredictParityTests(AllEnginesFixture fixture)
+public sealed partial class PredictParityTests(AllEnginesFixture fixture)
 {
     /// <summary>Probabilities and confidences: 4-dp values, so a rounding boundary is 1e-4 wide.</summary>
     private const double ProbTolerance = 2e-4;

@@ -30,7 +30,7 @@ env var                    meaning                                        defaul
                            Keep <= physical cores; oversubscribing the     default)
                            logical/hyperthread count is a large regression.
 ``LAYA_AUTO_TASK``         auto-route to the typed-decisions checkpoint   0
-``LAYA_DEFAULT_MODEL``     fallback checkpoint when a state carries no   (english)
+``LAYA_DEFAULT_MODEL``     fallback checkpoint when a state carries no   (multilingual)
                            language evidence; aliases like ml work
 ``LAYA_MAX_LOADED``        checkpoints kept resident at once. Below what  2
                            routing can choose, one reloads per switch.
@@ -53,6 +53,10 @@ env var                    meaning                                        defaul
                            `answer_confidence`, no `confidence` on noul
                            answers, and `usage` reduced to
                            `input_tokens` + `output_tokens`
+``LAYA_TOURNAMENT_GROUP``  answer a choice with more options than this   0 (off)
+                           by elimination in groups of this size, on
+                           both decision routes; raises their option
+                           cap from 100 to 255 (#302)
 =========================  ============================================  =========
 
 ``LAYA_DEVICE`` is a preference, not a guarantee: an ``Agent`` that asks for a
@@ -72,7 +76,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # A failed inference is reported to the client as a fixed 500 so nothing about paths,
 # weights or memory state leaks, which leaves the server log as the only place the
@@ -120,6 +124,10 @@ DEFAULT_MAX_BATCH_TOKENS = 131072
 _BATCH_ROW_TOKENS_ASSUMED = 512
 # HTTP-only amplification guard; the library keeps its head_max_len-aware budget.
 MAX_CHOICE_OPTIONS = 100
+# With `LAYA_TOURNAMENT_GROUP` set, a choice is narrowed in groups rather than read in one pass, so
+# its cap is Jev's documented one instead (#302). The tournament reads every label inside a group's
+# option budget, so the one-pass budget that sets MAX_CHOICE_OPTIONS no longer binds.
+MAX_TOURNAMENT_CHOICE_OPTIONS = 255
 MAX_SCORE_LEVELS = 32
 MAX_TOTAL_OPTIONS = 512
 
@@ -127,6 +135,10 @@ MAX_TOTAL_OPTIONS = 512
 # before inference, so without a bound many concurrent near-cap requests OOM
 # the worker even though every request is individually valid (#330).
 DEFAULT_MAX_CONCURRENT = 16
+
+# The bind port a `LAYA_PORT` with no value in it asks for -- the default `README.md`,
+# `docs/http-api.md` and this module's own environment table all print as `8000`.
+DEFAULT_PORT = 8000
 
 # What `GET /health` answers an unauthenticated caller when `LAYA_API_KEY` is set. Liveness is
 # the half of that endpoint a container probe needs and the half the page promises is always
@@ -163,10 +175,29 @@ BODY_REFUSALS = ("hooks", "on_predict_start", "on_predict_end", "hooks_raise", "
 BATCH_BODY_CALL_CONTROLS = ("batch_size", "min_confidence", "sort_by_length")
 BATCH_BODY_ITEM_CONTROLS = ("max_len", "head_max_len", "task", "lang", "lang_guess")
 
+# ``diagnostics`` is neither: it is an out-parameter. ``Router.predict_batch`` fills a dict the
+# caller already owns (#1111, so a shell can say which checkpoint groups actually reordered), and a
+# JSON body cannot own one -- whatever a request sent would be filled in and then dropped when the
+# handler returned. So the batch path refuses it, for the reason the list above exists: a control
+# the endpoint cannot honour is told, not ignored. It is listed separately from ``BODY_REFUSALS``
+# because that tuple is pinned against ``Router.predict``, which has no ``diagnostics``.
+BATCH_BODY_OUT_PARAMETERS = ("diagnostics",)
+
 
 def _env_bool(name: str, default: bool) -> bool:
+    """A `LAYA_*` switch. An unset or blank value means `default`; only the four spellings turn it on.
+
+    Blank is not false here because blank is what a `.env` line, a Compose `KEY=` with nothing
+    after it, and a CI matrix write when a variable is declared and left for the operator to fill
+    in, and most other readers of this family already read it that way -- `mcp.device.env_device`
+    returns None for it, `mcp.remote._timeout_from_env` returns its default, and the numeric and
+    name resolvers below strip and fall back too. `LAYA_PRELOAD=` is the case that costs something:
+    `docs/cli-mcp.md` names `0` as how to ask for lazy loading, a declared-but-unfilled
+    `LAYA_PRELOAD=` gets it anyway, and `laya_status` then echoes the blank back as
+    `preload: false`.
+    """
     v = os.environ.get(name)
-    if v is None:
+    if v is None or not v.strip():
         return default
     return v.strip().lower() in ("1", "true", "yes", "on")
 
@@ -224,6 +255,89 @@ def _add_jev_confidence(result: Dict[str, Any]) -> Dict[str, Any]:
         conf = jev_confidence(answer) if isinstance(answer, dict) else None
         answers[qid] = answer if conf is None else {**answer, "x_jev_confidence": round(conf, 4)}
     return {**result, "answers": answers}
+
+
+def _tournament_plan(questions: Any, group: int) -> Optional[Dict[str, List[str]]]:
+    """The choices to narrow by elimination, as `{qid: labels}`, or None to answer in one pass.
+
+    Every choice over `group` is narrowed. A choice with `option_order` keeps the one-pass path
+    while one pass can still read it, since narrowing drops the order (#1062): but once any choice
+    is over MAX_CHOICE_OPTIONS, which only the raised cap admits and one pass was never asked to
+    read, the request is narrowed and an order on a narrowed choice is dropped as
+    `predict_tournament` does. A label that is not a string cannot be mapped back onto the answer,
+    so such a choice keeps one pass too, and is refused when one pass is not an option.
+    """
+    from .shortlist import _criteria_items
+    if not isinstance(questions, dict):
+        return None
+    large: Dict[str, List[str]] = {}
+    for qid, question in questions.items():
+        if not (isinstance(question, dict) and question.get("type") == "choice"):
+            continue
+        criteria = question.get("criteria")
+        if isinstance(criteria, (dict, list)) and len(criteria) > group:
+            large[qid] = [label for label, _ in _criteria_items(criteria)]
+    if not large:
+        return None
+    unmappable = [qid for qid, labels in large.items() if not all(isinstance(label, str) for label in labels)]
+    ordered = [qid for qid in large if questions[qid].get("option_order") is not None]
+    if any(len(labels) > MAX_CHOICE_OPTIONS for labels in large.values()):
+        if unmappable:
+            raise ValueError(
+                "question %r: a choice is narrowed by elimination once a request has one over %d "
+                "options, and that needs every label to be a string" % (unmappable[0], MAX_CHOICE_OPTIONS))
+        return large
+    return None if unmappable or ordered else large
+
+
+def _predict_with_tournament(router: Any, state: Any, questions: Dict[str, Any], group: int,
+                             **predict_kwargs: Any) -> Dict[str, Any]:
+    """Answer `questions`, narrowing every choice over `group` options by elimination (#302).
+
+    One pass reads every option inside a single option budget, and past a few dozen options they
+    no longer each get a token span of their own. `predict_tournament` reads them in groups of
+    `group` instead. When no choice is over `group`, this is exactly `router.predict`.
+
+    The answer keeps the Jev shape: `probabilities` names every option in criteria order, the
+    finalists carry the final round's probabilities, and an option eliminated in an earlier round
+    carries 0.0, so `choice` is still the argmax and the values still sum to 1. `x_tournament`
+    records the finalists and the round count, so a caller can tell an eliminated option from one
+    the final round scored. `confidence` and `answer_confidence` are the final round's.
+    `usage.input_tokens` is summed over every call; the other usage keys are the final call's.
+
+    Which choices are narrowed, and when an `option_order` is kept or dropped, is
+    `_tournament_plan`'s; a dropped order is reported as `x_tournament.option_order_dropped`.
+    """
+    from .shortlist import predict_tournament
+    large = _tournament_plan(questions, group)
+    if large is None:
+        return router.predict(state, questions, **predict_kwargs)
+
+    calls = []
+
+    class _Recorded:
+        def predict(self, *args, **kwargs):
+            result = router.predict(*args, **kwargs)
+            calls.append(result)
+            return result
+
+    result = dict(predict_tournament(_Recorded(), state, questions, group_size=group, **predict_kwargs))
+    rounds = result.pop("tournament", {})
+    answers = dict(result.get("answers") or {})
+    for qid, labels in large.items():
+        answer, meta = answers.get(qid), rounds.get(qid) or {}
+        if not isinstance(answer, dict) or not meta.get("rounds"):
+            continue
+        final = answer.get("probabilities") or {}
+        report = {"finalists": list(meta["labels"]), "rounds": meta["rounds"]}
+        if questions[qid].get("option_order") is not None:
+            report["option_order_dropped"] = True
+        answers[qid] = {**answer,
+                        "probabilities": {label: final.get(label, 0.0) for label in labels},
+                        "x_tournament": report}
+    usage = dict(result.get("usage") or {})
+    usage["input_tokens"] = sum((call.get("usage") or {}).get("input_tokens", 0) for call in calls)
+    return {**result, "answers": answers, "usage": usage}
 
 
 def _published_model_ids() -> Dict[str, str]:
@@ -310,6 +424,25 @@ def _resolve_max_concurrent() -> int:
     except ValueError:
         return DEFAULT_MAX_CONCURRENT
     return n if n > 0 else DEFAULT_MAX_CONCURRENT
+
+
+def _resolve_tournament_group() -> int:
+    """Group size for choices answered by elimination, from LAYA_TOURNAMENT_GROUP; 0 is off (#302).
+
+    A choice with more options than this goes through `predict_tournament` in groups of this size.
+    Anything unset, unparseable, below 2 or above MAX_CHOICE_OPTIONS leaves it off, so the one-pass
+    path is the default. The upper bound is what keeps the raised cap honest: every choice it newly
+    admits has more than MAX_CHOICE_OPTIONS options, so it is always over the group and always
+    narrowed, never handed to a one-pass read that cannot fit it.
+    """
+    raw = os.environ.get("LAYA_TOURNAMENT_GROUP")
+    if not raw:
+        return 0
+    try:
+        n = int(raw)
+    except ValueError:
+        return 0
+    return n if 2 <= n <= MAX_CHOICE_OPTIONS else 0
 
 
 def _resolve_idle_unload_seconds() -> float:
@@ -405,6 +538,26 @@ def _refuse_body_refusals(body: Dict[str, Any]) -> None:
             status_code=422,
             detail="%s run inside the server process and cannot be sent to this endpoint; "
                    "install them where laya-serve runs, or drop them" % ", ".join(given))
+
+
+def _refuse_out_parameters(body: Dict[str, Any]) -> None:
+    """Reject a batch request that sends one of ``BATCH_BODY_OUT_PARAMETERS`` (422).
+
+    ``Router.predict_batch``'s ``diagnostics`` is a dict the caller keeps a reference to and reads
+    after the call. An HTTP caller keeps no reference, so a value sent here could only be written
+    and discarded. Refusing says so instead of answering 200 to a request for a report that is
+    never delivered.
+    """
+    from fastapi import HTTPException
+
+    given = sorted(key for key in BATCH_BODY_OUT_PARAMETERS
+                   if key in body and body[key] is not None)
+    if given:
+        raise HTTPException(
+            status_code=422,
+            detail="%s is filled in place for an in-process caller and cannot be returned over "
+                   "HTTP; read the per-group report from the CLI or a local Router"
+                   % ", ".join(given))
 
 
 def _validate_language_param(body: Dict[str, Any], key: str) -> Optional[str]:
@@ -557,9 +710,9 @@ def _default_model_option(extra_models: Optional[Dict[str, Any]] = None) -> Dict
     """Routing fallback from ``LAYA_DEFAULT_MODEL``, as a ``Router`` keyword; unset sends nothing.
 
     ``Router.default`` answers the two states that carry no language evidence at all: no letters,
-    and Latin script too short to identify ("Quero cancelar", "Esqueci minha senha"). The README
-    tells a deployment whose traffic is mostly non-English to set ``Router(default="multilingual")``,
-    and this is the only way such a deployment can say so without writing its own server. Left out
+    and Latin script too short to identify ("Quero cancelar", "Esqueci minha senha"). ``Router``
+    defaults to ``multilingual`` since 0.4.0, and a deployment whose traffic is mostly English
+    may set ``Router(default="english")`` instead, as the README describes. Left out
     of the constructor when unset, so the value cannot drift from ``Router``'s own default -- the
     same reasoning as ``_resolve_max_loaded`` above.
 
@@ -589,8 +742,21 @@ def _default_model_option(extra_models: Optional[Dict[str, Any]] = None) -> Dict
 
 
 def _resolve_port() -> int:
-    """Port from LAYA_PORT, validated. Exits with a message instead of a traceback."""
-    raw = os.environ.get("LAYA_PORT", "8000")
+    """Port from LAYA_PORT, validated. Exits with a message instead of a traceback.
+
+    Unset and blank both mean the documented default. `LAYA_PORT=` is what a `.env` line with the
+    value left for the operator to fill in reads as, and a value that carries no number cannot be
+    contradicted by falling back -- unlike `LAYA_PORT=99999`, where answering 8000 would bind the
+    server somewhere its operator did not ask for. The rest of this family already reads blank as
+    unset: `_env_bool`, `_default_model_option`, `_resolve_max_concurrent` and the other numeric
+    resolvers here, and `laya.mcp.server`'s base URL, whose documentation says "Blank or unset means
+    the default." `int()` ignores the whitespace around `" 8000 "`, so a value made of nothing
+    *but* that whitespace was fatal while its content was not. A port that names a number and the
+    wrong one still exits loudly, because a server bound to the wrong port is simply unreachable.
+    """
+    raw = os.environ.get("LAYA_PORT")
+    if raw is None or not raw.strip():
+        return DEFAULT_PORT
     try:
         port = int(str(raw).strip())
     except (TypeError, ValueError):
@@ -598,6 +764,33 @@ def _resolve_port() -> int:
     if not 1 <= port <= 65535:
         raise SystemExit("invalid LAYA_PORT %r: must be an integer 1-65535" % (raw,))
     return port
+
+
+#: What `LAYA_LOG_LEVEL` answers when it is unset or blank: uvicorn's own default. Named so the read
+#: and the blank guard state it once -- a second copy is a second thing to keep in step.
+DEFAULT_LOG_LEVEL = "info"
+
+
+def _resolve_log_level() -> str:
+    """Log level from LAYA_LOG_LEVEL, validated. Exits with a message instead of a traceback.
+
+    The accepted names are uvicorn's own ``LOG_LEVELS``, not a list restated here, so the two cannot
+    drift. uvicorn lowercases the value but does not strip it, so both a typo and a value copied out
+    of a ``.env`` with padding reach ``LOG_LEVELS[...]`` and die inside ``Config.configure_logging``
+    with a bare ``KeyError`` naming the value -- a traceback that reads as a uvicorn bug, from the
+    one variable whose sibling in this file promises a message. A blank value is "not specified",
+    which is how the rest of the family reads it, and takes the documented default.
+    """
+    raw = os.environ.get("LAYA_LOG_LEVEL", DEFAULT_LOG_LEVEL)
+    level = raw.strip().lower()
+    if not level:
+        return DEFAULT_LOG_LEVEL
+    from uvicorn.config import LOG_LEVELS
+
+    if level not in LOG_LEVELS:
+        raise SystemExit("invalid LAYA_LOG_LEVEL %r: must be one of %s"
+                         % (raw.strip(), ", ".join(sorted(LOG_LEVELS))))
+    return level
 
 
 #: Values the walk in `_state_length_lower_bound_over` will examine before giving up. This bounds the
@@ -715,7 +908,7 @@ def _state_length(state: Any) -> int:
         raise HTTPException(status_code=400, detail="'state' must be JSON-serializable")
 
 
-def _check_request_limits(state: Any, questions: Any) -> None:
+def _check_request_limits(state: Any, questions: Any, max_choice_options: int = MAX_CHOICE_OPTIONS) -> None:
     """Reject absent or oversized inference requests before tokenization (400/413)."""
     from fastapi import HTTPException
 
@@ -742,10 +935,10 @@ def _check_request_limits(state: Any, questions: Any) -> None:
         if qtype == "choice" and isinstance(crit, (dict, list)):
             count = len(crit)
             total_options += count
-            if count > MAX_CHOICE_OPTIONS:
+            if count > max_choice_options:
                 raise HTTPException(
                     status_code=413,
-                    detail="too many choice options for %r (%d > %d)" % (qid, count, MAX_CHOICE_OPTIONS),
+                    detail="too many choice options for %r (%d > %d)" % (qid, count, max_choice_options),
                 )
         elif qtype == "score" and isinstance(crit, list):
             count = len(crit)
@@ -798,7 +991,7 @@ def _batch_chunk_size(n_states: int, n_questions: int, max_len: Any = None) -> O
     return max(1, min(n_states, rows_per_pass // n_questions))
 
 
-def _check_batch_limits(states: Any, questions: Any) -> None:
+def _check_batch_limits(states: Any, questions: Any, max_choice_options: int = MAX_CHOICE_OPTIONS) -> None:
     """Validate batch states and questions before inference (400/413)."""
     from fastapi import HTTPException
 
@@ -810,7 +1003,7 @@ def _check_batch_limits(states: Any, questions: Any) -> None:
             detail="too many states in batch (%d > %d)" % (len(states), MAX_BATCH_STATES),
         )
     for state in states:
-        _check_request_limits(state, questions)
+        _check_request_limits(state, questions, max_choice_options)
 # One surrogate code point in a Python string. Compiled once: a nested body can hold many
 # strings, and `re.search` scans each at C speed, where the per-character Python loop this
 # replaced cost ~170 ms on a near-cap body on the event loop.
@@ -981,6 +1174,7 @@ def create_app(router: Optional[Any] = None):
     admission: Optional[asyncio.Semaphore] = None
 
     idle_unload_seconds = _resolve_idle_unload_seconds()
+    tournament_group = _resolve_tournament_group()
     last_request = time.monotonic()
 
     def _mark_request():
@@ -1148,7 +1342,8 @@ def create_app(router: Optional[Any] = None):
             raise HTTPException(status_code=400, detail="request body must be an object with a 'questions' field")
         state = body.get("state")
         questions = body["questions"]
-        _check_request_limits(state, questions)
+        _check_request_limits(state, questions, MAX_TOURNAMENT_CHOICE_OPTIONS if tournament_group
+                              else MAX_CHOICE_OPTIONS)
         _refuse_body_refusals(body)
         # After the size checks, so an oversized body is refused before anything walks it, and
         # `MAX_STATE_CHARS`/`MAX_QUESTIONS` bound what the walk can reach. A `\udXXX` escape with
@@ -1194,8 +1389,12 @@ def create_app(router: Optional[Any] = None):
             async with gate:
                 loop = asyncio.get_running_loop()
                 t0 = time.perf_counter()
-                result = await loop.run_in_executor(
-                    pool, _run_inference, partial(router.predict, state, questions, model=model, **predict_kwargs))
+                if tournament_group:
+                    run = partial(_predict_with_tournament, router, state, questions, tournament_group,
+                                  model=model, **predict_kwargs)
+                else:
+                    run = partial(router.predict, state, questions, model=model, **predict_kwargs)
+                result = await loop.run_in_executor(pool, _run_inference, run)
                 infer_ms = (time.perf_counter() - t0) * 1000.0
                 if _env_bool("LAYA_JEV_STRICT", False):
                     result = _project_jev_strict(result)
@@ -1243,12 +1442,14 @@ def create_app(router: Optional[Any] = None):
             )
         states = body["states"]
         questions = body["questions"]
-        _check_batch_limits(states, questions)
+        _check_batch_limits(states, questions, MAX_TOURNAMENT_CHOICE_OPTIONS if tournament_group
+                            else MAX_CHOICE_OPTIONS)
         # Same refusal policy as the single endpoint: hooks and the two hook-execution knobs
         # belong to the deployment, not the caller. `predict_batch` does take `hooks_timeout`,
         # so without this call a batch body would silently hand a caller a shorter deadline for
         # the operator's own hooks.
         _refuse_body_refusals(body)
+        _refuse_out_parameters(body)
         # The same guard `/v1/systemone` runs, for the same reason, and it has to walk the whole
         # body rather than one state because that is what the batch carries: `predict_batch`
         # tokenizes every state and every question here, so a lone `\udXXX` escape in any of them
@@ -1320,7 +1521,14 @@ def create_app(router: Optional[Any] = None):
                 loop = asyncio.get_running_loop()
 
                 def _do_batch():
-                    if hasattr(router, "predict_batch"):
+                    # A batch shares one question set, so whether it is narrowed is decided once.
+                    # Narrowing runs its rounds per state, so `batch_size` and `sort_by_length`,
+                    # which shape one batched pass, have nothing to apply to on that path.
+                    if tournament_group and _tournament_plan(questions, tournament_group) is not None:
+                        results = [_predict_with_tournament(router, s, questions, tournament_group,
+                                                            model=model, **predict_kwargs)
+                                   for s in states]
+                    elif hasattr(router, "predict_batch"):
                         reqs = [dict(state=s, questions=questions, model=model, **item_overrides)
                                 for s in states]
                         results = router.predict_batch(reqs, **call_kwargs)
@@ -1384,7 +1592,7 @@ def main() -> None:
         create_app(),
         host=os.environ.get("LAYA_HOST", "0.0.0.0"),
         port=_resolve_port(),
-        log_level=os.environ.get("LAYA_LOG_LEVEL", "info"),
+        log_level=_resolve_log_level(),
         http=NoDelayHTTPProtocol,
     )
 

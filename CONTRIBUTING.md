@@ -56,13 +56,29 @@ python tests/test_hooks.py
 python tests/test_hooks_api.py
 ```
 
-A few are pytest based and run with `python -m pytest tests/test_serve.py`, `tests/test_onnx.py`
-and `tests/test_truncation_direction.py`.
+A handful are pytest based and run under one pytest invocation:
 
-The full set, including the ones the CI runs, is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-A handful of suites need hardware or local weights and are skipped otherwise: `tests/test_fast.py`
-needs CUDA, and `tests/test_local_e2e.py` and `tests/test_mcp_local_e2e.py` expect checkpoints under
-`~/laya_models`.
+```bash
+python -m pytest tests/test_serve.py tests/test_truncation_direction.py -q
+```
+
+The one list that both the CI `test` job and the release gate run is
+[`scripts/test_suites.py`](scripts/test_suites.py). It keeps two lists because `python tests/<name>.py`
+does not execute a pytest suite -- it defines the test functions and exits 0, having asserted nothing
+(#374): `SCRIPT_SUITES` print their own PASS/FAIL summary and exit non-zero on failure, and
+`PYTEST_SUITES` are collected and run by pytest in a single invocation. Some lanes still name their own
+suites inline under `.github/workflows/`, and `tests/test_packaging.py` fails if a suite ends up in
+neither the shared list nor any workflow.
+
+The suites that need hardware, a compiler or local weights are not part of the PR `test` job:
+
+- `tests/test_compile_cuda.py` -- needs CUDA; CI installs CPU-only torch.
+- `tests/test_fast.py` -- needs CUDA and the `tilelang` extra.
+- `tests/test_fast_cpu.py` -- needs the `tilelang` extra and a C++ compiler; its CUDA parity checks skip.
+- `tests/test_local_e2e.py` -- expects checkpoints under `~/laya_models`.
+- `tests/test_mcp_local_e2e.py` -- expects checkpoints under `~/laya_models` and the `mcp` extra.
+- `tests/test_onnx.py` -- needs the `onnx` extra; it runs in the ONNX lane of `evals.yml`, not the PR job.
+- `tests/test_server_example.py` -- needs the weights `examples/server.py` loads; it runs in `evals.yml`.
 
 Before opening a pull request, run the lint and compile checks the CI runs:
 

@@ -6,6 +6,7 @@ Covers:
   * the autocast path works and degrades to full precision instead of failing
 """
 import os
+import subprocess
 import sys
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -30,6 +31,16 @@ def check(name, got, want):
         PASS.append(name)
     else:
         FAIL.append("%s: got %r, want %r" % (name, got, want))
+
+
+# `tests (windows)` has killed this suite about three runs in thirty-five, and now that the runner
+# prints the exit status (#1172) the status says what it is: `exit 3221225501 (0xC000001D)`,
+# STATUS_ILLEGAL_INSTRUCTION. Every `check` above collects into `PASS`/`FAIL` and nothing prints
+# until the report at the foot of the file, so a crash took the whole log with it: the lane showed
+# the suite's banner and then the next suite's. These markers go to stderr, unbuffered and
+# unconditional, so the next occurrence names the section it died in. They cost one write each.
+def stage(name):
+    print("[stage] %s" % name, file=sys.stderr, flush=True)
 
 
 # ------------------------------------------------------------------ fake tokenizer
@@ -77,6 +88,7 @@ def _bare_agent(model, dtype=torch.float32, amp=False, tok=None):
 
 
 # ------------------------------------------------------------------ state reused once
+stage("state reused once")
 STATE = {"subject": "Duplicate charge", "body": "x" * 400}
 QUESTION = {"t": "choice", "ins": "pick", "crit": {"a": "x", "b": "y"}}
 
@@ -122,6 +134,7 @@ check("build_sequence/option segments stay <= 49 tokens",
 
 
 # ------------------------------------------------------------------ autocast
+stage("autocast")
 class DummyEnc(nn.Module):
     def __init__(self, d=16):
         super().__init__()
@@ -138,13 +151,48 @@ am = torch.ones_like(iid)
 mp = torch.tensor([[1, 3]])
 mm = torch.ones_like(mp, dtype=torch.bool)
 qt = torch.tensor([0])
-with torch.no_grad():
-    logits32, act32 = model(iid, am, mp, mm, qt)
-    with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=True):
-        logits16, act16 = model(iid, am, mp, mm, qt)
-check("autocast/shapes match", tuple(logits16.shape), tuple(logits32.shape))
-check("autocast/finite", bool(torch.isfinite(logits16).all() and torch.isfinite(act16).all()), True)
-check("autocast/close to fp32", float((logits32 - logits16).abs().max()) < 0.5, True)
+
+
+# Whether this CPU can execute a bf16 autocast forward at all, asked in a child process, because
+# the answer on some machines is a native fault that no `except` can see. `tests (windows)` has
+# killed this suite with `0xC000001D` (STATUS_ILLEGAL_INSTRUCTION) about three runs in
+# thirty-five, and the stage markers added for it narrowed the fault to this section: the lane
+# printed `[stage] state reused once` and `[stage] autocast` and then died. It is the same class
+# as issue #1065, where the fbgemm quantization engine raised SIGILL on a CPU with SSE4.2 and no
+# AVX2 -- oneDNN picks a kernel for an instruction set the CPU does not have. It is intermittent
+# on one runner label because the hosted fleet is not one CPU model.
+#
+# So the three checks below run only where the forward is executable, and where it is not the
+# suite says so with the capability torch reports instead of taking the process down. laya's own
+# behaviour is unchanged either way: `LAYA_CPU_AMP` is opt-in, and `_cpu_amp_dtype` documents that
+# it is for hardware with native BF16 instructions.
+_AMP_PROBE = (
+    "import torch, torch.nn as nn\n"
+    "m = nn.Linear(16, 16)\n"
+    "x = torch.ones(1, 16)\n"
+    "with torch.no_grad(), torch.autocast(device_type='cpu', dtype=torch.bfloat16, enabled=True):\n"
+    "    m(x)\n"
+    "print('ok')\n"
+)
+_probe = subprocess.run([sys.executable, "-c", _AMP_PROBE], capture_output=True, text=True)
+_amp_runs = _probe.returncode == 0 and _probe.stdout.strip() == "ok"
+if not _amp_runs:
+    try:
+        _capability = torch.backends.cpu.get_cpu_capability()
+    except Exception as exc:                                        # pragma: no cover
+        _capability = "unknown (%s)" % type(exc).__name__
+    stage("autocast: SKIPPED, this CPU cannot execute a bf16 autocast forward "
+          "(capability %s, child exit %s)" % (_capability, _probe.returncode))
+    PASS.append("autocast/skipped: bf16 CPU autocast is not executable here")
+else:
+    with torch.no_grad():
+        logits32, act32 = model(iid, am, mp, mm, qt)
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=True):
+            logits16, act16 = model(iid, am, mp, mm, qt)
+    check("autocast/shapes match", tuple(logits16.shape), tuple(logits32.shape))
+    check("autocast/finite",
+          bool(torch.isfinite(logits16).all() and torch.isfinite(act16).all()), True)
+    check("autocast/close to fp32", float((logits32 - logits16).abs().max()) < 0.5, True)
 
 calls = {"n": 0}
 
@@ -215,6 +263,7 @@ check("infer/non-autocast error propagates", raised, True)
 
 
 # ------------------------------------------------------------------ MPS autocast gating
+stage("MPS autocast gating")
 # MPS fp16 is slower than fp32 on one small row and only wins once the batch grows, so it is
 # gated by row count. These check the gate without an MPS device.
 def _mps_agent(amp=True, min_rows=None):
@@ -291,6 +340,7 @@ del os.environ["LAYA_CPU_AMP"]
 
 
 # ------------------------------------------------------------------ amp context shape
+stage("amp context shape")
 # A disabled gate must never construct torch.autocast: on torch builds without an MPS
 # autocast backend, entering it raises even with enabled=False, which broke MPS predict().
 mps = torch.device("mps")
@@ -311,6 +361,7 @@ check("amp-context/_infer disabled completes", True, True)
 
 
 # ------------------------------------------------------------------ OOM fallback observability (#351)
+stage("OOM fallback observability (#351)")
 class FakeCUDAInput:
     """An input_ids that fails the way a real CUDA OOM does when moved off CPU.
 
@@ -383,6 +434,7 @@ check("oom-fallback/plain CPU reason stays None", cpu_disabled.last_fallback_rea
 
 
 # ------------------------------------------------------------------ example 35 must teach this policy
+stage("example 35 must teach this policy")
 # examples/35 is the page a reader opens to ask "does my machine get mixed precision?", and on main
 # it answered no twice: "CPU and MPS run **fp32**; `torch.autocast` has no MPS backend here, so Laya
 # only wraps the forward pass on CUDA" in the banner, then, printed under the timings, "both legs

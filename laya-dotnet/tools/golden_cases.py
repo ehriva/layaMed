@@ -315,3 +315,74 @@ SHORTLIST_E2E_CASES = [
         "k": 20,
     },
 ]
+
+# ONNXAgent.predict_long, not the torch Agent: the .NET engine is an ONNX runtime too.
+LONG_QUESTIONS = {
+    "topic": {
+        "type": "choice", "instructions": "What is the request about?",
+        "criteria": {"refund": "money back, duplicate charge", "technical": "bugs and outages", "other": None},
+    },
+    "urgency": {
+        "type": "score", "instructions": "How urgent is this request?",
+        "criteria": ["not urgent", "this week", "today"],
+    },
+    "cancel": {"type": "noul", "instructions": "The customer threatens to cancel the account."},
+}
+
+LONG_CASES = [
+    {"name": "long_short", "state": QUICKSTART_STATE, "questions": LONG_QUESTIONS},
+    # The dump computes this state from the actual tokenizer and the effective default budget.
+    {"name": "long_exact_limit", "state_at_limit": True, "questions": LONG_QUESTIONS},
+    # Past the default window but within the questions' room: one Predict pass, no scan.
+    {"name": "long_room_fast_path", "state_at_room": True, "questions": LONG_QUESTIONS},
+    {
+        "name": "long_multi_chunk",
+        "state": ("The agent checked the account and recorded routine status updates. " * 180
+                  + QUICKSTART_STATE),
+        "questions": LONG_QUESTIONS,
+        "options": {"batch_size": 2},
+    },
+    {
+        "name": "long_punctuation",
+        "state": ("I 'm checking . We 've seen this , have n't we ? " * 18
+                  + "I want a refund ! I 'll cancel today ."),
+        "questions": LONG_QUESTIONS,
+        "options": {"window": 64, "stride": 64, "batch_size": 3},
+    },
+    {
+        "name": "long_dict",
+        "state": {"notes": "Routine checks completed. " * 22, "message": QUICKSTART_STATE},
+        "questions": LONG_QUESTIONS,
+        "options": {"window": 96},
+    },
+    {
+        "name": "long_list",
+        "state": [{"role": "assistant", "content": "Please wait while we check the account. " * 20},
+                  {"role": "user", "content": QUICKSTART_STATE}],
+        "questions": LONG_QUESTIONS,
+        "options": {"window": 96, "stride": 48},
+    },
+    {
+        "name": "long_clamp",
+        "state": "Normal account activity. " * 200 + QUICKSTART_STATE,
+        "questions": LONG_QUESTIONS,
+        "options": {"window": 4096, "stride": 2048, "batch_size": 2},
+    },
+    # Tokenizer.decode must retain special tokens, just as Python's default decode does.
+    {
+        "name": "long_special_tokens",
+        "state": ("The text includes [CLS] [SEP] <bos> <eos> [MASK] <mask> and emojis 😀 🚀. " * 15),
+        "questions": LONG_QUESTIONS,
+        "options": {"window": 64, "batch_size": 2},
+    },
+    {"name": "long_empty_questions", "state": "Routine checks. " * 35, "questions": {},
+     "options": {"window": 32, "batch_size": 2}},
+]
+
+LONG_ERROR_CASES = [
+    {"name": "long_invalid_stride", "state": "short", "questions": LONG_QUESTIONS,
+     "options": {"window": 32, "stride": 33}},
+    {"name": "long_invalid_aggregate", "state": "short", "questions": LONG_QUESTIONS,
+     "options": {"aggregate": "mean"}},
+    {"name": "long_no_state_room", "state": "short", "questions": ERROR_CASES[0]["questions"]},
+]
