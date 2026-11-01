@@ -1743,6 +1743,260 @@ def router_hooks_family(rng):
     return out, batches
 
 
+LIFECYCLE_NAMES = ["english", "multilingual", "typed-decisions", "en", "ML", "typed", " Typed_Decisions "]
+
+
+def _lifecycle_hook(name, events, behaviour, log):
+    """A hook object named `name` that logs `events` and then does `behaviour` ("ok", "raise" or "sleep:S")."""
+    def make(event):
+        def method(self, ctx):
+            agent = getattr(ctx, "agent", None)
+            log.append("%s.%s:%s%s" % (name, event, ctx.model, ":" + agent.label if agent is not None else ""))
+            kind, _, arg = behaviour.partition(":")
+            if kind == "raise":
+                raise RuntimeError("boom from %s" % name)
+            if kind == "sleep":
+                time.sleep(float(arg))
+        method.__qualname__ = name + "." + event
+        return method
+    return type(name, (), {event: make(event) for event in events})()
+
+
+def _lifecycle_case(label, router_kwargs, hooks, ops):
+    """Run `ops` on a real Router whose Agent is a stub; record loaded(), events and errors per op."""
+    import types
+    import warnings
+
+    import laya.agent as pyagent
+    from laya import hooks as pyhooks
+    from laya.router import Router, _split
+
+    log, state = [], {"n": 0, "fail": set()}
+
+    class Stub:
+        def __init__(self, repo, **kwargs):
+            state["n"] += 1
+            name = state["by_source"][(repo, kwargs.get("subfolder"))]
+            if name in state["fail"]:
+                raise ValueError("boom building %s" % name)
+            self.label = "built-%d" % state["n"]
+
+    record = {"case": label, "router": router_kwargs, "hooks": hooks, "ops": []}
+    pyhooks.clear_default_hooks()
+    real = pyagent.Agent
+    pyagent.Agent = Stub
+    try:
+        router = Router(**dict(router_kwargs, hooks=[_lifecycle_hook(h["name"], h["events"], h["behaviour"], log)
+                                                      for h in hooks]))
+        state["by_source"] = {_split(source): name for name, source in router.models.items()}
+        attached = {}
+        record["max_loaded"] = router.max_loaded
+        for op in ops:
+            step = dict(op)
+            before = len(log)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                try:
+                    kind = op["op"]
+                    if kind == "load":
+                        step["agent"] = router.load(op["name"]).label
+                    elif kind == "preload":
+                        router.preload(op["names"])
+                    elif kind == "attach":
+                        agent = attached.setdefault(op["agent"], types.SimpleNamespace(label=op["agent"]))
+                        router.attach(op["name"], agent)
+                    elif kind == "unload":
+                        router.unload(op["name"])
+                    elif kind == "fail":
+                        state["fail"].add(op["name"])
+                    elif kind == "heal":
+                        state["fail"].discard(op["name"])
+                except Exception as refused:  # noqa: BLE001 -- the text is the golden
+                    step["error"] = str(refused)
+            step["events"] = log[before:]
+            step["warnings"] = [str(w.message) for w in caught]
+            step["loaded"] = list(router.loaded)
+            step["max_loaded"] = router.max_loaded
+            record["ops"].append(step)
+    finally:
+        pyagent.Agent = real
+        pyhooks.clear_default_hooks()
+    return record
+
+
+def digests_row(env, argument, pin):
+    """One router_digests row: Router(sha256_digests=argument) under LAYA_SHA256_DIGESTS=env (None:
+    unset), and the map each checkpoint would be built with given the shared `pin`."""
+    from unittest import mock
+    from laya.router import Router, _digest_entry, _merge_expected_digests
+
+    row = {"env": env, "argument": argument, "shared": pin}
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("LAYA_SHA256_DIGESTS", None)
+        if env is not None:
+            os.environ["LAYA_SHA256_DIGESTS"] = env
+        try:
+            router = Router(sha256_digests=argument)
+        except ValueError as exc:
+            row["error"] = str(exc)
+        else:
+            row["table"] = {k: router.sha256_digests[k] for k in sorted(router.sha256_digests)}
+            row["expected"] = {
+                name: _merge_expected_digests(pin, _digest_entry(router.sha256_digests, name))
+                for name in ("english", "multilingual", "typed-decisions")}
+    return row
+
+
+def router_digests_family():
+    """What the real Router holds and merges for per-checkpoint SHA-256 pins: the
+    LAYA_SHA256_DIGESTS layering (flat, nested, mixed, malformed), the `sha256_digests` argument
+    (explicit None masks), the `agent_kwargs["expected_sha256"]` channel and the merge. Each row is
+    either an error text from Router(...) or the table plus, per checkpoint, the map
+    _merge_expected_digests hands Agent (null: none passed). No model runs."""
+    a, b, c, d, e = ("%s" % ch * 64 for ch in "abcde")
+    english = {"model.safetensors": a}
+    multi = {"model.safetensors": b}
+    shared_pin = {"tokenizer.json": d}
+    envs = [
+        None, "", "   ", "{not json", "[]", '"digests"', "{}", "null", "7",
+        json.dumps({"model.safetensors": a}),
+        json.dumps({"model.safetensors": a, "tokenizer.json": d}),
+        json.dumps({"english": english, "multilingual": multi}),
+        json.dumps({"en": english}),
+        json.dumps({" ML ": multi}),
+        json.dumps({"english": {}}),
+        json.dumps({"typed": english, "typed-decisions": multi}),
+        json.dumps({"english": english, "english ": multi}),
+        json.dumps({"engligh": english}),
+        json.dumps({"model.safetensors": a, "english": english}),
+        json.dumps({"english": english, "model.safetensors": a}),
+        json.dumps({"english": english, "x": 1}),
+        json.dumps({"english": None}),
+        json.dumps({"a": 1}),
+        json.dumps({"z": 1, "a": "s", "m": None}),
+        json.dumps({"english": english, "multilingual": []}),
+        # Python's json.loads reads these; encoding/json does not
+        '{"english": NaN}', '{"a": -Infinity}', '[NaN]', "NaN",
+        '{"english": {"a": "%s"}, "x": Infinity}' % a,
+        # tokens inside strings (escaped quote, escaped backslash) and glued to other text
+        '{"english": {"a": "x\\":NaN, y"}}', '{"english": {"a": "\\\\"}, "x": NaN}',
+        '{"english": NaNe5}', '{"a": Infinity.5}', '{"english": -Infinity5}', '{"english": {"a": "q"}, "b": NaN1}',
+    ]
+    arguments = [
+        None, {}, {"english": {"model.safetensors": c}}, {"ml": None}, {"engligh": english},
+        {"english": {}}, {"english": None, "multilingual": multi}, {"en": english},
+        {"typed": {"tokenizer.json": e}},
+    ]
+    shared = [None, {}, shared_pin, {"model.safetensors": c}, {"model.safetensors": c, "tokenizer.json": d}]
+    return [digests_row(env, argument, pin) for env in envs for argument in arguments for pin in shared]
+
+
+def lifecycle_family():
+    """Eviction order, loaded() sequences, attach/preload/unload and hook events from the real Router
+    with a stub Agent: no model runs."""
+    rng = random.Random(SEED + 3)
+    rec = {"name": "Rec", "events": ["on_load", "on_evict"], "behaviour": "ok"}
+
+    def load(n):
+        return {"op": "load", "name": n}
+
+    def unload(n):
+        return {"op": "unload", "name": n}
+
+    def attach(n, a):
+        return {"op": "attach", "name": n, "agent": a}
+
+    def preload(names=None):
+        return {"op": "preload", "names": names}
+
+    def fail(n):
+        return {"op": "fail", "name": n}
+
+    def heal(n):
+        return {"op": "heal", "name": n}
+
+    en, ml, td = "english", "multilingual", "typed-decisions"
+    fixed = [
+        ("load-cached", {}, [rec], [load(en), load(en), load(ml), load(td), load(td), load(en)]),
+        ("lru-touch", {}, [rec], [load(en), load(ml), load(en), load(td), load(ml)]),
+        ("max-1", {"max_loaded": 1}, [rec], [load(en), load(ml), load(en)]),
+        ("max-3", {"max_loaded": 3}, [rec], [load(en), load(ml), load(td), load(en)]),
+        ("aliases", {}, [rec], [load("en"), load("ML"), load(" Typed_Decisions "), load("laya"), load("decisions")]),
+        ("unknown-name", {}, [rec], [load("gpt"), load(""), unload("gpt"), preload(["gpt"]), load(en)]),
+        ("attach-raises-max", {}, [rec], [attach(en, "A1"), attach(ml, "A2"), attach(td, "A3"), load(en), load(ml)]),
+        ("attach-then-load-evicts-oldest", {}, [rec], [attach(en, "A1"), load(ml), load(td), load(en)]),
+        ("attach-replaces", {}, [rec], [attach(en, "A1"), attach(en, "A2"), load(en), attach(en, "A2")]),
+        ("attach-over-built", {}, [rec], [load(en), attach(en, "A1"), load(en), unload(en), load(en)]),
+        ("attach-touches", {}, [rec], [load(en), load(ml), attach(en, "A1"), load(td)]),
+        ("attach-alias", {}, [rec], [attach("en", "A1"), attach("multi", "A2"), load("laya")]),
+        ("preload-all-raises-max", {"max_loaded": 1}, [rec], [preload(), load(en)]),
+        ("preload-staged", {}, [rec], [preload([en]), preload([ml]), preload([td, en]), load(ml)]),
+        ("preload-resident-not-touched", {}, [rec], [load(en), load(ml), preload([en]), load(td)]),
+        ("preload-with-attached", {"max_loaded": 1}, [rec], [attach(en, "A1"), preload([ml]), preload()]),
+        ("preload-duplicates", {}, [rec], [preload([ml, ml, "multi"])]),
+        ("unload-one", {}, [rec], [load(en), load(ml), unload(en), unload(en), load(en)]),
+        ("unload-all", {}, [rec], [load(en), load(ml), load(en), unload(None), unload(None), load(td)]),
+        ("unload-attached", {}, [rec], [attach(en, "A1"), load(ml), unload(en), load(en)]),
+        ("build-failure-not-cached", {}, [rec], [fail(ml), load(ml), load(ml), heal(ml), load(ml)]),
+        ("build-failure-evicts-nothing", {}, [rec], [load(en), load(ml), fail(td), load(td), heal(td), load(td)]),
+        ("preload-failure-stops", {}, [rec], [fail(ml), preload(), heal(ml), preload()]),
+        ("hook-raise-on-load", {}, [rec, {"name": "Boom", "events": ["on_load"], "behaviour": "raise"}],
+         [load(en), load(en), load(ml)]),
+        ("hook-raise-on-load-warn", {"hooks_raise": False},
+         [rec, {"name": "Boom", "events": ["on_load"], "behaviour": "raise"}], [load(en), load(ml)]),
+        ("hook-raise-on-evict-skips-load", {"max_loaded": 1},
+         [{"name": "Boom", "events": ["on_evict"], "behaviour": "raise"}, rec], [load(en), load(ml), load(td)]),
+        ("hook-raise-on-evict-warn", {"max_loaded": 1, "hooks_raise": False},
+         [{"name": "Boom", "events": ["on_evict"], "behaviour": "raise"}, rec], [load(en), load(ml), load(td)]),
+        ("hook-raise-on-unload", {},
+         [rec, {"name": "Boom", "events": ["on_evict"], "behaviour": "raise"}], [load(en), load(ml), unload(None), load(en)]),
+        ("hook-timeout-on-load", {"hooks_timeout": 0.1},
+         [rec, {"name": "Slow", "events": ["on_load"], "behaviour": "sleep:0.6"}], [load(en), load(ml)]),
+        ("hook-timeout-warn", {"hooks_timeout": 0.1, "hooks_raise": False},
+         [{"name": "Slow", "events": ["on_load"], "behaviour": "sleep:0.6"}, rec], [load(en)]),
+        ("hook-order", {}, [{"name": "A", "events": ["on_load", "on_evict"], "behaviour": "ok"},
+                            {"name": "B", "events": ["on_evict"], "behaviour": "ok"},
+                            {"name": "C", "events": ["on_load"], "behaviour": "ok"}],
+         [load(en), load(ml), load(td), unload(None)]),
+        ("hook-other-events-skipped", {}, [{"name": "Route", "events": ["on_route"], "behaviour": "ok"},
+                                           {"name": "Pred", "events": ["on_predict_start", "on_error"], "behaviour": "ok"}],
+         [load(en), unload(en)]),
+        ("hook-serial", {"hooks_concurrent": False}, [rec], [load(en), load(ml), load(td), unload(None)]),
+        ("hook-attach-no-event", {}, [rec], [attach(en, "A1"), attach(ml, "A2"), attach(en, "A3")]),
+        ("standalone-repos", {"standalone_repos": True}, [rec], [load(en), load(ml), load(td)]),
+    ]
+    out = [_lifecycle_case(*case) for case in fixed]
+    raisers = [{"name": "Boom", "events": ["on_load"], "behaviour": "raise"},
+               {"name": "Bang", "events": ["on_evict"], "behaviour": "raise"},
+               {"name": "Both", "events": ["on_load", "on_evict"], "behaviour": "raise"}]
+    for i in range(240):
+        ops = []
+        for _ in range(rng.randint(1, 14)):
+            kind = rng.choices(["load", "preload", "attach", "unload", "fail", "heal"], [8, 2, 2, 3, 1, 1])[0]
+            name = rng.choice(LIFECYCLE_NAMES)
+            if kind == "load":
+                ops.append(load(name))
+            elif kind == "preload":
+                ops.append(preload(rng.choice([None, [name], rng.sample(LIFECYCLE_NAMES, 2)])))
+            elif kind == "attach":
+                ops.append(attach(name, rng.choice(["A1", "A2", "A3"])))
+            elif kind == "unload":
+                ops.append(unload(rng.choice([None, name])))
+            elif kind == "fail":
+                ops.append(fail(rng.choice(LIFECYCLE_NAMES[:3])))
+            else:
+                ops.append(heal(rng.choice(LIFECYCLE_NAMES[:3])))
+        kwargs = {}
+        if rng.random() < 0.7:
+            kwargs["max_loaded"] = rng.randint(1, 3)
+        hooks = [rec]
+        if i % 3 == 0:
+            hooks.append(rng.choice(raisers))
+            kwargs["hooks_raise"] = rng.random() < 0.5
+        out.append(_lifecycle_case("fuzz-%d" % i, kwargs, hooks, ops))
+    return out
+
+
 def _accepted(definition):
     import copy
 
@@ -1789,6 +2043,8 @@ def build():
         "router": router_family(rng),
         "email_fold": email_fold_family(rng),
         "email_fuzz": email_fuzz_family(rng),
+        "lifecycle": lifecycle_family(),
+        "router_digests": router_digests_family(),
     }
 
 

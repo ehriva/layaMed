@@ -93,15 +93,23 @@ pub enum LayaError {
     NoMarkers {
         /// The question id that lost one or more markers.
         id: String,
-        /// The configured head budget the question's options did not fit within.
-        head_max_len: usize,
+        /// The head budget the question's options did not fit within: the configured one, or a
+        /// per-call override. Signed because Python does not validate an override, so a negative
+        /// one is reported as written.
+        head_max_len: i64,
         /// Markers that survived the total sequence budget.
         actual_markers: usize,
         /// Markers requested by the question.
         expected_markers: usize,
-        /// The configured total sequence budget.
-        max_len: usize,
+        /// The total sequence budget: the configured one, or a per-call override (signed, as
+        /// `head_max_len`).
+        max_len: i64,
     },
+
+    /// A state or request was refused before any inference: a `null` state, which Python rejects
+    /// with a `TypeError` instead of answering a decision about the text `"null"`.
+    #[error("{0}")]
+    InvalidState(String),
 
     /// `predict_long` was given an aggregation mode other than `"auto"`.
     #[error("predict_long: only aggregate='auto' is supported")]
@@ -116,6 +124,12 @@ pub enum LayaError {
     /// router whose predictor has no scan capability).
     #[error("{0}")]
     NotSupported(String),
+
+    /// A `min_confidence` threshold or per-bucket map that Python's `check_min_confidence` would
+    /// reject with a `ValueError`: out of `[0.0, 1.0]`, NaN, an empty map, or a key that is not a
+    /// bucket. The text is Python's, with `%r` rendered as Python's `repr`.
+    #[error("{0}")]
+    InvalidMinConfidence(String),
 }
 
 #[cfg(test)]

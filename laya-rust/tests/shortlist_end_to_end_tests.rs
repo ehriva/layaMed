@@ -16,7 +16,7 @@ use laya::laya_shortlist::LayaShortlist;
 fn shortlist_predict_matches_the_recorded_result_for_every_checkpoint() {
     let mut checked_any = false;
 
-    for checkpoint in engines::CHECKPOINTS {
+    for checkpoint in engines::checkpoints() {
         let Some(engine) = engines::load(checkpoint) else {
             continue;
         };
@@ -85,6 +85,9 @@ fn shortlist_predict_matches_the_recorded_result_for_every_checkpoint() {
 /// still pass the assertions above.
 #[test]
 fn shortlist_many_options_case_shape_is_forty_reduced_to_twenty() {
+    if !common::test_artifacts::is_selected(LayaCheckpoint::Multilingual) {
+        return;
+    }
     let Some(engine) = engines::load(LayaCheckpoint::Multilingual) else {
         eprintln!("skip: no multilingual artifacts");
         return;

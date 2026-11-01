@@ -1367,7 +1367,7 @@
     "latin_profile": {
       "language": null,
       "english_hits": 0,
-      "diacritic_rate": 0.13333333333333333,
+      "diacritic_rate": 0.23333333333333334,
       "looks_non_english": true
     },
     "analyse": {
@@ -1378,7 +1378,7 @@
       "language": null,
       "is_english": false,
       "language_undecided": true,
-      "diacritic_rate": 0.1333,
+      "diacritic_rate": 0.2333,
       "non_latin_fraction": 0.0,
       "mixed_segment": null
     }
@@ -5168,7 +5168,7 @@
     "latin_profile": {
       "language": null,
       "english_hits": 3,
-      "diacritic_rate": 0.10256410256410256,
+      "diacritic_rate": 0.1794871794871795,
       "looks_non_english": true
     },
     "analyse": {
@@ -5179,7 +5179,7 @@
       "language": null,
       "is_english": false,
       "language_undecided": true,
-      "diacritic_rate": 0.1026,
+      "diacritic_rate": 0.1795,
       "non_latin_fraction": 0.0,
       "mixed_segment": null
     }

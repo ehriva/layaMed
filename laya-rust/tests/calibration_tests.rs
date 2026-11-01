@@ -208,6 +208,9 @@ fn config_falls_back_to_pythons_in_code_defaults() {
 
 #[test]
 fn shipped_config_parses_as_recorded() {
+    if !common::test_artifacts::is_selected_subdir("multilingual") {
+        return;
+    }
     let data = CheckpointGoldenData::for_checkpoint("multilingual");
     if !data.available() {
         eprintln!("skip: no golden data for 'multilingual'");

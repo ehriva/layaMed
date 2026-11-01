@@ -160,10 +160,33 @@ def load_questions(path):
     file declares it. Default ``"request"``, matching bare ``--predict``.
     """
     try:
-        with open(path, encoding="utf-8") as handle:
+        # `utf-8-sig`, not `utf-8`: a questions file written by Notepad or Excel starts with a
+        # UTF-8 BOM, and a plain `utf-8` read leaves it as U+FEFF, so `json.load` refuses a file
+        # that is valid JSON -- with its own "decode using utf-8-sig" hint. The other file readers
+        # in this repo open the same way for the same reason (docker/entrypoint.py,
+        # laya/train.py, scripts/http_inference_smoke.py).
+        with open(path, encoding="utf-8-sig") as handle:
             raw = json.load(handle)
     except FileNotFoundError:
         raise ValueError("no such --questions file: %s" % path)
+    except OSError as error:
+        # A path that exists but cannot be read as a file -- a directory, or one this process may
+        # not open -- is the same class of fault as the three below: it is about *this* file, not
+        # about a missing dependency or a failed checkpoint download. Letting the raw OSError reach
+        # run()'s `except (ImportError, OSError, RuntimeError)` printed "could not run Laya" and
+        # advised checking the network, which is a false diagnosis for a wrong --questions path.
+        raise ValueError("--questions file %s cannot be read: %s" % (path, error)) from error
+    # The same three refusals `laya/evidence.py::_read_json_object` makes: a bare JSONDecodeError or
+    # UnicodeDecodeError says what is wrong with the text but not which file, and a too-deep document
+    # surfaces as a RecursionError that the caller's `except (OSError, RuntimeError, ...)` misreads as
+    # a dependency/download problem. Prefix each with the path so it is a usage error about this file.
+    except json.JSONDecodeError as error:
+        raise ValueError("--questions file %s is not valid JSON: %s" % (path, error)) from error
+    except UnicodeDecodeError as error:
+        raise ValueError("--questions file %s is not UTF-8 text: %s" % (path, error)) from error
+    except RecursionError as error:
+        raise ValueError("--questions file %s is JSON nested deeper than it can be read: %s"
+                         % (path, error)) from error
     if not isinstance(raw, dict):
         raise ValueError("--questions file must be a JSON object of question id -> definition")
     state_key = "request"
@@ -310,10 +333,15 @@ def read_batch_lines(source):
         # A pipe is decoded with the locale's codec by default (cp1252 on Windows), not the utf-8 a
         # FILE is read with, so piped non-Latin requests arrived as mojibake.
         if hasattr(sys.stdin, "reconfigure"):
-            sys.stdin.reconfigure(encoding="utf-8")
+            # `utf-8-sig` for the same reason as FILE below: a producer that wrote the stream with
+            # a Windows editor prefixes U+FEFF, which would otherwise become the first request's
+            # first character. It reads plain UTF-8 unchanged when there is no BOM.
+            sys.stdin.reconfigure(encoding="utf-8-sig")
         lines = sys.stdin.read().splitlines()
     else:
-        with open(source, encoding="utf-8") as handle:
+        # `utf-8-sig`: a batch file saved by Notepad or Excel starts with a UTF-8 BOM, which plain
+        # `utf-8` would keep as U+FEFF at the front of the first request.
+        with open(source, encoding="utf-8-sig") as handle:
             lines = handle.read().splitlines()
     return [line.strip() for line in lines if line.strip()]
 
@@ -483,7 +511,7 @@ def main(argv=None):
             return 2
         try:
             lines = read_batch_lines(args.batch)
-        except OSError as error:
+        except (OSError, UnicodeDecodeError) as error:
             print("laya: could not read %s (%s)." % (args.batch, error), file=sys.stderr)
             return 2
         if not lines:

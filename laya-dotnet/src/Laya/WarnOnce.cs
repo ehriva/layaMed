@@ -42,7 +42,7 @@ internal static class WarnOnce
     // or a window budgeted directly) the first frame outside it is the site.
     private static bool IsPlumbing(StackFrame frame) =>
         frame.GetMethod()?.DeclaringType is { } type
-        && (type == typeof(WarnOnce) || type == typeof(LayaConfig) || type == typeof(LongPrediction));
+        && (type == typeof(WarnOnce) || type == typeof(LayaConfig) || type == typeof(LongPrediction) || type == typeof(LangTemperatures) || type == typeof(CalibrationFile));
 
     private static string Site()
     {

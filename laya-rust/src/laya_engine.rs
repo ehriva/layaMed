@@ -16,13 +16,17 @@ use crate::answers::{
     ActionInfo, Answer, ChoiceAnswer, LayaResult, NoulAnswer, ScanUsage, ScoreAnswer, StateUsage,
     Usage,
 };
+use crate::batch_prediction::{self, BatchOptions};
 use crate::calibration::Calibration;
 use crate::collator::{CollatedBatch, Collator, SequenceItem};
+use crate::confidence::apply_confidence_gate;
 use crate::error::{LayaError, Result};
+use crate::lang_temperatures::LangTemperatures;
 use crate::laya_config::{Deferred, LayaConfig};
 use crate::laya_options::{LayaCheckpoint, LayaExecutionProvider, LayaOptions};
 use crate::long_prediction::{self, LongOptions};
 use crate::model_artifacts::{ModelArtifacts, ModelPaths};
+use crate::predict_options::PredictOptions;
 use crate::questions::{Question, QuestionSet};
 use crate::sequence_builder::SequenceBuilder;
 use crate::tokenization::{HfTokenizer, LayaTokenizer};
@@ -56,6 +60,38 @@ pub struct LayaOutput {
     pub act_logits: Vec<f32>,
 }
 
+/// One state's tokenized question rows, plus what its truncation report says, ready to collate.
+struct EncodedState {
+    items: Vec<SequenceItem>,
+    usage: StateUsage,
+}
+
+impl EncodedState {
+    /// The longest question row, the key `sort_by_length` orders by.
+    fn longest_row(&self) -> usize {
+        self.items
+            .iter()
+            .map(|item| item.ids.len())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Python's `TypeError` for a `None` state: scoring it would answer a decision about the text
+/// `"null"`, byte-identical to passing `"null"` and at full confidence.
+pub(crate) fn refuse_null_states(states: &[Value]) -> Result<()> {
+    if states.iter().any(Value::is_null) {
+        return Err(LayaError::InvalidState(
+            "state must not be None; pass a string, dict, or list".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn question_ids(questions: &QuestionSet) -> Vec<String> {
+    questions.ids().map(str::to_string).collect()
+}
+
 /// The loaded ONNX session(s) for whichever [`crate::model_artifacts::ModelLayout`] the artifact
 /// directory used. `Fused` holds the single graph; `Split` holds the encoder and head graphs that
 /// [`LayaEngine::run`] chains together, feeding the encoder's `last_hidden_state` output into the
@@ -73,6 +109,17 @@ pub struct LayaEngine {
     artifacts: ModelArtifacts,
     /// What Python only discovers at prediction time (a `temperature` list shorter than three).
     deferred: Deferred,
+    /// Python's `self.lang_temperatures`: the resolved per-language overrides.
+    lang_temperatures: LangTemperatures,
+}
+
+/// What one call may change about how its states are scored: Python's `lang`, `max_len` and
+/// `head_max_len` arguments, the budgets already resolved against the checkpoint's own.
+#[derive(Clone, Copy)]
+struct CallParams<'a> {
+    lang: Option<&'a str>,
+    max_len: i64,
+    head_max_len: i64,
 }
 
 impl LayaEngine {
@@ -87,7 +134,9 @@ impl LayaEngine {
     #[track_caller]
     pub fn create(options: LayaOptions) -> Result<Self> {
         let artifacts = ModelArtifacts::resolve(&options)?;
-        let (config, deferred) = LayaConfig::load_deferred(&artifacts.config_path)?;
+        let (config, mut deferred) =
+            LayaConfig::load_deferred(&artifacts.config_path, &options.lang_temperatures)?;
+        let lang_temperatures = std::mem::take(&mut deferred.lang_temperatures);
 
         if let Some(expected_checkpoint) = artifacts.checkpoint {
             validate_encoder(
@@ -120,6 +169,7 @@ impl LayaEngine {
             config,
             artifacts,
             deferred,
+            lang_temperatures,
         })
     }
 
@@ -136,6 +186,12 @@ impl LayaEngine {
     /// The loaded checkpoint's configuration.
     pub fn config(&self) -> &LayaConfig {
         &self.config
+    }
+
+    /// The resolved per-language temperatures ([`LayaOptions::lang_temperatures`]); empty when
+    /// none were given.
+    pub fn lang_temperatures(&self) -> &LangTemperatures {
+        &self.lang_temperatures
     }
 
     /// Where the loaded artifacts came from.
@@ -156,10 +212,26 @@ impl LayaEngine {
     /// [`crate::python_json::PythonJson::state`]). For a type that only implements
     /// [`serde::Serialize`] (rather than `Into<Value>`), use [`Self::predict_serialize`] instead.
     ///
+    /// Like Python's `system_one`, this is a one-state [`Self::predict_batch`]: a `null` state is
+    /// [`LayaError::InvalidState`], and no questions give an empty result with zero usage.
+    ///
     /// Returns [`LayaError::NoMarkers`] if a question's options cannot fit within
     /// `Config::head_max_len`, rather than silently scoring fewer options than it was asked about.
     pub fn predict(&self, state: impl Into<Value>, questions: &QuestionSet) -> Result<LayaResult> {
-        self.predict_value(state.into(), questions)
+        self.predict_value(state.into(), questions, &PredictOptions::default())
+    }
+
+    /// [`Self::predict`] with per-call [`PredictOptions`]. Ports `system_one(min_confidence=...)`:
+    /// with `options.min_confidence` set, every answer reports its gate state (see
+    /// [`Answer::abstention`]); a threshold Python's `check_min_confidence` rejects is
+    /// [`LayaError::InvalidMinConfidence`], checked before the state is, as in `predict_batch`.
+    pub fn predict_with_options(
+        &self,
+        state: impl Into<Value>,
+        questions: &QuestionSet,
+        options: &PredictOptions,
+    ) -> Result<LayaResult> {
+        self.predict_value(state.into(), questions, options)
     }
 
     /// [`Self::predict`], for a state that implements [`serde::Serialize`] but not
@@ -170,17 +242,33 @@ impl LayaEngine {
         questions: &QuestionSet,
     ) -> Result<LayaResult> {
         let value = serde_json::to_value(state)?;
-        self.predict_value(value, questions)
+        self.predict_value(value, questions, &PredictOptions::default())
     }
 
-    fn predict_value(&self, state: Value, questions: &QuestionSet) -> Result<LayaResult> {
-        if questions.is_empty() {
-            return Err(LayaError::InvalidQuestion(
-                "no questions to answer".to_string(),
-            ));
+    /// Python's `system_one` is `predict_batch([state], ...)`, so this is a one-state batch: a
+    /// `null` state is refused and no questions give an empty result.
+    fn predict_value(
+        &self,
+        state: Value,
+        questions: &QuestionSet,
+        options: &PredictOptions,
+    ) -> Result<LayaResult> {
+        let min_confidence = options.min_confidence.as_ref();
+        if let Some(min_confidence) = min_confidence {
+            min_confidence.validate()?;
         }
-        let mut results = self.predict_states(&[state], questions)?;
-        Ok(results.remove(0))
+        let states = [state];
+        refuse_null_states(&states)?;
+        let params = self.call_params(
+            options.lang.as_deref(),
+            options.max_len,
+            options.head_max_len,
+        );
+        let mut results = self.predict_states(&states, questions, params)?;
+        apply_confidence_gate(&mut results, min_confidence);
+        results
+            .pop()
+            .ok_or_else(|| LayaError::Onnx("internal error: no result for the state".to_string()))
     }
 
     /// Scan a state longer than one sequence in overlapping token windows and keep, per question,
@@ -201,9 +289,11 @@ impl LayaEngine {
     /// slightly from the original after re-encoding, exactly as in Python. Windows go through the
     /// model together unless [`LongOptions::batch_size`] or the automatic cap chunks them.
     ///
-    /// Per-call hooks, per-language temperatures and the confidence gate are not part of this
-    /// port. Errors: [`LayaError::UnsupportedAggregate`], [`LayaError::InvalidWindow`] (no room
-    /// for the state, or a stride that leaves gaps), plus everything [`Self::predict`] returns.
+    /// Per-call hooks are not part of this port, and, as in Python, `predict_long` takes no
+    /// `min_confidence`, `max_len` or `head_max_len`; [`LongOptions::lang`] selects the
+    /// per-language temperatures for every window. Errors: [`LayaError::UnsupportedAggregate`],
+    /// [`LayaError::InvalidWindow`] (no room for the state, or a stride that leaves gaps), plus
+    /// everything [`Self::predict`] returns.
     #[track_caller]
     pub fn predict_long(
         &self,
@@ -234,6 +324,8 @@ impl LayaEngine {
         questions: &QuestionSet,
         options: &LongOptions,
     ) -> Result<LayaResult> {
+        // Python checks the state before the aggregate mode.
+        refuse_null_states(std::slice::from_ref(&state))?;
         options.check_aggregate()?;
         let tokenizer = self.tokenizer.as_ref();
         let explicit_window = options.window.unwrap_or(0);
@@ -247,6 +339,7 @@ impl LayaEngine {
         )?;
         long_prediction::emit_warnings(&warnings, std::panic::Location::caller());
         let state_ids = SequenceBuilder::encode_state(tokenizer, &state)?;
+        let params = self.call_params(options.lang.as_deref(), None, None);
 
         // `predict` reads the whole room the questions leave, so the default window must not force
         // a scan there; an explicit window still bounds the single pass (Python 3e9bda30).
@@ -256,7 +349,7 @@ impl LayaEngine {
             budget.room
         };
         if state_ids.len() <= one_pass {
-            let single = self.predict_states(&[state], questions)?.remove(0);
+            let single = self.predict_states(&[state], questions, params)?.remove(0);
             let truncated_windows = single.state_usage().is_some_and(|u| u.truncated) as usize;
             return Ok(single.with_scan_usage(ScanUsage {
                 windows: 1,
@@ -282,87 +375,219 @@ impl LayaEngine {
         .unwrap_or(spans.len());
         let mut results = Vec::with_capacity(spans.len());
         for chunk in windows.chunks(cap) {
-            results.extend(self.predict_states(chunk, questions)?);
+            results.extend(self.predict_states(chunk, questions, params)?);
         }
         Ok(long_prediction::aggregate(
             MODEL_NAME, questions, &results, &spans,
         ))
     }
 
-    /// Scores every question against every state in one collate and one forward pass, returning
-    /// one result (with its own state usage) per state, in order. With no questions each result is
-    /// empty and carries no state usage. `predict` is this with one state.
-    pub(crate) fn predict_states(
+    /// Answer every question about every state, `options.batch_size` states per forward pass.
+    /// Ports `ONNXAgent.predict_batch`: the same questions are scored over each state, and the
+    /// result for state `i` is the one `predict` gives it, in input order.
+    ///
+    /// * `batch_size` of `None` or `0` sends every state in one pass; see [`BatchOptions`].
+    /// * `sort_by_length` groups similarly sized states inside windows of eight batches, and only
+    ///   with a `batch_size` above one and below the number of states.
+    /// * No states give an empty list. No questions give one empty result per state, with no
+    ///   state usage, as Python does.
+    ///
+    /// * `min_confidence` gates every answer of every result, batch-wide; see [`BatchOptions`].
+    ///
+    /// A threshold Python's `check_min_confidence` rejects is [`LayaError::InvalidMinConfidence`],
+    /// checked first. A `null` state is refused with [`LayaError::InvalidState`] (Python's
+    /// `TypeError`: scoring it would answer a decision about the text `"null"`). Everything else
+    /// [`Self::predict`] returns applies per state, and the first error fails the whole call.
+    pub fn predict_batch(
         &self,
         states: &[Value],
         questions: &QuestionSet,
+        options: &BatchOptions,
     ) -> Result<Vec<LayaResult>> {
-        let ids: Vec<String> = questions.ids().map(str::to_string).collect();
-        if ids.is_empty() {
-            return Ok(states
-                .iter()
-                .map(|_| LayaResult::new(MODEL_NAME, Vec::new(), HashMap::new(), Usage::default()))
-                .collect());
+        let min_confidence = options.min_confidence.as_ref();
+        if let Some(min_confidence) = min_confidence {
+            min_confidence.validate()?;
         }
+        refuse_null_states(states)?;
+        let mut results = self.predict_batch_ungated(states, questions, options)?;
+        apply_confidence_gate(&mut results, min_confidence);
+        Ok(results)
+    }
 
-        let mut items = Vec::with_capacity(ids.len() * states.len());
-        let mut state_usages = Vec::with_capacity(states.len());
-        for state in states {
-            let mut state_usage = StateUsage {
-                state_tokens: 0,
-                state_tokens_dropped: 0,
-                truncated: false,
-                truncated_questions: Vec::new(),
-                options: IndexMap::new(),
-            };
+    fn predict_batch_ungated(
+        &self,
+        states: &[Value],
+        questions: &QuestionSet,
+        options: &BatchOptions,
+    ) -> Result<Vec<LayaResult>> {
+        if states.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = question_ids(questions);
+        if ids.is_empty() {
+            return Ok(self.empty_results(states.len()));
+        }
+        let params = self.call_params(
+            options.lang.as_deref(),
+            options.max_len,
+            options.head_max_len,
+        );
+        batch_prediction::run(
+            states.len(),
+            options,
+            |range| {
+                states[range]
+                    .iter()
+                    .map(|state| self.encode_state(state, &ids, questions, params))
+                    .collect()
+            },
+            EncodedState::longest_row,
+            |batch| self.infer_encoded(batch, &ids, questions, params),
+        )
+    }
 
-            // A conversation-turn list is serialized newest-last (see `PythonJson::state`), so the
-            // default right-truncation of an over-long state would silently drop the newest turn.
-            // Truncate from the left for lists so the most recent turn survives instead. Ports
-            // `Agent._encode_state`'s `truncate_left = isinstance(state, list)` (laya/agent.py,
-            // laya 0.3.21) — 0.3.6 never set this, so every state was right-truncated regardless
-            // of shape.
-            let truncate_left = matches!(state, Value::Array(_));
+    /// [`Self::predict_batch`], for states that implement [`serde::Serialize`] but not
+    /// `Into<serde_json::Value>`.
+    pub fn predict_batch_serialize<S: Serialize>(
+        &self,
+        states: &[S],
+        questions: &QuestionSet,
+        options: &BatchOptions,
+    ) -> Result<Vec<LayaResult>> {
+        let values = states
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<Vec<Value>, _>>()?;
+        self.predict_batch(&values, questions, options)
+    }
 
-            // The tokenizer here needs no lock: tokenizers::Tokenizer::encode takes &self.
-            for id in &ids {
-                let question = &questions[id.as_str()];
-                let (seq, markers, stats) = SequenceBuilder::build_with_stats(
-                    self.tokenizer.as_ref(),
-                    state,
-                    question,
-                    self.config.max_len,
-                    self.config.head_max_len,
-                    truncate_left,
-                )?;
-                state_usage.state_tokens = stats.tokens;
-                state_usage.state_tokens_dropped =
-                    state_usage.state_tokens_dropped.max(stats.dropped);
-                if stats.dropped > 0 {
-                    state_usage.truncated = true;
-                    state_usage.truncated_questions.push(id.clone());
-                }
-                if let Some(options) = stats.options {
-                    state_usage.options.insert(id.clone(), options);
-                }
+    /// Scores every question against every state in one collate and one forward pass, returning
+    /// one result (with its own state usage) per state, in order. With no questions each result is
+    /// empty and carries no state usage. `predict` is this with one state.
+    fn predict_states(
+        &self,
+        states: &[Value],
+        questions: &QuestionSet,
+        params: CallParams<'_>,
+    ) -> Result<Vec<LayaResult>> {
+        let ids = question_ids(questions);
+        if ids.is_empty() {
+            return Ok(self.empty_results(states.len()));
+        }
+        let encoded = states
+            .iter()
+            .map(|state| self.encode_state(state, &ids, questions, params))
+            .collect::<Result<Vec<_>>>()?;
+        self.infer_encoded(encoded, &ids, questions, params)
+    }
 
-                // A marker dropped for landing past max_len means an option is not in the
-                // sequence at all, so its logit would score whatever token happens to sit at
-                // position 0.
-                let expected_markers = SequenceBuilder::render_options(question).len();
-                if markers.len() != expected_markers {
-                    return Err(LayaError::NoMarkers {
-                        id: id.clone(),
-                        head_max_len: self.config.head_max_len,
-                        actual_markers: markers.len(),
-                        expected_markers,
-                        max_len: self.config.max_len,
-                    });
-                }
+    /// `max_len = self.cfg.get("max_len", 512) if max_len is None else max_len`, and the same for
+    /// `head_max_len`: a per-call value is used as given, whatever it is.
+    fn call_params<'a>(
+        &self,
+        lang: Option<&'a str>,
+        max_len: Option<i64>,
+        head_max_len: Option<i64>,
+    ) -> CallParams<'a> {
+        CallParams {
+            lang,
+            max_len: max_len.unwrap_or_else(|| SequenceBuilder::signed(self.config.max_len)),
+            head_max_len: head_max_len
+                .unwrap_or_else(|| SequenceBuilder::signed(self.config.head_max_len)),
+        }
+    }
 
-                items.push(SequenceItem::new(seq, markers, question.question_type()));
+    /// The result for a state when there are no questions to answer.
+    fn empty_results(&self, count: usize) -> Vec<LayaResult> {
+        (0..count)
+            .map(|_| LayaResult::new(MODEL_NAME, Vec::new(), HashMap::new(), Usage::default()))
+            .collect()
+    }
+
+    /// One state's question rows and the truncation report for them, tokenizing the state for
+    /// each question. Ports `ONNXAgent._encode_state`.
+    fn encode_state(
+        &self,
+        state: &Value,
+        ids: &[String],
+        questions: &QuestionSet,
+        params: CallParams<'_>,
+    ) -> Result<EncodedState> {
+        let mut state_usage = StateUsage {
+            state_tokens: 0,
+            state_tokens_dropped: 0,
+            truncated: false,
+            truncated_questions: Vec::new(),
+            options: IndexMap::new(),
+        };
+
+        // A conversation-turn list is serialized newest-last (see `PythonJson::state`), so the
+        // default right-truncation of an over-long state would silently drop the newest turn.
+        // Truncate from the left for lists so the most recent turn survives instead. Ports
+        // `Agent._encode_state`'s `truncate_left = isinstance(state, list)` (laya/agent.py,
+        // laya 0.3.21) — 0.3.6 never set this, so every state was right-truncated regardless
+        // of shape.
+        let truncate_left = matches!(state, Value::Array(_));
+
+        let mut items = Vec::with_capacity(ids.len());
+        // The tokenizer here needs no lock: tokenizers::Tokenizer::encode takes &self.
+        for id in ids {
+            let question = &questions[id.as_str()];
+            let (seq, markers, stats) = SequenceBuilder::build_with_overrides(
+                self.tokenizer.as_ref(),
+                state,
+                question,
+                params.max_len,
+                params.head_max_len,
+                truncate_left,
+            )?;
+            state_usage.state_tokens = stats.tokens;
+            state_usage.state_tokens_dropped = state_usage.state_tokens_dropped.max(stats.dropped);
+            if stats.dropped > 0 {
+                state_usage.truncated = true;
+                state_usage.truncated_questions.push(id.clone());
             }
-            state_usages.push(state_usage);
+            if let Some(options) = stats.options {
+                state_usage.options.insert(id.clone(), options);
+            }
+
+            // A marker dropped for landing past max_len means an option is not in the
+            // sequence at all, so its logit would score whatever token happens to sit at
+            // position 0.
+            let expected_markers = SequenceBuilder::render_options(question).len();
+            if markers.len() != expected_markers {
+                return Err(LayaError::NoMarkers {
+                    id: id.clone(),
+                    head_max_len: params.head_max_len,
+                    actual_markers: markers.len(),
+                    expected_markers,
+                    max_len: params.max_len,
+                });
+            }
+
+            items.push(SequenceItem::new(seq, markers, question.question_type()));
+        }
+        Ok(EncodedState {
+            items,
+            usage: state_usage,
+        })
+    }
+
+    /// Collates the encoded states' rows into one batch, runs one forward pass and decodes one
+    /// result per state, in the order given. `ids` must be non-empty.
+    fn infer_encoded(
+        &self,
+        encoded: Vec<EncodedState>,
+        ids: &[String],
+        questions: &QuestionSet,
+        params: CallParams<'_>,
+    ) -> Result<Vec<LayaResult>> {
+        let state_count = encoded.len();
+        let mut items = Vec::with_capacity(ids.len() * state_count);
+        let mut state_usages = Vec::with_capacity(state_count);
+        for state in encoded {
+            items.extend(state.items);
+            state_usages.push(state.usage);
         }
 
         let batch = Collator::collate(&items, self.tokenizer.special().pad_id)?;
@@ -372,7 +597,7 @@ impl LayaEngine {
         // hardcoded so this stays correct if the graph is re-exported with a wider action head.
         let n_act = output.act_logits.len() / batch.count;
 
-        let mut results = Vec::with_capacity(states.len());
+        let mut results = Vec::with_capacity(state_count);
         for (state_index, state_usage) in state_usages.into_iter().enumerate() {
             let offset = state_index * ids.len();
             let mut answers = HashMap::with_capacity(ids.len());
@@ -391,8 +616,15 @@ impl LayaEngine {
                         "IndexError: list index out of range".to_string(),
                     ));
                 }
-                let temperature =
-                    Calibration::resolve_temperature(&self.config, question.question_type(), k);
+                // A language in the table replaces both the bucket map and the per-type
+                // temperature, with no fallback to the checkpoint's bucket map; there is no
+                // histogram binning in this port to skip for it.
+                let temperature = self
+                    .lang_temperatures
+                    .temperature_for(params.lang, question.question_type(), k)
+                    .unwrap_or_else(|| {
+                        Calibration::resolve_temperature(&self.config, question.question_type(), k)
+                    });
                 let row_start = row * batch.marker_count;
                 let row_logits = &output.logits[row_start..row_start + batch.marker_count];
                 let p = Calibration::probabilities(row_logits, k, temperature);
@@ -414,7 +646,7 @@ impl LayaEngine {
             results.push(
                 LayaResult::new(
                     MODEL_NAME,
-                    ids.clone(),
+                    ids.to_vec(),
                     answers,
                     Usage {
                         input_tokens: input_tokens as u32,
@@ -847,6 +1079,17 @@ fn onnx_err(e: impl std::fmt::Display) -> LayaError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_null_state_is_refused_with_pythons_text() {
+        assert!(refuse_null_states(&[json!("a"), json!([null]), json!({})]).is_ok());
+        let error = refuse_null_states(&[json!("a"), Value::Null]).unwrap_err();
+        assert!(matches!(error, LayaError::InvalidState(_)), "{error:?}");
+        assert_eq!(
+            error.to_string(),
+            "state must not be None; pass a string, dict, or list"
+        );
+    }
 
     #[test]
     fn score_legends_render_structured_levels_as_strings() {

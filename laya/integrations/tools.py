@@ -471,7 +471,11 @@ class LayaToolSelector:
                 raw_decision=result,
             )
 
-        if chosen_key is None or chosen_key not in lookup:
+        # A remote body can answer with a JSON array or object for `choice`, and `chosen_key not in
+        # lookup` then raises a bare interpreter TypeError instead of taking the fallback path below
+        # or naming the decision. `agno`/`crewai`/`llamaindex` refuse a non-string `choice` the same
+        # way; here it belongs in the existing "unknown decision" branch so fallback still applies.
+        if chosen_key is None or not isinstance(chosen_key, str) or chosen_key not in lookup:
             if self.fallback_tool is not None:
                 fb_name, _ = _extract_tool_metadata(self.fallback_tool, -1)
                 return ToolRouteDecision(

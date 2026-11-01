@@ -10,9 +10,21 @@
 //! 2 test file) to guarantee only one engine total is ever loaded.
 
 use laya::LayaEngine;
-use laya::laya_options::LayaCheckpoint;
+use laya::laya_options::{LayaCheckpoint, LayaOptions};
 
+use super::golden_data::CheckpointGoldenData;
 use super::test_artifacts;
+
+/// The engine options for an artifact directory: the directory, plus the `lang_temperatures`
+/// table the checkpoint's goldens were recorded with, so the per-language cases run on an engine
+/// built as Python's agent was.
+fn options_for(checkpoint: LayaCheckpoint, dir: &std::path::Path) -> LayaOptions {
+    LayaOptions {
+        model_directory: Some(dir.to_path_buf()),
+        lang_temperatures: CheckpointGoldenData::for_checkpoint(checkpoint.subdir()).lang_table(),
+        ..Default::default()
+    }
+}
 
 /// Every checkpoint, in the order golden data and shape-sweep tables list them.
 pub const CHECKPOINTS: [LayaCheckpoint; 3] = [
@@ -20,6 +32,25 @@ pub const CHECKPOINTS: [LayaCheckpoint; 3] = [
     LayaCheckpoint::English,
     LayaCheckpoint::TypedDecisions,
 ];
+
+/// The checkpoints this run covers: every one, or those `LAYA_TEST_CHECKPOINTS` selects (see
+/// [`test_artifacts::selected_subdirs`]). Loops over checkpoints use this, never [`CHECKPOINTS`]
+/// directly, so a parity job only touches the checkpoints it owns.
+pub fn checkpoints() -> Vec<LayaCheckpoint> {
+    CHECKPOINTS
+        .into_iter()
+        .filter(|c| test_artifacts::is_selected(*c))
+        .collect()
+}
+
+/// Like [`load`], for a test pinned to one checkpoint: returns `None` without a skip line when
+/// that checkpoint is not selected, because another parity job owns it.
+pub fn load_selected(checkpoint: LayaCheckpoint) -> Option<LayaEngine> {
+    if !test_artifacts::is_selected(checkpoint) {
+        return None;
+    }
+    load(checkpoint)
+}
 
 /// Loads the engine for `checkpoint`, or prints a skip line and returns `None` when its ONNX
 /// artifacts are not available locally. Panics (rather than returning `None`) if the artifacts
@@ -39,13 +70,15 @@ pub fn load(checkpoint: LayaCheckpoint) -> Option<LayaEngine> {
             checkpoint.subdir()
         )
     });
-    Some(LayaEngine::from_directory(&dir).unwrap_or_else(|e| {
-        panic!(
-            "failed to load engine for '{}' at {}: {e}",
-            checkpoint.subdir(),
-            dir.display()
-        )
-    }))
+    Some(
+        LayaEngine::create(options_for(checkpoint, &dir)).unwrap_or_else(|e| {
+            panic!(
+                "failed to load engine for '{}' at {}: {e}",
+                checkpoint.subdir(),
+                dir.display()
+            )
+        }),
+    )
 }
 
 /// Loads the engine for `checkpoint` from its split-layout export (`<repo>/onnx-split/<ckpt>`,
@@ -73,11 +106,13 @@ pub fn load_split(checkpoint: LayaCheckpoint) -> Option<LayaEngine> {
             checkpoint.subdir()
         )
     });
-    Some(LayaEngine::from_directory(&dir).unwrap_or_else(|e| {
-        panic!(
-            "failed to load split-layout engine for '{}' at {}: {e}",
-            checkpoint.subdir(),
-            dir.display()
-        )
-    }))
+    Some(
+        LayaEngine::create(options_for(checkpoint, &dir)).unwrap_or_else(|e| {
+            panic!(
+                "failed to load split-layout engine for '{}' at {}: {e}",
+                checkpoint.subdir(),
+                dir.display()
+            )
+        }),
+    )
 }

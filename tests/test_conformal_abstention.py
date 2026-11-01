@@ -9,6 +9,7 @@ Run: python tests/test_conformal_abstention.py
 import math
 import os
 import sys
+from decimal import Decimal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -288,6 +289,29 @@ for _bad, _coerces in ((True, 1.0), (False, 0.0)):
         _res = "raised %s" % type(_exc).__name__
     check("target_error/%r is refused by name" % (_bad,), _res,
           "target_error must be in [0.0, 1.0], got %r" % (_bad,))
+
+# The same arm, for the values the range test cannot compare at all rather than cannot see: a
+# `"0.1"` read out of a JSON config, a `None` from a key that was not there. Each used to leave the
+# interpreter's own `TypeError: '<=' not supported between instances of 'float' and 'str'`, which
+# names the operator and not the parameter, and `min_bucket_n` one line below has always named
+# itself for these shapes.
+for _bad in ("0.1", None, 1j, [0.1], {"t": 0.1}):
+    try:
+        fit_abstention_thresholds(_small, [1.0, 1.0, 1.0], {}, target_error=_bad, min_bucket_n=1)
+        _res = "no ValueError"
+    except ValueError as _exc:
+        _res = str(_exc)
+    except Exception as _exc:
+        _res = "raised %s: %s" % (type(_exc).__name__, _exc)
+    check("target_error/%r is refused by name" % (_bad,), _res,
+          "target_error must be in [0.0, 1.0], got %r" % (_bad,))
+
+# A value that compares as a real number but is not a `float` keeps working: `Decimal` was accepted
+# before the shape check existed and the only thing it is used for is `rate <= target_error`.
+check("target_error/a Decimal still fits",
+      fit_abstention_thresholds(_small, [1.0, 1.0, 1.0], {}, target_error=Decimal("0.10"),
+                                min_bucket_n=1),
+      fit_abstention_thresholds(_small, [1.0, 1.0, 1.0], {}, target_error=0.10, min_bucket_n=1))
 
 # And the arm did not get stricter than the two ends it exists to protect: refusing 0.0 and 1.0
 # would refuse a caller genuinely asking for no tolerance, and those two are what the bools meant.

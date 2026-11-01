@@ -296,16 +296,26 @@ def _mps_amp_min_rows() -> int:
 
 
 def _cuda_amp_dtype(checkpoint_default: Optional[str]) -> torch.dtype:
-    """Autocast dtype on CUDA at compute capability >= 8: the checkpoint's `amp_dtype` (bf16 for the
-    shipped checkpoints), or LAYA_CUDA_AMP=fp16|float16|bf16|bfloat16 when set. fp16 stays 2-10x
-    closer to the fp32 forward than bf16 on every shipped checkpoint at the same speed; anything
-    else is ignored. The long spellings count because they are what `agent.dtype` reports back, so
-    the precision a user reads off one response is one they can ask for on the next."""
-    raw = os.environ.get("LAYA_CUDA_AMP", "").lower()
+    """Precision asked for on CUDA: the checkpoint's `amp_dtype` (bf16 for the shipped checkpoints),
+    or LAYA_CUDA_AMP=fp16|float16|bf16|bfloat16|fp32|float32 when set. fp16 stays 2-10x closer to
+    the fp32 forward than bf16 on every shipped checkpoint at the same speed. float32 means no
+    autocast at all, and the caller turns it off rather than autocasting to float32. Below compute
+    capability 8 the caller runs fp16 for either half-precision ask. The long spellings count
+    because they are what `agent.dtype` reports back, so the precision a user reads off one
+    response is one they can ask for on the next. The value is trimmed and lower-cased, an empty
+    one means unset, and anything else raises ValueError: a typo fails the load instead of
+    silently serving the checkpoint's choice."""
+    raw = os.environ.get("LAYA_CUDA_AMP", "").strip().lower()
     if raw in ("fp16", "float16"):
         return torch.float16
     if raw in ("bf16", "bfloat16"):
         return torch.bfloat16
+    if raw in ("fp32", "float32"):
+        return torch.float32
+    if raw:
+        raise ValueError("LAYA_CUDA_AMP=%r is not a CUDA precision; use fp16, float16, bf16, bfloat16, "
+                         "fp32 or float32, or leave it unset for the checkpoint's own amp_dtype"
+                         % os.environ["LAYA_CUDA_AMP"])
     return amp_dtype(checkpoint_default)
 
 
@@ -336,7 +346,25 @@ def _option_count(qdef: Dict) -> int:
     return len(crit) if isinstance(crit, (dict, list, tuple)) else 0
 
 
-def _start_evidence():
+def _scan_answer_values(answer):
+    # Reliability/action annotations do not change which prediction the model made. Keep the
+    # prediction fields independent of in-place edits to probabilities or a score's legend.
+    return {key: answer[key] for key in ("type", "choice", "noul", "score", "legend",
+                                         "probabilities", "confidence", "answer_confidence")
+            if key in answer}
+
+
+def _scan_answer_index(evidence, qid, answer, fallback):
+    recorded = evidence["answers"]
+    if recorded is None:
+        return fallback                         # a replacement batch never dispatched hooks
+    record = recorded.get((qid, id(answer)))
+    if record is not None and record[0] is answer and record[2] == _scan_answer_values(answer):
+        return record[1]
+    return None                                 # replaced, edited, or shared across windows
+
+
+def _start_evidence(track_answers=False):
     """A recorder for `predict_long`: what the start-hook chain left for inference to run on.
 
     Why a recorder at all: `ctx.skip()` only assigns `ctx.results` (see `laya.hooks.PredictContext`),
@@ -354,8 +382,21 @@ def _start_evidence():
     inference, `states` is a snapshot of the states that reached it (`None` if the probe never ran,
     which means `predict_batch` was replaced and no hook chain was dispatched).
     """
-    evidence = {"answered": False, "states": None, "question_types": None,
+    evidence = {"answered": False, "states": None, "question_types": None, "answers": None,
                 "max_len": None, "head_max_len": None, "questions": None}
+
+    def record_results(ctx):
+        if evidence["answered"]:
+            return
+        recorded = {}
+        for index, result in enumerate(ctx.results):
+            for qid, answer in result["answers"].items():
+                key = (qid, id(answer))
+                # Keep the object alive as well as its id. One object emitted for more than
+                # one window has no unique origin, even when all prediction fields agree.
+                recorded[key] = (None if key in recorded else
+                                 (answer, index, copy.deepcopy(_scan_answer_values(answer))))
+        evidence["answers"] = recorded
 
     def probe(ctx):
         evidence["answered"] = ctx.results is not None
@@ -376,6 +417,10 @@ def _start_evidence():
         evidence["max_len"] = ctx.max_len
         evidence["head_max_len"] = ctx.head_max_len
         evidence["questions"] = dict(ctx.questions) if ctx.questions else {}
+        if track_answers:
+            # predict_batch calls this before ANY end hook, including defaults and installed
+            # hooks. An end observer appended to the hook list would already see reordered rows.
+            ctx._record_scan_results = record_results
 
     return probe, evidence
 
@@ -761,20 +806,26 @@ class Agent(HookRegistry):
         self.mps_amp_min_rows = _mps_amp_min_rows()
         if self.device.type == "cuda":
             self.amp_enabled = True
-            try:
-                major = torch.cuda.get_device_capability(self.device)[0]
-            except (RuntimeError, AttributeError):
-                # A driver that reports a GPU but cannot answer the capability query
-                # cannot be trusted with bf16 either; fp16 is the safe default and
-                # placement below still decides whether the device is usable at all.
-                warnings.warn("Warning: could not query CUDA capability; assuming fp16 defaults.",
-                              RuntimeWarning)
-                self.dtype = torch.float16
+            # Read on every CUDA device, so a value that does not parse fails here whatever the
+            # GPU, and fp32 means full precision on all of them (#443).
+            requested = _cuda_amp_dtype(self.cfg.get("amp_dtype", "fp16"))
+            if requested == torch.float32:
+                self.amp_enabled = False
             else:
-                if major < 8:
+                try:
+                    major = torch.cuda.get_device_capability(self.device)[0]
+                except (RuntimeError, AttributeError):
+                    # A driver that reports a GPU but cannot answer the capability query
+                    # cannot be trusted with bf16 either; fp16 is the safe default and
+                    # placement below still decides whether the device is usable at all.
+                    warnings.warn("Warning: could not query CUDA capability; assuming fp16 defaults.",
+                                  RuntimeWarning)
                     self.dtype = torch.float16
                 else:
-                    self.dtype = _cuda_amp_dtype(self.cfg.get("amp_dtype", "fp16"))
+                    if major < 8:
+                        self.dtype = torch.float16
+                    else:
+                        self.dtype = requested
         elif self.device.type == "mps":
             self.amp_enabled = True
             self.dtype = torch.float16
@@ -872,12 +923,21 @@ class Agent(HookRegistry):
         matches the stock forward it replaces within rounding (see benchmarks/parity_fast.py). After
         changing `agent.dtype`, call `deaccelerate()` then `accelerate()` to rebuild it. Returns True if
         enabled. With `strict=False` any failure (no CUDA, tilelang missing) leaves the stock path in place.
+        An fp32 agent (`LAYA_CUDA_AMP=fp32`) is such a failure: its kernels only run in 16 bits, so it
+        warns and keeps the stock forward, or raises with `strict=True`.
         """
         if self._fast is not None:
             return True
         if self.device.type != "cuda":
             if strict:
                 raise RuntimeError("laya fast path needs a CUDA device")
+            return False
+        if self.dtype not in (torch.bfloat16, torch.float16):
+            msg = ("laya fast path runs in bf16 or fp16 only and this agent runs %s; "
+                   "keeping the stock forward" % self.dtype)
+            if strict:
+                raise RuntimeError(msg)
+            warnings.warn("Warning: " + msg, RuntimeWarning)
             return False
         if self._backend is not None:
             self.deaccelerate()
@@ -1589,6 +1649,9 @@ class Agent(HookRegistry):
                 ctx.usage = aggregate_usage(ctx.results)
                 apply_confidence_gate(ctx.results, mc)
             try:
+                record_scan = getattr(ctx, "_record_scan_results", None)
+                if ctx.error is None and ctx.results is not None and record_scan is not None:
+                    record_scan(ctx)
                 dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 # End hooks run on the failure path too; do not let one mask the real error.
@@ -1643,6 +1706,10 @@ class Agent(HookRegistry):
           * a rewritten scan (`ctx.states` replaced, in any way): the answers are aggregated over
             the states that were scored, but no answer carries `answer["window"]` -- the offsets
             above describe this method's windows, not the text the model read
+
+        End hooks may reorder results without changing an answer's original window. Attribution
+        follows the original answer object, provided its prediction fields are unchanged. Cloned,
+        replaced or edited answers have no window attribution; added reliability metadata is kept.
 
         Args:
             window: state tokens per window. Defaults to the checkpoint's state budget,
@@ -1772,7 +1839,7 @@ class Agent(HookRegistry):
                 break
             i += step
 
-        probe, evidence = _start_evidence()
+        probe, evidence = _start_evidence(track_answers=True)
         # `list(windows)`, not `windows`: `ctx.states` is the list the hook receives, so a hook that
         # mutates it in place (`append`, `sort`) would otherwise also grow the split this call
         # attributes answers to, and the counts would agree while `starts` no longer lined up.
@@ -1831,6 +1898,14 @@ class Agent(HookRegistry):
             question_types = {qid: self._to_internal(qdef)["t"] for qid, qdef in questions.items()}
         answers = {}
         for qid, qtype in question_types.items():
+            missing = sum(qid not in r["answers"] for r in results)
+            if missing:
+                # End hooks may remove start-added questions, but must not hide a missing
+                # caller answer or an inconsistent set of answers across windows.
+                if missing == len(results) and qid not in asked and evidence["question_types"] is not None:
+                    continue
+                raise ValueError("predict_long: answer %r is missing from %d of %d windows after prediction hooks"
+                                 % (qid, missing, len(results)))
             per = [r["answers"][qid] for r in results]
             if qtype == "noul":
                 # Evidence anywhere: the strongest window decides. Its own P(true) and confidence
@@ -1841,12 +1916,15 @@ class Agent(HookRegistry):
                 # neutral document lets the neutral majority out-vote the one window that saw the
                 # deciding span; the single most-confident window preserves a localized signal.
                 best = max(range(len(per)), key=lambda j: float(per[j]["answer_confidence"]))
-            ans = per[best]
+            original = per[best]
+            index = None if rewritten else _scan_answer_index(evidence, qid, original, best)
+            ans = dict(original)
+            ans.pop("window", None)
             # Name the window that decided, so a caller can check the deciding span itself. The
             # probability here is that window's, NOT a document-level calibrated number.
-            if not rewritten:
-                ans["window"] = {"index": best, "token_start": starts[best],
-                                 "token_end": min(starts[best] + budget, len(state_ids)),
+            if index is not None:
+                ans["window"] = {"index": index, "token_start": starts[index],
+                                 "token_end": min(starts[index] + budget, len(state_ids)),
                                  "count": len(results)}
             answers[qid] = ans
         # Aggregate usage generically so fields predict_batch may grow later (e.g. the

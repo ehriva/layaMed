@@ -11,11 +11,18 @@ use serde_json::{Value, json};
 /// discoverable and mutually consistent.
 const CHECKPOINTS: [&str; 3] = ["multilingual", "english", "typed-decisions"];
 
+/// The checkpoints this run covers (all, or those `LAYA_TEST_CHECKPOINTS` selects).
+fn checkpoints() -> impl Iterator<Item = &'static str> {
+    CHECKPOINTS
+        .into_iter()
+        .filter(|c| common::test_artifacts::is_selected_subdir(c))
+}
+
 #[test]
 fn all_dialects_match_golden_for_every_checkpoint() {
     let mut checked_any = false;
 
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let data = CheckpointGoldenData::for_checkpoint(checkpoint);
         if !data.available() {
             eprintln!(
@@ -131,7 +138,7 @@ fn repr_matches_python_bit_pattern_sweep() {
     let mut comparisons = 0;
     let mut mismatches = 0;
     let mut reference = None;
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let data = CheckpointGoldenData::for_checkpoint(checkpoint);
         if !data.available() {
             eprintln!("skip: no golden data for '{checkpoint}'");
@@ -167,8 +174,8 @@ fn repr_matches_python_bit_pattern_sweep() {
     }
     eprintln!("repr differential sweep: {comparisons} comparisons, {mismatches} mismatches");
     assert!(
-        comparisons >= 6000,
-        "all three checkpoint probes must be checked"
+        comparisons >= 2000 * checkpoints().count(),
+        "every selected checkpoint's probe must be checked"
     );
     assert_eq!(0, mismatches, "float repr must match Python byte-for-byte");
 }

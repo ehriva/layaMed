@@ -482,7 +482,17 @@ def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
     # be read as 0.0 -- the cut that abstains on every answer -- and `True` as 1.0, which gates
     # nothing. Both fit a map, so nothing downstream would mention it. `TrainConfig` refuses the
     # same bool on the way to this call (`train.py`), as does `_iter_records` for a `qtype`.
-    if isinstance(target_error, bool) or not 0.0 <= target_error <= 1.0:
+    # Everything the range test cannot even compare -- a `"0.1"` from a config file, a `None` from a
+    # missing key -- left a bare `TypeError: '<=' not supported between instances of 'float' and
+    # 'str'`, naming neither the parameter nor the caller's mistake, while `min_bucket_n` one line
+    # below has always named itself. The comparison is run rather than replaced by an `isinstance`
+    # list so that a value which does compare -- `Decimal`, which `numbers.Real` does not cover --
+    # keeps fitting.
+    try:
+        comparable = 0.0 <= target_error <= 1.0
+    except TypeError:
+        comparable = False
+    if isinstance(target_error, bool) or not comparable:
         raise ValueError("target_error must be in [0.0, 1.0], got %r" % (target_error,))
     min_bucket_n = _positive_int("min_bucket_n", min_bucket_n)
     recs = _iter_records(records)
@@ -802,7 +812,7 @@ def apply_calibration_payload(obj, payload: Dict[str, Any]) -> None:
                     % (name, n_bins))
             try:
                 parsed_values = [float(v) for v in values]
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError(
                     "calibration JSON binning_map[%r] values must be numbers, got %r" % (name, values)) from exc
             for v in values:

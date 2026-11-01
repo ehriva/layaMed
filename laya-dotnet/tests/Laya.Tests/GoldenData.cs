@@ -82,6 +82,20 @@ public sealed class CheckpointGoldenData
     public IEnumerable<object[]> ShortlistCases() =>
         Index.Where(c => c.Kind == "shortlist").Select(c => new object[] { c });
 
+    /// <summary>
+    /// The <c>lang_temperatures</c> table the language cases were recorded with (one table serves them all), or
+    /// <see langword="null"/> when this directory predates them. An engine that answers those cases is created with it.
+    /// </summary>
+    internal IEnumerable<KeyValuePair<string, LayaLangTemperature?>>? LangTemperatures
+    {
+        get
+        {
+            if (DirectoryOrNull is null || !File.Exists(Path.Combine(Directory, "case_lang_replace_de.json"))) return null;
+            using var doc = Load("case_lang_replace_de.json");
+            return CallOptions.LangTemperatures(doc.RootElement);
+        }
+    }
+
     /// <summary>Parse one golden file. The caller owns the returned document.</summary>
     public JsonDocument Load(string fileName) =>
         JsonDocument.Parse(File.ReadAllBytes(Path.Combine(Directory, fileName)));

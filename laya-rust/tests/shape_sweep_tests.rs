@@ -234,7 +234,7 @@ fn nonfinite_act_logits_are_rejected() {
 
 #[test]
 fn runs_at_every_shape() {
-    let Some(engine) = engines::load(LayaCheckpoint::Multilingual) else {
+    let Some(engine) = engines::load_selected(LayaCheckpoint::Multilingual) else {
         return;
     };
 
@@ -268,7 +268,7 @@ fn runs_at_every_shape() {
 
 #[test]
 fn reproduces_the_recorded_graph_outputs() {
-    let Some(engine) = engines::load(LayaCheckpoint::Multilingual) else {
+    let Some(engine) = engines::load_selected(LayaCheckpoint::Multilingual) else {
         return;
     };
     let golden = CheckpointGoldenData::for_checkpoint(LayaCheckpoint::Multilingual.subdir());
@@ -319,7 +319,7 @@ fn reproduces_the_recorded_graph_outputs() {
 fn keeps_padded_marker_columns_at_the_masked_fill_value() {
     // The model writes -1e4 into columns marker_mask says are padding. Calibration relies on that
     // to keep a padded column out of a distribution, so it is worth pinning on the graph itself.
-    let Some(engine) = engines::load(LayaCheckpoint::Multilingual) else {
+    let Some(engine) = engines::load_selected(LayaCheckpoint::Multilingual) else {
         return;
     };
 
@@ -349,7 +349,7 @@ fn keeps_padded_marker_columns_at_the_masked_fill_value() {
 fn runs_a_single_option_question_that_topk_would_otherwise_reject() {
     // The graph has TopK k=2 baked in, so a one-column marker axis fails outright. Collator widens
     // it to two; this is the test that the widening is what actually keeps the graph runnable.
-    let Some(engine) = engines::load(LayaCheckpoint::Multilingual) else {
+    let Some(engine) = engines::load_selected(LayaCheckpoint::Multilingual) else {
         return;
     };
 
@@ -365,7 +365,7 @@ fn runs_a_single_option_question_that_topk_would_otherwise_reject() {
 
 #[test]
 fn runs_at_every_shape_for_all_checkpoints() {
-    for checkpoint in engines::CHECKPOINTS {
+    for checkpoint in engines::checkpoints() {
         let Some(engine) = engines::load(checkpoint) else {
             continue;
         };
@@ -420,7 +420,7 @@ fn runs_at_every_shape_for_all_checkpoints() {
 /// like the fused sweep does when that checkpoint's split-layout export is not present locally.
 #[test]
 fn runs_at_every_shape_for_all_checkpoints_split_layout() {
-    for checkpoint in engines::CHECKPOINTS {
+    for checkpoint in engines::checkpoints() {
         let Some(engine) = engines::load_split(checkpoint) else {
             continue;
         };

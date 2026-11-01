@@ -22,6 +22,8 @@ import {
 import type { BinningMap, InternalQ, MinConfidence, OptionStats, SequenceStats } from "./common.js";
 import type { Batch, SessionProvider } from "./providers.js";
 import type { OptionStabilityReport } from "./option-stability.js";
+import { predictLong, recordLongResults, finishLongResults, isLongCall, type LongPredictOptions, type LongResult } from "./predict-long.js";
+export type { LongPredictOptions, LongResult, LongUsage, LongAnswer, LongWindow } from "./predict-long.js";
 import { encodeWithData, parseTokenizerJson, type TokenizerLike } from "./tokenizer.js";
 import { decide, decideBatch, type DecideOptions, type DecideBatchOptions, type DecisionResult } from "./structured.js";
 import {
@@ -32,6 +34,7 @@ import {
   defaultsAlreadyRan,
   dispatchAsync,
   normaliseHooks,
+  validateHooksTimeout,
   type HookArg,
   type PredictHook,
 } from "./hooks.js";
@@ -419,6 +422,7 @@ function tokenizerFromHF(tokenizerJson: unknown): TokenizerLike | null {
     padId: data.ids.pad,
     maskToken: data.maskToken,
     encode: (text: string) => encodeWithData(data, text),
+    ...(data.decode ? { decode: data.decode } : {}),
   };
 }
 
@@ -451,7 +455,7 @@ export class Agent extends HookRegistry {
     // Hooks are opt-in; an unset hook list is a no-op. See hooks.ts.
     this.hooks = normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     this.hooksRaise = opts.hooksRaise ?? true;
-    this.hooksTimeout = opts.hooksTimeout ?? null;
+    this.hooksTimeout = validateHooksTimeout(opts.hooksTimeout ?? null);
     const cfg = { ...(opts.cfg ?? {}) } as AgentCfg;
     if (opts.max_len !== undefined) cfg.max_len = opts.max_len;
     if (opts.head_max_len !== undefined) cfg.head_max_len = opts.head_max_len;
@@ -560,8 +564,8 @@ export class Agent extends HookRegistry {
       ? [...this.hooks, ...normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd)]
       : composeHooks(this.hooks, opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     const raiseErrors = opts.hooksRaise ?? this.hooksRaise;
-    const hooksTimeout = opts.hooksTimeout ?? this.hooksTimeout;
-    const timeoutMs = typeof hooksTimeout === "number" ? hooksTimeout * 1000 : null;
+    const hooksTimeout = validateHooksTimeout(opts.hooksTimeout ?? this.hooksTimeout);
+    const timeoutMs = hooksTimeout === null ? null : hooksTimeout * 1000;
     const ctx = new PredictContext({
       states,
       questions: questions as Record<string, unknown>,
@@ -614,11 +618,12 @@ export class Agent extends HookRegistry {
       throw err;
     } finally {
       ctx.markElapsed();
-      if (ctx.results !== null) {
+      if (ctx.results !== null && (!isLongCall(opts) || Array.isArray(ctx.results))) {
         ctx.usage = aggregateUsage(ctx.results);
         if (mc !== null) {
           flagLowConfidence(ctx.results as unknown as Record<string, unknown>[], mc);
         }
+        recordLongResults(opts, ctx);
       }
       try {
         await dispatchAsync(active, "onPredictEnd", ctx, { raiseErrors, timeoutMs });
@@ -627,6 +632,7 @@ export class Agent extends HookRegistry {
         if (ctx.error === null) throw hookErr;
       }
     }
+    finishLongResults(opts, ctx);
     return ctx.results as unknown as SystemOneResult[];
   }
 
@@ -878,6 +884,19 @@ export class Agent extends HookRegistry {
     opts: PredictOptions = {},
   ): Promise<SystemOneResult[]> {
     return this._predictHooked(states, questions, opts);
+  }
+
+  /** Scan overlapping token windows locally and keep each question's strongest answer.
+   * Attribution refers to the original candidate token slice; decoding and re-encoding can
+   * change its length. Confidence belongs to the winning window, not the whole document.
+   * Agent hooks wrap one batch of windows. A hook budget change is checked after inference.
+   */
+  async predictLong(
+    state: unknown,
+    questions: Record<string, QuestionDef>,
+    opts: LongPredictOptions = {},
+  ): Promise<LongResult> {
+    return predictLong(this, state, questions, opts);
   }
 
   /**

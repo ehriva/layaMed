@@ -206,9 +206,11 @@ for _name, _scores, _labels, _kwargs, _error in (
 from laya.mcp.remote import RemoteRouter  # noqa: E402
 
 check_true("RemoteRouter/is a Router", issubclass(RemoteRouter, Router))
-check_param("RemoteRouter.__init__", RemoteRouter.__init__, "base_url", inspect.Parameter.empty)
-check_param("RemoteRouter.__init__", RemoteRouter.__init__, "api_key", None)
-check_param("RemoteRouter.__init__", RemoteRouter.__init__, "timeout", None)
+check_param("RemoteRouter.__init__", RemoteRouter.__init__, "base_url", inspect.Parameter.empty,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD)
+check_param("RemoteRouter.__init__", RemoteRouter.__init__, "api_key", None, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+check_param("RemoteRouter.__init__", RemoteRouter.__init__, "timeout", None, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+check_param("RemoteRouter.__init__", RemoteRouter.__init__, "user_agent", None, inspect.Parameter.KEYWORD_ONLY)
 for method in ("predict", "predict_batch"):
     check("RemoteRouter/%s signature" % method,
           [(p.name, p.kind, p.default) for p in sig(getattr(RemoteRouter, method)).values()],
@@ -223,7 +225,8 @@ for label, fn in (("Agent.predict_batch", Agent.predict_batch),
                   ("Router.predict", Router.predict),
                   ("Router.predict_batch", Router.predict_batch),
                   ("Router.predict_long", Router.predict_long),
-                  ("ONNXAgent.system_one", ONNXAgent.system_one)):
+                  ("ONNXAgent.system_one", ONNXAgent.system_one),
+                  ("ONNXAgent.predict_long", ONNXAgent.predict_long)):
     check_param(label, fn, "hooks", None)
     check_param(label, fn, "on_predict_start", None)
     check_param(label, fn, "on_predict_end", None)
@@ -232,10 +235,16 @@ for label, fn in (("Agent.predict_batch", Agent.predict_batch),
 
 # The scan sizes its windows from the checkpoint budget, so it takes `window`/`stride` instead
 # of the per-call token overrides the single-window entries take.
-check_param("Agent.predict_long", Agent.predict_long, "window", None)
-check_param("Agent.predict_long", Agent.predict_long, "stride", None)
-for param in ("max_len", "head_max_len"):
-    check("Agent.predict_long/%s not accepted" % param, param in sig(Agent.predict_long), False)
+# The TypeScript predictLong port uses these same long-only controls. Keep the
+# Python oracle's ONNX and Router surfaces pinned alongside the torch entry point.
+for label, fn in (("Agent.predict_long", Agent.predict_long),
+                  ("ONNXAgent.predict_long", ONNXAgent.predict_long),
+                  ("Router.predict_long", Router.predict_long)):
+    for param in ("window", "stride", "batch_size"):
+        check_param(label, fn, param, None)
+    check_param(label, fn, "aggregate", "auto")
+    for param in ("max_len", "head_max_len", "min_confidence"):
+        check("%s/%s not accepted" % (label, param), param in sig(fn), False)
 
 check_param("Agent.predict_batch", Agent.predict_batch, "batch_size", None)
 check_param("Agent.predict_batch", Agent.predict_batch, "sort_by_length", False)
@@ -280,6 +289,11 @@ for label, fn in (("analyse", analyse), ("Router.route", Router.route),
                   ("Router.route_batch", Router.route_batch)):
     check_param(label, fn, "explain", False, inspect.Parameter.KEYWORD_ONLY)
 check("latin_profile keeps its signature", list(sig(latin_profile)), ["text"])
+
+from laya.mcp.tools import laya_route, laya_route_batch  # noqa: E402
+
+check_param("laya_route", laya_route, "explain", False, inspect.Parameter.KEYWORD_ONLY)
+check_param("laya_route_batch", laya_route_batch, "explain", False, inspect.Parameter.KEYWORD_ONLY)
 _plain_analysis = analyse("Turn lights off")
 _explained_analysis = analyse("Turn lights off", explain=True)
 check("analyse opts into one extra key", set(_explained_analysis) - set(_plain_analysis), {"diagnostic"})
@@ -1144,6 +1158,15 @@ check("serve/BODY_REFUSALS is the hook argument set LangChain refuses", sorted(_
 check("serve/BODY_REFUSALS names nothing but hooks",
       [key for key in _http_refusals if "hook" not in key and "predict" not in key], [])
 check("serve forwards and refuses disjoint sets", sorted(set(_http_controls) & set(_http_refusals)), [])
+
+from laya.serve import ROUTE_BODY_CONTROLS, ROUTE_BODY_REFUSALS  # noqa: E402
+
+check("HTTP route controls track Router.route", sorted(ROUTE_BODY_CONTROLS),
+      sorted(set(sig(Router.route)) - {"self", "state", "questions"} - set(ROUTE_BODY_REFUSALS)))
+check("HTTP route accepts and refuses disjoint controls",
+      sorted(set(ROUTE_BODY_CONTROLS) & set(ROUTE_BODY_REFUSALS)), [])
+check("HTTP route refuses prediction-only controls and operator hook policy",
+      sorted(set(_http_controls + _http_refusals) - set(ROUTE_BODY_CONTROLS) - set(ROUTE_BODY_REFUSALS)), [])
 
 # The opt-in shortlist evaluator is a public Python entry point. Pin its required
 # provenance arguments without adding an eager import to the package root.

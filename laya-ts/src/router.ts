@@ -1,5 +1,6 @@
 import { analyse, type AnalyseResult } from "./lang.js";
 import { checkQuestion, type PredictOptions, type QuestionDef, type SystemOneResult } from "./agent.js";
+import { skippedLongResult, validateLongOptions, validateLongResult, type LongPredictOptions, type LongResult } from "./predict-long.js";
 import { checkMinConfidence, flagLowConfidence } from "./common.js";
 import { decide, decideBatch, type DecideOptions, type DecideBatchOptions, type DecisionResult } from "./structured.js";
 import {
@@ -11,6 +12,7 @@ import {
   markDefaultsRan,
   dispatchAsync,
   normaliseHooks,
+  validateHooksTimeout,
   type Hook,
   type HookArg,
   type PredictHook,
@@ -110,6 +112,23 @@ export interface RouteDecision {
 }
 
 export type RoutedResult = SystemOneResult & { routing: RouteDecision };
+export type RoutedLongResult = LongResult & { routing: RouteDecision };
+export type RoutedLongPredictOptions = RouteOptions & LongPredictOptions;
+
+function validLongRouting(routing: RouteDecision | undefined): boolean {
+  if (!routing || typeof routing !== "object" || Array.isArray(routing) ||
+      !Object.hasOwn(DEFAULT_MODELS, routing.model) || typeof routing.repo !== "string" ||
+      typeof routing.reason !== "string" ||
+      (routing.workflow !== null && typeof routing.workflow !== "string")) return false;
+  const d = routing.detection;
+  return d === null || (typeof d === "object" && !Array.isArray(d) &&
+    typeof d.script === "string" && (d.language === null || typeof d.language === "string") &&
+    typeof d.isEnglish === "boolean" && typeof d.languageUndecided === "boolean" &&
+    Number.isFinite(d.diacriticRate) && Number.isFinite(d.nonLatinFraction) &&
+    (d.mixedSegment === null || typeof d.mixedSegment === "string") &&
+    d.scriptProfile !== null && typeof d.scriptProfile === "object" && !Array.isArray(d.scriptProfile) &&
+    Object.values(d.scriptProfile).every((value) => typeof value === "number" && Number.isFinite(value)));
+}
 
 export type LangGuess = string | null | undefined | ((state: unknown) => unknown);
 
@@ -591,6 +610,25 @@ export class Router extends HookRegistry {
     questions: Record<string, QuestionDef>,
     opts: RouteOptions & PredictOptions = {},
   ): Promise<RoutedResult> {
+    return this._predict(state, questions, opts) as Promise<RoutedResult>;
+  }
+
+  /** Route the document once, then scan it using the selected Agent's window budget. */
+  async predictLong(
+    state: unknown,
+    questions: Record<string, QuestionDef>,
+    opts: RoutedLongPredictOptions = {},
+  ): Promise<RoutedLongResult> {
+    validateLongOptions(opts);
+    return this._predict(state, questions, opts, opts) as Promise<RoutedLongResult>;
+  }
+
+  private async _predict(
+    state: unknown,
+    questions: Record<string, QuestionDef>,
+    opts: RouteOptions & PredictOptions,
+    scan?: LongPredictOptions,
+  ): Promise<RoutedResult | RoutedLongResult> {
     if (state === null || state === undefined) {
       throw new TypeError("state must not be None; pass a string, dict, or list");
     }
@@ -599,11 +637,17 @@ export class Router extends HookRegistry {
         `questions must be a dict of question id -> definition, got ${questions === null ? "null" : Array.isArray(questions) ? "Array" : typeof questions}`,
       );
     }
-    const mcOpt = opts.minConfidence ?? opts.min_confidence;
+    const mcOpt = scan ? undefined : opts.minConfidence ?? opts.min_confidence;
     const mc = mcOpt !== undefined && mcOpt !== null ? checkMinConfidence(mcOpt) : null;
     const active = composeHooks(this.hooks, opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     const raiseErrors = opts.hooksRaise ?? this.hooksRaise;
+    const timeout = scan ? validateHooksTimeout(scan.hooksTimeout) : null;
+    const timeoutMs = timeout === null ? null : timeout * 1000;
     const hasStart = active.some((h) => typeof h.onPredictStart === "function");
+    // The per-call token-budget overrides seed the context, so a start hook can read and rewrite
+    // them exactly as it can `states`/`questions`; the values it leaves are what reaches the agent
+    // below. Python's Router.predict builds its context the same way (router.py: `PredictContext(
+    // ..., max_len=max_len, head_max_len=head_max_len)`).
     const ctx = new PredictContext({
       states: [state],
       questions: questions as Record<string, unknown>,
@@ -611,6 +655,8 @@ export class Router extends HookRegistry {
       model: null,
       agent: null,
       router: this,
+      maxLen: scan ? null : opts.maxLen ?? null,
+      headMaxLen: scan ? null : opts.headMaxLen ?? null,
     });
     try {
       // Per-call hooks apply to the whole call, including onRoute inside route().
@@ -626,7 +672,7 @@ export class Router extends HookRegistry {
       };
       ctx.agent = agent;
 
-      await dispatchAsync(active, "onPredictStart", ctx, { raiseErrors });
+      await dispatchAsync(active, "onPredictStart", ctx, { raiseErrors, timeoutMs });
       if (ctx.results === null) {
         if (hasStart) {
           if (typeof ctx.questions !== "object" || ctx.questions === null || Array.isArray(ctx.questions)) {
@@ -639,24 +685,50 @@ export class Router extends HookRegistry {
           checkQuestion(qid, qdef);
         }
         // Python parity (router.py predict): the request's language also shapes the answer
-        // distribution through the agent's lang_temperatures. An explicit lang wins;
-        // otherwise forward the language the router detected for the routing decision.
-        // TS analyse() names English "en" where Python's analyse returns None (it only
-        // ever names non-English), so a detected "en" forwards as null — in Python only an
-        // explicit lang="en" can select an "en" override.
+        // distribution through the agent's lang_temperatures. An explicit lang wins; otherwise
+        // forward the language the router detected for the routing decision, "en" included --
+        // Python's `analyse` names English "en" too (laya/lang.py, `_latin_profile`), and
+        // `lang_temperatures` may carry an "en" entry, so replacing it with null made that
+        // override dead code on this path while the same agent honoured it when called directly.
         const detected = decision.detection?.language;
-        const effectiveLang = opts.lang ?? (detected && detected !== "en" ? detected : null);
+        const effectiveLang = opts.lang ?? detected ?? null;
         const agentOpts: PredictOptions = { lang: effectiveLang };
         if (mc !== null) agentOpts.minConfidence = mc;
+        // Forwarded only when set, as Python does: an absent override means "the agent's own
+        // config", and `null`/`undefined` must not overwrite a deployment's configured budget.
+        if (ctx.maxLen !== null && ctx.maxLen !== undefined) agentOpts.maxLen = ctx.maxLen;
+        if (ctx.headMaxLen !== null && ctx.headMaxLen !== undefined) agentOpts.headMaxLen = ctx.headMaxLen;
         markDefaultsRan(agentOpts);
-        const result = (await agent.systemOne(
-          ctx.states[0],
-          ctx.questions as Record<string, QuestionDef>,
-          agentOpts,
-        )) as RoutedResult;
-        result["routing"] = { ...decision };
+        let result: RoutedResult | RoutedLongResult;
+        if (scan) {
+          // Read the context after start hooks, but run inference outside hook dispatch. A
+          // timeout or suppressed hook error must never turn a scan into one truncated pass.
+          const runner = ctx.agent as { predictLong?: (s: unknown, q: Record<string, QuestionDef>, o: LongPredictOptions) => Promise<LongResult> } | null;
+          if (typeof runner?.predictLong !== "function") {
+            throw new TypeError("Router.predictLong requires the routed agent to implement predictLong");
+          }
+          const detection = ctx.decision?.detection as AnalyseResult | null | undefined;
+          const longOpts: LongPredictOptions = {
+            window: scan.window, stride: scan.stride, aggregate: scan.aggregate,
+            batchSize: scan.batchSize, lang: scan.lang ?? detection?.language ?? null,
+          };
+          markDefaultsRan(longOpts);
+          const scanned = await runner.predictLong(ctx.states[0], ctx.questions as Record<string, QuestionDef>, longOpts);
+          validateLongResult(scanned, "Router.predictLong agent result");
+          result = { ...scanned, routing: (scanned as RoutedLongResult).routing ?? { ...decision } };
+        } else {
+          result = (await agent.systemOne(ctx.states[0], ctx.questions as Record<string, QuestionDef>, agentOpts)) as RoutedResult;
+          result.routing = { ...decision };
+        }
         ctx.results = [result as unknown as Record<string, unknown>];
       } else {
+        if (scan) {
+          if (!Array.isArray(ctx.results) || ctx.results.length !== 1) {
+            throw new Error("Router.predictLong: a skipping hook must return exactly one document result");
+          }
+          ctx.results = [skippedLongResult(ctx.results[0]) as unknown as Record<string, unknown>];
+          console.warn("laya: Router.predictLong: a start hook answered the document without scanning; usage.windows is 0");
+        }
         // A cache hit short-circuits inference, but predict still promises a `routing` key.
         // Add it without overwriting a routing the cached payload already has.
         for (const result of ctx.results) {
@@ -668,27 +740,37 @@ export class Router extends HookRegistry {
     } catch (err) {
       ctx.error = err;
       try {
-        await dispatchAsync(active, "onError", ctx, { raiseErrors });
+        await dispatchAsync(active, "onError", ctx, { raiseErrors, timeoutMs });
       } catch {
         // A failing onError hook must not hide the failure that triggered it.
       }
       throw err;
     } finally {
       ctx.markElapsed();
-      if (ctx.results !== null) {
+      if (ctx.results !== null && (!scan || Array.isArray(ctx.results))) {
         ctx.usage = aggregateUsage(ctx.results);
         if (mc !== null) {
           flagLowConfidence(ctx.results as unknown as Record<string, unknown>[], mc);
         }
       }
       try {
-        await dispatchAsync(active, "onPredictEnd", ctx, { raiseErrors });
+        await dispatchAsync(active, "onPredictEnd", ctx, { raiseErrors, timeoutMs });
       } catch (hookErr) {
         // End hooks run on the failure path too; do not let one mask the real error.
         if (ctx.error === null) throw hookErr;
       }
     }
-    return (ctx.results as unknown as RoutedResult[])[0];
+    if (scan) {
+      if (!Array.isArray(ctx.results) || ctx.results.length !== 1) {
+        throw new Error("Router.predictLong must return exactly one document result");
+      }
+      validateLongResult(ctx.results[0], "Router.predictLong result");
+      const routing = ctx.results[0].routing as RouteDecision | undefined;
+      if (!validLongRouting(routing)) {
+        throw new TypeError("Router.predictLong result must include a valid routing decision");
+      }
+    }
+    return (ctx.results as unknown as (RoutedResult | RoutedLongResult)[])[0];
   }
 
   /**
@@ -900,12 +982,9 @@ export class Router extends HookRegistry {
             continue;
           }
           // An explicit `lang` wins; otherwise forward the language the router detected for the
-          // routing decision. TS analyse() names English "en" where Python's returns None (it
-          // only ever names non-English), so a detected "en" forwards as null — in Python only
-          // an explicit lang="en" can select an "en" override. Same rule as `predict`.
+          // routing decision, "en" included, exactly as `predict` and Python's predict_batch do.
           const detectedLang = decisions[i].detection?.language ?? null;
-          const effectiveLang =
-            requests[i].lang ?? (detectedLang && detectedLang !== "en" ? detectedLang : null);
+          const effectiveLang = requests[i].lang ?? detectedLang;
           const langKey = hasLangOverrides ? effectiveLang : null;
           const schema = questionSchema(ctx.questions);
           const found = questionGroups.find(
@@ -1019,6 +1098,13 @@ export class Router extends HookRegistry {
    * Run onPredictEnd for every started per-request context and raise the first hook
    * failure, if any. Elapsed and usage are stamped on every context before any end hook
    * runs, so one request's end hooks never inflate another request's elapsed time.
+   *
+   * The end hooks run in REVERSE start order, because every request started before any
+   * ended: a hook that opens something in start and closes it in end (a tracing span, an
+   * `AsyncLocalStorage` frame, an in-flight counter) must unwind the last one first, or it
+   * closes the wrong frame and every request after the first inherits a corrupted context.
+   * Python's `Router.predict_batch` ends its contexts the same way and says so
+   * (`laya/router.py::_end_contexts`).
    */
   private _endContexts(active: Hook[], contexts: PredictContext[], raiseErrors: boolean): void {
     for (const ctx of contexts) {
@@ -1026,7 +1112,7 @@ export class Router extends HookRegistry {
       if (ctx.results !== null) ctx.usage = aggregateUsage(ctx.results);
     }
     let firstError: unknown = null;
-    for (const ctx of contexts) {
+    for (const ctx of [...contexts].reverse()) {
       try {
         dispatch(active, "onPredictEnd", ctx, { raiseErrors });
       } catch (hookErr) {

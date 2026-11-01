@@ -496,6 +496,39 @@ check_raises("encoder/bad max_length", lambda: embed_fn_from_agent(tiny, max_len
 check_raises("encoder/bad batch_size", lambda: embed_fn_from_agent(tiny, batch_size=True))
 
 
+# The two attributes the docstring names -- `agent.tok`, `agent.model.encoder` -- were read with no
+# check, so an object that is not a loaded checkpoint answered with the interpreter's own
+# AttributeError instead of naming what the helper needs. `_call_predict` refuses the same mistake
+# for the agent *it* uses, which is the sibling this now matches.
+class NoAttrs:
+    pass
+
+
+class TokOnly:
+    def __init__(self):
+        self.tok = TinyTok()
+
+
+class ModelWithoutEncoder:
+    def __init__(self):
+        self.tok = TinyTok()
+        self.model = type("M", (), {})()
+
+
+for _bad_agent in (NoAttrs(), TokOnly(), ModelWithoutEncoder()):
+    check_raises("encoder/agent/%s refused" % type(_bad_agent).__name__,
+                 lambda _a=_bad_agent: embed_fn_from_agent(_a), TypeError)
+
+try:
+    embed_fn_from_agent(NoAttrs())
+    FAIL.append("encoder/agent refusal message: no TypeError")
+except TypeError as _exc:
+    check_true("encoder/agent refusal names both attributes",
+               str(_exc) == "agent must provide tok and model.encoder", repr(str(_exc)))
+except AttributeError as _exc:
+    FAIL.append("encoder/agent refusal message: leaked AttributeError (%s)" % _exc)
+
+
 # ---------------------------------------------------------------- device changes, simulated entirely on CPU
 class DeviceRecordingTensor:
     def __init__(self, tensor, requests):

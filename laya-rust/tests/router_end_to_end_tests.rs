@@ -21,6 +21,14 @@ fn have_english_and_multilingual() -> bool {
         .all(|c| test_artifacts::has_model(c) && test_artifacts::has_tokenizer(c))
 }
 
+/// The router tests load english and multilingual side by side, so only a job that selects both
+/// runs them; any other `LAYA_TEST_CHECKPOINTS` selection skips them silently.
+fn router_selected() -> bool {
+    [LayaCheckpoint::English, LayaCheckpoint::Multilingual]
+        .into_iter()
+        .all(test_artifacts::is_selected)
+}
+
 /// Builds each engine from the directory `test_artifacts` found (the repo walk-up included), not the
 /// router's default resolution, which only checks `LAYA_ONNX_ROOT` and the cache: otherwise the
 /// skip check above can pass while the router still fails to find the artifacts.
@@ -42,6 +50,9 @@ fn new_router(max_loaded: usize) -> LayaRouter {
 
 #[test]
 fn router_predict_routes_and_matches_the_recorded_checkpoint_result() {
+    if !router_selected() {
+        return;
+    }
     if !have_english_and_multilingual() {
         eprintln!("skip: need both the english and multilingual ONNX artifacts");
         return;
@@ -105,6 +116,11 @@ fn router_predict_routes_and_matches_the_recorded_checkpoint_result() {
 
 #[test]
 fn sample_inputs_match_recorded_model_case_inputs() {
+    // Reads the english and multilingual goldens, which only the router cell regenerates; a single-
+    // checkpoint cell would otherwise check the committed copy of the checkpoint it does not own.
+    if !router_selected() {
+        return;
+    }
     let sample_inputs = routing_golden::load("sample_inputs.json")
         .expect("the routing sample fixture must be present");
     let support = &sample_inputs["support_email"];
@@ -141,6 +157,9 @@ fn sample_inputs_match_recorded_model_case_inputs() {
 
 #[test]
 fn router_predict_is_correct_under_eight_thread_concurrency_with_max_loaded_one() {
+    if !router_selected() {
+        return;
+    }
     if !have_english_and_multilingual() {
         eprintln!("skip: need both the english and multilingual ONNX artifacts");
         return;

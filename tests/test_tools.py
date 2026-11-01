@@ -232,6 +232,38 @@ selector_unknown_fb = LayaToolSelector(tools=tools_list, fallback_tool=fallback_
 dec_unknown_fb = selector_unknown_fb.select("Query")
 check("fail_closed/unknown_choice_fallback_used", dec_unknown_fb.is_fallback, True)
 
+# Fail-closed: a `choice` the remote body sends as JSON array/object/set is unknown, not an
+# unhashable dict key -- `chosen_key not in lookup` used to raise a bare interpreter TypeError.
+for unhashable_choice in (["tool_0", "tool_1"], {"name": "tool_0"}, {"tool_0"}):
+    label = "fail_closed/%s_choice" % type(unhashable_choice).__name__
+    odd_agent = MockLayaAgent(lambda s, q, c=unhashable_choice: {
+        "model": "laya-multilingual",
+        "answers": {"tool_select": {"choice": c, "confidence": 0.99}},
+    })
+    try:
+        LayaToolSelector(tools=tools_list, agent=odd_agent).select("Query")
+        FAIL.append("%s: expected RuntimeError" % label)
+    except RuntimeError as e:
+        check_true("%s_raises" % label, "not in candidate tools" in str(e), str(e))
+    except TypeError as e:
+        FAIL.append("%s: leaked TypeError instead of RuntimeError (%s)" % (label, e))
+    try:
+        dec_odd_fb = LayaToolSelector(tools=tools_list, fallback_tool=fallback_tool, agent=odd_agent).select("Query")
+        check("%s_fallback_used" % label, dec_odd_fb.is_fallback, True)
+        check_true("%s_fallback_names_choice" % label,
+                   "Unknown or missing tool decision %r" % (unhashable_choice,) in dec_odd_fb.reason)
+    except TypeError as e:
+        FAIL.append("%s_fallback: leaked TypeError instead of routing to fallback (%s)" % (label, e))
+
+# A hashable but non-string choice keeps the same refusal, and a real key still selects.
+int_choice_agent = MockLayaAgent(lambda s, q: {"model": "laya-multilingual", "answers": {"tool_select": {"choice": 0, "confidence": 0.99}}})
+try:
+    LayaToolSelector(tools=tools_list, agent=int_choice_agent).select("Query")
+    FAIL.append("fail_closed/int_choice: expected RuntimeError")
+except RuntimeError as e:
+    check_true("fail_closed/int_choice_msg", "choice 0 not in candidate tools" in str(e))
+
+
 # Fail-closed: unusable / None / NaN confidence must fail closed
 nan_conf_agent = MockLayaAgent(lambda s, q: {
     "model": "laya-multilingual",

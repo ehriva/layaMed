@@ -22,8 +22,8 @@ use std::collections::HashMap;
 /// Options for `LayaEngine::predict_long`. Every field is optional; `Default` gives Python's
 /// defaults. Build one with the chained setters.
 ///
-/// Per-call hooks, per-language temperatures and the confidence gate that Python's `predict_long`
-/// also accepts are not part of this port.
+/// Per-call hooks and the confidence gate that Python's `predict_long` also accepts are not part
+/// of this port. It takes no `max_len` or `head_max_len`, as in Python.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LongOptions {
@@ -39,6 +39,11 @@ pub struct LongOptions {
     pub aggregate: Option<String>,
     /// Maximum windows per forward pass. `None` or `0` uses Python's automatic cap.
     pub batch_size: Option<usize>,
+    /// Selects an entry of [`crate::LayaOptions::lang_temperatures`] for every window; see
+    /// [`crate::PredictOptions::lang`]. On `LayaRouter::predict_long` the explicit `lang`
+    /// argument plays this part, falling back to the detected language, and this field is not
+    /// read.
+    pub lang: Option<String>,
 }
 
 impl LongOptions {
@@ -69,6 +74,12 @@ impl LongOptions {
     /// Set [`Self::batch_size`].
     pub fn batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = Some(batch_size);
+        self
+    }
+
+    /// Set [`Self::lang`].
+    pub fn lang(mut self, lang: impl Into<String>) -> Self {
+        self.lang = Some(lang.into());
         self
     }
 

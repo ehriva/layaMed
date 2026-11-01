@@ -4386,7 +4386,7 @@
       "latin_profile": {
         "language": null,
         "english_hits": 0,
-        "diacritic_rate": 0.2,
+        "diacritic_rate": 0.6,
         "looks_non_english": true
       },
       "analyse": {
@@ -4397,7 +4397,7 @@
         "language": null,
         "is_english": false,
         "language_undecided": true,
-        "diacritic_rate": 0.2,
+        "diacritic_rate": 0.6,
         "non_latin_fraction": 0.0,
         "mixed_segment": null
       },

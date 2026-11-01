@@ -25,6 +25,78 @@ from laya.revisions import (  # noqa: E402
 )
 from laya.router import Router, _digests_from_env, _merge_expected_digests  # noqa: E402
 
+# A Windows environment variable cannot exceed 32 767 characters. That is the whole budget any
+# test that delivers a value through `LAYA_SHA256_DIGESTS` has to work inside, and the reason the
+# 200 000-character literal that used to be inlined below never reached the code under test on
+# Windows: `patch.dict` raised `ValueError: the environment variable is longer than 32767
+# characters` first, failing the suite there while passing on Linux and macOS, which have no
+# comparable per-variable limit. `tests/test_serve.py` pins the same cap for pytest node ids.
+# Files and request bodies have no per-variable limit, which is why the deep-nesting cases in the
+# other suites pass far larger documents through those channels instead.
+_ENV_VALUE_MAX = 32767
+
+
+def _deep_json_within(budget):
+    """The shallowest array nesting *this* interpreter answers with a `RecursionError`.
+
+    Returns `None` when no document that fits `budget` characters reaches the scanner's limit.
+
+    The depth cannot be predicted, which is the trap this function exists to avoid. `json` scans
+    in C, and what bounds that recursion is not `sys.getrecursionlimit()`. Measured: depth 995 on
+    CPython 3.11, where the Python limit does gate it; 9998 on 3.12 and 9999 on 3.13, where
+    `sys.setrecursionlimit` has no effect on it at all; and past 100 000 on 3.14. So every fixed
+    depth is wrong on some version in the matrix. A literal 1100 raised on 3.11 and *parsed* on
+    3.12 and 3.13, where `verify_digests` then reported the list it got rather than the
+    unparseable value these tests mean to hand it.
+
+    Doubling upward rather than searching down from `budget` keeps the deepest parse attempted
+    close to the real threshold, which matters on hosts with a smaller stack than the limit
+    implies.
+    """
+    def raises(depth):
+        try:
+            json.loads("[" * depth + "]" * depth)
+        except RecursionError:
+            return True
+        except ValueError:
+            return False
+        return False
+
+    cap = budget // 2
+    depth = 256
+    while True:
+        attempt = min(depth, cap)
+        if raises(attempt):
+            return "[" * attempt + "]" * attempt
+        if attempt == cap:
+            return None
+        depth *= 2
+
+
+_DEEP_JSON = _deep_json_within(_ENV_VALUE_MAX)
+_NO_DEEP_JSON = (
+    "no array nesting that fits a %d character environment variable reaches this interpreter's "
+    "JSON scanner limit" % _ENV_VALUE_MAX
+)
+
+# `json.loads` made to report the one refusal that is not reachable through the environment on
+# every interpreter, so the `except RecursionError` clauses stay covered even where `_DEEP_JSON`
+# is None. Keyed on a sentinel rather than replacing `json.loads` outright: both code paths under
+# test parse other documents, and a blanket stub would pass for reasons that have nothing to do
+# with the clause being asserted.
+_RECURSION_SENTINEL = "laya-test-force-recursion-error"
+
+
+def _json_scanner_refuses_the_sentinel():
+    real = json.loads
+
+    def fake(value, *args, **kwargs):
+        if isinstance(value, str) and value.strip() == _RECURSION_SENTINEL:
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON object")
+        return real(value, *args, **kwargs)
+
+    return patch.object(json, "loads", fake)
+
 
 class _StopLoad(Exception):
     """Sentinel raised by the fake snapshot_download once kwargs are captured."""
@@ -162,13 +234,45 @@ class VerifyDigestsTests(unittest.TestCase):
             verify_digests(self.dir, {"absent.bin": self.digest})
 
     def test_escaping_paths_rejected(self):
-        for rel in ("../evil", "..", "a/../../evil", "\\..\\evil", "/absolute/evil", "C:\\absolute\\evil"):
+        for rel in ("../evil", "..", "a/../../evil", "\\..\\evil", "/absolute/evil", "C:\\absolute\\evil",
+                    # drive-anchored but not ntpath-absolute: ntpath.join("C:\\dir", "a", "b:c") == "b:c",
+                    # so on Windows these escape model_dir the same way the absolute ones do
+                    "C:evil", "c:evil", "a/b:c", "C:..\\evil"):
             with self.assertRaises(ValueError, msg=rel):
                 verify_digests(self.dir, {rel: self.digest})
 
     def test_digest_map_can_come_from_environment(self):
         with patch.dict(os.environ, {"LAYA_SHA256_DIGESTS": json.dumps({"weights.bin": self.digest})}):
             verify_digests(self.dir)
+
+    def test_an_unreadable_environment_map_is_a_value_error(self):
+        # `json` refuses a document two ways: a `ValueError` for text that is not JSON, and -- for a
+        # nesting depth past the scanner's own stack -- a `RecursionError`, which is a `RuntimeError`
+        # and so was never in the `except` here. The second escaped `load()` as an interpreter
+        # traceback instead of the refusal this function's docstring names, which is what
+        # `laya/_eval_policy.py`, `laya/evidence.py` and `laya/cli.py` already refuse to let a
+        # caller's JSON do.
+        for bad in ("{not json",) + ((), (_DEEP_JSON,))[_DEEP_JSON is not None]:
+            with self.subTest(value=bad[:20] + ("..." if len(bad) > 20 else "")):
+                with patch.dict(os.environ, {"LAYA_SHA256_DIGESTS": bad}):
+                    with self.assertRaises(ValueError) as cm:
+                        verify_digests(self.dir)
+                self.assertIn("LAYA_SHA256_DIGESTS", str(cm.exception))
+
+    def test_a_scanner_recursion_error_is_reported_as_this_variables_refusal(self):
+        """The `RecursionError` clause, asserted without depending on a reachable depth.
+
+        `_DEEP_JSON` is the honest end-to-end case and it runs wherever the interpreter's scanner
+        limit is reachable inside an environment variable, but that is not every version: on
+        CPython 3.14 no document under 32 767 characters gets there. Without this test the clause
+        would simply stop being covered on such a version, silently and with the suite green,
+        which is the failure mode that let the original defect ship.
+        """
+        with _json_scanner_refuses_the_sentinel():
+            with patch.dict(os.environ, {"LAYA_SHA256_DIGESTS": _RECURSION_SENTINEL}):
+                with self.assertRaises(ValueError) as cm:
+                    verify_digests(self.dir)
+        self.assertIn("LAYA_SHA256_DIGESTS", str(cm.exception))
 
     def test_external_onnx_digest_is_supported(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -622,9 +726,26 @@ class RouterEnvDigestTests(unittest.TestCase):
     def test_unparseable_environment_is_not_this_layers_error(self):
         # `laya.revisions.verify_digests` owns the message a malformed value gets; a Router
         # that repeated it would be a second copy of a rule it does not enforce.
-        for value in ("", "   ", "{not json", "[]", '"digests"', "{}"):
+        #
+        # The last value is the shape `except ValueError` here did not cover: `json` answers a
+        # nesting depth past its own stack with a `RecursionError`, a `RuntimeError`, so building a
+        # Router on it crashed instead of naming nothing -- the one unparseable input this layer
+        # promises to hand on rather than report.
+        values = ("", "   ", "{not json", "[]", '"digests"', "{}")
+        for value in values + ((), (_DEEP_JSON,))[_DEEP_JSON is not None]:
             with self._env(value):
                 self.assertEqual(Router().sha256_digests, {}, value)
+
+    def test_a_scanner_recursion_error_names_nothing_rather_than_raising(self):
+        """Same clause on this side of the boundary, equally independent of a reachable depth.
+
+        A Router that let the `RecursionError` out would crash a caller who only misconfigured a
+        variable, so this is the behaviour the docstring above promises: name nothing, and leave
+        the wording to `laya.revisions`.
+        """
+        with _json_scanner_refuses_the_sentinel():
+            with self._env(_RECURSION_SENTINEL):
+                self.assertEqual(Router().sha256_digests, {})
 
 
 class RouterDigestPrecedenceTests(unittest.TestCase):

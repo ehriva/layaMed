@@ -155,6 +155,17 @@ const NON_EN_DIACRITICS: &str = concat!(
     "āēģīķļņūž",                       // Baltic
     "đ",                               // Serbo-Croatian / Vietnamese
     "ə",                               // Azerbaijani
+    // Vietnamese: no stopword list of its own, so its letters are the only signal that keeps it
+    // off the English checkpoint. The set used to stop at `đ` (the comment above already claimed
+    // Vietnamese coverage), but the tone-marked letters are precomposed codepoints of their own,
+    // so everyday sentences such as "Cảm ơn bạn nhiều nhé" carried a diacritic rate of 0.0 and
+    // were routed to the English checkpoint. Mirrors `laya/lang.py`; text is lowercased before
+    // matching, so lowercase forms are enough.
+    "ạảấầẩẫậắằẳẵặ",                    // a-family tone marks
+    "ẹẻẽếềểễệỉị",                      // e-/i-family tone marks
+    "ọỏốồổỗộớờởỡợụủứừửữự",             // o-/u-family tone marks
+    "ỳỵỷỹơư",                          // y-family tone marks, and the two letters no other
+                                       // listed language uses
 );
 
 // Function words. Latin-script languages overlap heavily (de/la/le/un/e/que), so each hit is
@@ -172,13 +183,14 @@ const EN_STOP: &[&str] = &[
     "after", "already", "always", "and", "any", "are", "aren", "as", "at", "be", "because", "been",
     "before", "being", "between", "both", "but", "can", "could", "couldn", "didn", "didnt", "does",
     "doesn", "doesnt", "doing", "done", "dont", "down", "during", "each", "ever", "every", "few",
-    "for", "from", "has", "hasn", "have", "haven", "havent", "here", "him", "his", "how", "i", "if",
-    "in", "into", "is", "isn", "isnt", "it", "ive", "many", "might", "much", "must", "never", "nor",
-    "not", "of", "on", "only", "onto", "our", "please", "shall", "she", "should", "some", "than",
-    "that", "thats", "the", "their", "them", "then", "there", "these", "they", "this", "those",
-    "through", "to", "too", "until", "very", "was", "wasn", "wasnt", "we", "were", "weren", "what",
-    "whats", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "within",
-    "without", "won", "wont", "would", "wouldn", "yet", "you", "your", "youre", "yours",
+    "for", "from", "has", "hasn", "have", "haven", "havent", "here", "him", "his", "how", "i",
+    "if", "in", "into", "is", "isn", "isnt", "it", "ive", "many", "might", "much", "must", "never",
+    "nor", "not", "of", "on", "only", "onto", "our", "please", "shall", "she", "should", "some",
+    "than", "that", "thats", "the", "their", "them", "then", "there", "these", "they", "this",
+    "those", "through", "to", "too", "until", "very", "was", "wasn", "wasnt", "we", "were",
+    "weren", "what", "whats", "when", "where", "which", "while", "who", "whom", "why", "will",
+    "with", "within", "without", "won", "wont", "would", "wouldn", "yet", "you", "your", "youre",
+    "yours",
 ];
 
 const FR_STOP: &[&str] = &[

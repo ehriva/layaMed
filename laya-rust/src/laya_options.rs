@@ -102,6 +102,12 @@ pub struct LayaOptions {
     pub cache_directory: Option<PathBuf>,
     /// Optional sink for per-file download progress.
     pub download_progress: Option<Arc<dyn Fn(ArtifactDownloadProgress) + Send + Sync>>,
+    /// Per-language temperature overrides, Python's `lang_temperatures=` constructor argument:
+    /// language code to the temperatures that replace the checkpoint's for a call whose `lang`
+    /// names it. Empty (the default) is Python's `None`. Resolved when the engine is built; see
+    /// [`crate::lang_temperatures::resolve_lang_temperatures`] for the rules and the errors. A
+    /// router passes it to every engine it builds.
+    pub lang_temperatures: crate::lang_temperatures::LangTemperatureTable,
 }
 
 impl std::fmt::Debug for LayaOptions {
@@ -121,6 +127,7 @@ impl std::fmt::Debug for LayaOptions {
             )
             .field("cache_directory", &self.cache_directory)
             .field("download_progress", &self.download_progress.is_some())
+            .field("lang_temperatures", &self.lang_temperatures)
             .finish()
     }
 }
@@ -139,6 +146,7 @@ impl Default for LayaOptions {
             hugging_face_token: None,
             cache_directory: None,
             download_progress: None,
+            lang_temperatures: Vec::new(),
         }
     }
 }

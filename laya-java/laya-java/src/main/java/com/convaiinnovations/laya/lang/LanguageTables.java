@@ -208,7 +208,12 @@ public final class LanguageTables {
             "\u0111", "\u0113", "\u0119", "\u011B", "\u011F", "\u0123", "\u012B", "\u0131", "\u0137",
             "\u013C", "\u0142", "\u0144", "\u0146", "\u0148", "\u0151", "\u0153", "\u0159", "\u015B",
             "\u015F", "\u0161", "\u0163", "\u0165", "\u016B", "\u016F", "\u0171", "\u017A", "\u017C",
-            "\u017E", "\u0219", "\u021B", "\u0259");
+            "\u017E", "\u01A1", "\u01B0", "\u0219", "\u021B", "\u0259", "\u1EA1", "\u1EA3", "\u1EA5",
+            "\u1EA7", "\u1EA9", "\u1EAB", "\u1EAD", "\u1EAF", "\u1EB1", "\u1EB3", "\u1EB5", "\u1EB7",
+            "\u1EB9", "\u1EBB", "\u1EBD", "\u1EBF", "\u1EC1", "\u1EC3", "\u1EC5", "\u1EC7", "\u1EC9",
+            "\u1ECB", "\u1ECD", "\u1ECF", "\u1ED1", "\u1ED3", "\u1ED5", "\u1ED7", "\u1ED9", "\u1EDB",
+            "\u1EDD", "\u1EDF", "\u1EE1", "\u1EE3", "\u1EE5", "\u1EE7", "\u1EE9", "\u1EEB", "\u1EED",
+            "\u1EEF", "\u1EF1", "\u1EF3", "\u1EF5", "\u1EF7", "\u1EF9");
 
     /** Function words several lists hold, which therefore name no language. */
     public static final Set<String> SHARED_WORDS = Set.of(

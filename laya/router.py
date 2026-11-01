@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .confidence import apply_confidence_gate, check_min_confidence
 from .hooks import (
-    HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
+    AsyncHook, BaseHook, HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
     validate_timeout,
 )
 from .hooks import _SKIP_DEFAULTS
@@ -391,6 +391,17 @@ _ROUTER_OWNED_AGENT_ARGS = frozenset({
 })
 
 
+def _has_on_route(hooks: Sequence[Any]) -> bool:
+    """True if at least one hook provides a non-default on_route implementation."""
+    for hook in hooks:
+        while isinstance(hook, AsyncHook):
+            hook = hook.hook
+        method = getattr(hook, "on_route", None)
+        if method is not None and getattr(method, "__func__", method) is not BaseHook.on_route:
+            return True
+    return False
+
+
 def check_agent_kwargs(agent_kwargs: Dict[str, Any]) -> None:
     """Reject `agent_kwargs` names a Router cannot honour, before any checkpoint is loaded.
 
@@ -441,7 +452,12 @@ def _digests_from_env(models: Dict[str, Any], resolve=normalise_name) -> Dict[st
         return {}
     try:
         data = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # `RecursionError` is a `RuntimeError`, so `except ValueError` did not cover the one shape
+        # of unparseable this variable can have that is not a decode error: `json` answers a
+        # nesting depth it will not walk with a stack overflow. It names nothing, so it names no
+        # checkpoint here either -- `laya.revisions` reports it, in the words this docstring
+        # already promises are the only ones this layer uses.
         return {}
     if not isinstance(data, dict) or not data:
         return {}
@@ -891,6 +907,18 @@ class Router(HookRegistry):
         if source is not None and not isinstance(source, (str, tuple, list)):
             raise TypeError("checkpoint source for %r must be a repo id, a local path or a (repo, subfolder) "
                             "pair, got %s" % (name, type(source).__name__))
+        # The sequence half of that sentence was never opened. `_split` pads with one `None`, so an
+        # empty pair unpacks to one value and `registered`, `route(model=...)` and `load()` all fail
+        # later with `ValueError: not enough values to unpack (expected 2, got 1)` -- after the
+        # registration reported success -- while a third element is silently truncated and a number
+        # part is stringified into a repo id like `acme/5`. Refuse the shape here, where the name is
+        # known, so nothing is stored and no later call has to guess what the pair meant.
+        if isinstance(source, (tuple, list)) and (
+                not 1 <= len(source) <= 2
+                or not all(part is None or isinstance(part, str) for part in source)
+                or not any(isinstance(part, str) for part in source)):
+            raise TypeError("checkpoint source for %r must be a repo id, a local path or a (repo, subfolder) "
+                            "pair of strings, got %r" % (name, source))
         if isinstance(source, str) and source.startswith("~"):
             source = os.path.expanduser(source)     # a local path, never a Hub repo id
         # After every check that can refuse the registration, and before the write. A filter
@@ -1202,6 +1230,8 @@ class Router(HookRegistry):
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
         active = compose_hooks(self.hooks, hooks)
         timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
+        if not active or not _has_on_route(active):
+            return decision
         ctx = PredictContext(states=[state], questions=questions or {}, decision=decision, router=self)
         dispatch(active, "on_route", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
         return ctx.decision
@@ -1564,6 +1594,14 @@ class Router(HookRegistry):
         """
         if not isinstance(requests, SequenceABC) or isinstance(requests, (str, bytes)):
             raise TypeError("requests must be a sequence of request dictionaries")
+        if not requests:
+            return []
+
+        use_fast = type(self).route is Router.route
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
+        active = compose_hooks(self.hooks, hooks)
+        raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
+        has_on_route = _has_on_route(active)
 
         decisions: List[RouteDecision] = []
         for i, request in enumerate(requests):
@@ -1583,20 +1621,51 @@ class Router(HookRegistry):
                     % (i, type(questions).__name__)
                 )
 
-            decisions.append(
-                self.route(
+            if not use_fast:
+                decisions.append(
+                    self.route(
+                        request["state"],
+                        questions,
+                        model=request.get("model"),
+                        task=request.get("task"),
+                        lang=request.get("lang"),
+                        lang_guess=request.get("lang_guess"),
+                        hooks=hooks,
+                        hooks_raise=hooks_raise,
+                        hooks_timeout=hooks_timeout,
+                        **({"explain": True} if explain else {}),
+                    )
+                )
+            elif not has_on_route:
+                decisions.append(
+                    self._route(
+                        request["state"],
+                        questions,
+                        model=request.get("model"),
+                        task=request.get("task"),
+                        lang=request.get("lang"),
+                        lang_guess=request.get("lang_guess"),
+                        **({"explain": True} if explain else {}),
+                    )
+                )
+            else:
+                decision = self._route(
                     request["state"],
                     questions,
                     model=request.get("model"),
                     task=request.get("task"),
                     lang=request.get("lang"),
                     lang_guess=request.get("lang_guess"),
-                    hooks=hooks,
-                    hooks_raise=hooks_raise,
-                    hooks_timeout=hooks_timeout,
                     **({"explain": True} if explain else {}),
                 )
-            )
+                ctx = PredictContext(
+                    states=[request["state"]],
+                    questions=questions,
+                    decision=decision,
+                    router=self,
+                )
+                dispatch(active, "on_route", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
+                decisions.append(ctx.decision)
 
         return decisions
 

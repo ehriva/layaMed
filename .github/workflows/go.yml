@@ -130,14 +130,12 @@ jobs:
           LAYA_GO_FIXTURES: ${{ github.workspace }}/.go-goldens
           LAYA_CHECKPOINTS: ${{ github.workspace }}/laya-java/.work/checkpoints
         run: go test -race -count=1 -json ./... > "$RUNNER_TEMP/go-test.json"
-      # A FLOOR, not the exact count. Each of #1306, #1307, #1308, #1310 and #1311 measured its
-      # own total against main alone (1754, 1667, 1742, 3462, 3869 against main's 1603); merged
-      # they add up to roughly 4223, which no single run has confirmed. 3869 is the highest
-      # number any of them measured, so it still catches a package going missing. Raise it to the
-      # count this lane actually reports, and restore "exactly", on the next green run.
+      # A FLOOR, not the exact count. 6195 is what this lane reports with the router digest pins on
+      # top of the router lifecycle (go 1.27.1, go 1.22.12 and the committed goldens), so it also catches a
+      # package going missing. Restore "exactly" on the next green run.
       - name: No test was skipped
         if: ${{ !cancelled() }}
-        run: python laya-go/scripts/check_test_json.py "$RUNNER_TEMP/go-test.json" --min-tests 3869
+        run: python laya-go/scripts/check_test_json.py "$RUNNER_TEMP/go-test.json" --min-tests 6195
 
       # go.mod declares go 1.22, so that is what a consumer may build with.
       - name: Run the tests on the oldest supported Go
@@ -149,7 +147,7 @@ jobs:
         run: go test -count=1 -json ./... > "$RUNNER_TEMP/go-test-oldest.json"
       - name: No test was skipped on the oldest Go either
         if: ${{ !cancelled() }}
-        run: python laya-go/scripts/check_test_json.py "$RUNNER_TEMP/go-test-oldest.json" --min-tests 3869
+        run: python laya-go/scripts/check_test_json.py "$RUNNER_TEMP/go-test-oldest.json" --min-tests 6195
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ failure() }}

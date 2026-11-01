@@ -46,11 +46,13 @@ func LangCode(code string) LangHint { return func(any) string { return code } }
 
 // Router routes requests. Build one with New.
 type Router struct {
-	models map[Checkpoint]ModelSpec
-	def    Checkpoint
-	auto   bool
-	hint   LangHint
-	hk     *hookState
+	models  map[Checkpoint]ModelSpec
+	def     Checkpoint
+	auto    bool
+	hint    LangHint
+	hk      *hookState
+	lc      lifecycle
+	digests digestTable
 }
 
 // Option configures New.
@@ -63,6 +65,9 @@ type config struct {
 	auto       bool
 	hint       LangHint
 	sources    []source
+	factory    AgentFactory
+	maxLoaded  int
+	digests    []digestPin
 }
 
 type source struct {
@@ -116,7 +121,7 @@ func WithSourceIn(name, repo, subfolder string) Option {
 // must not call Route on its own Router. A default or source name that is neither a checkpoint nor an alias is an
 // *UnknownModelError. Sources are applied in the order given, the last one for a name winning.
 func New(opts ...Option) (*Router, error) {
-	c := config{def: string(Multilingual), hooks: hookConfig{raise: true}}
+	c := config{def: string(Multilingual), hooks: hookConfig{raise: true}, maxLoaded: DefaultMaxLoaded}
 	for _, o := range opts {
 		if err := o(&c); err != nil {
 			return nil, err
@@ -130,8 +135,10 @@ func New(opts ...Option) (*Router, error) {
 	for k, v := range base {
 		r.models[k] = v
 	}
+	var err error
 	for _, s := range c.sources {
-		key, err := NormaliseName(s.name)
+		var key Checkpoint
+		key, err = NormaliseName(s.name)
 		if err != nil {
 			return nil, err
 		}
@@ -140,11 +147,35 @@ func New(opts ...Option) (*Router, error) {
 		}
 		r.models[key] = s.spec
 	}
+	if r.digests, err = digestsFromEnv(r.models); err != nil {
+		return nil, err
+	}
+	pins := make(digestTable, len(c.digests))
+	spelled := map[*byte]map[Checkpoint]string{}
+	for _, p := range c.digests {
+		key, err := NormaliseName(p.name)
+		if err != nil {
+			return nil, err
+		}
+		if prior, dup := spelled[p.group][key]; dup {
+			return nil, fmt.Errorf("sha256_digests names %q twice: %q and %q are the same checkpoint",
+				string(key), prior, p.name)
+		}
+		if spelled[p.group] == nil {
+			spelled[p.group] = map[Checkpoint]string{}
+		}
+		spelled[p.group][key] = p.name
+		pins[key] = p.files
+	}
+	for k, v := range pins {
+		r.digests[k] = v
+	}
 	def, err := NormaliseName(c.def)
 	if err != nil {
 		return nil, err
 	}
 	r.def = def
+	r.lc.init(c.factory, c.maxLoaded)
 	return r, nil
 }
 

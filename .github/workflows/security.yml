@@ -170,7 +170,7 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
-      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         if: ${{ matrix.language == 'java-kotlin' }}
       # The Go cell compiles too, so it needs the same pinned toolchain `go.yml` uses and not
       # whatever the runner image happens to carry.
@@ -179,15 +179,15 @@ jobs:
         with:
           go-version: "1.27.1"
           cache: false
-      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
       # Python needs no build step; Java and Go do, and autobuild finds the Gradle build and
       # laya-go/go.mod itself.
-      - uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: ${{ matrix.language == 'java-kotlin' || matrix.language == 'go' }}
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
   supply_chain:
     name: no unsafe deserialization

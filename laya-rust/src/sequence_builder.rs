@@ -155,7 +155,7 @@ impl SequenceBuilder {
     fn build_head(
         tokenizer: &dyn LayaTokenizer,
         question: &Question,
-        head_max_len: usize,
+        head_max_len: i64,
     ) -> Result<Head> {
         let special = tokenizer.special();
         let mask_token = special.mask_token.as_str();
@@ -183,12 +183,12 @@ impl SequenceBuilder {
 
         // A bound beyond i64 (Python accepts any int) is as good as i64::MAX here: nothing the
         // head can hold comes near it, and a plain `as i64` would wrap it negative.
-        let head_bound = i64::try_from(head_max_len).unwrap_or(i64::MAX);
-        let mut opt_budget = head_bound - option_len_sum(&option_ids);
+        let head_bound = head_max_len;
+        let mut opt_budget = head_bound.saturating_sub(option_len_sum(&option_ids));
         let mut tokens_per_option = None;
         if opt_budget < 16 {
             let per = 4i64.max(Self::floor_div(
-                head_bound - 16,
+                head_bound.saturating_sub(16),
                 1i64.max(option_ids.len() as i64),
             )) as usize;
             tokens_per_option = Some(per);
@@ -197,7 +197,7 @@ impl SequenceBuilder {
                     fragment.truncate(per);
                 }
             }
-            opt_budget = head_bound - option_len_sum(&option_ids);
+            opt_budget = head_bound.saturating_sub(option_len_sum(&option_ids));
         }
 
         let head_take = (Self::MIN_HEAD_TOKENS as i64).max(opt_budget) as usize;
@@ -244,7 +244,7 @@ impl SequenceBuilder {
         max_len: usize,
         head_max_len: usize,
     ) -> Result<usize> {
-        let head = Self::build_head(tokenizer, question, head_max_len)?;
+        let head = Self::build_head(tokenizer, question, Self::signed(head_max_len))?;
         // -1 reserves the SEP that closes the state.
         Ok(max_len.saturating_sub(head.ids.len() + 1))
     }
@@ -256,12 +256,64 @@ impl SequenceBuilder {
         tokenizer.encode(&Self::scrub(&PythonJson::state(state), mask_token))
     }
 
+    /// [`Self::build`] with signed budgets, as a per-call `max_len` / `head_max_len` override
+    /// gives them; see `build_with_overrides`. Hidden from the docs: it exists so the integration
+    /// tests can reach the signed arithmetic without a model.
+    #[doc(hidden)]
+    pub fn build_signed(
+        tokenizer: &dyn LayaTokenizer,
+        state: &Value,
+        question: &Question,
+        max_len: i64,
+        head_max_len: i64,
+        truncate_left: bool,
+    ) -> Result<(Vec<u32>, Vec<usize>)> {
+        Self::build_with_overrides(
+            tokenizer,
+            state,
+            question,
+            max_len,
+            head_max_len,
+            truncate_left,
+        )
+        .map(|(ids, markers, _)| (ids, markers))
+    }
+
+    /// A budget beyond i64 (Python accepts any int) is as good as i64::MAX here: nothing the
+    /// sequence can hold comes near it, and a plain `as i64` would wrap it negative.
+    pub(crate) fn signed(length: usize) -> i64 {
+        i64::try_from(length).unwrap_or(i64::MAX)
+    }
+
     pub(crate) fn build_with_stats(
         tokenizer: &dyn LayaTokenizer,
         state: &Value,
         question: &Question,
         max_len: usize,
         head_max_len: usize,
+        truncate_left: bool,
+    ) -> Result<(Vec<u32>, Vec<usize>, StateTokenStats)> {
+        Self::build_with_overrides(
+            tokenizer,
+            state,
+            question,
+            Self::signed(max_len),
+            Self::signed(head_max_len),
+            truncate_left,
+        )
+    }
+
+    /// [`Self::build_with_stats`] with the budgets as a per-call override can give them: Python
+    /// does no validation, so `0` and negative values flow into the same arithmetic and slices
+    /// (`ids[:max_len]` with a negative `max_len` drops that many tokens from the end, and every
+    /// marker is then past it). The caller refuses a question that lost a marker.
+    ///
+    pub(crate) fn build_with_overrides(
+        tokenizer: &dyn LayaTokenizer,
+        state: &Value,
+        question: &Question,
+        max_len: i64,
+        head_max_len: i64,
         truncate_left: bool,
     ) -> Result<(Vec<u32>, Vec<usize>, StateTokenStats)> {
         let special = tokenizer.special();
@@ -273,7 +325,7 @@ impl SequenceBuilder {
         } = Self::build_head(tokenizer, question, head_max_len)?;
 
         // -1 reserves the final SEP that closes the whole sequence, appended below.
-        let room = max_len.saturating_sub(ids.len() + 1);
+        let room = usize::try_from(max_len.saturating_sub(ids.len() as i64 + 1)).unwrap_or(0);
         let state_text = Self::scrub(&PythonJson::state(state), mask_token);
         let state_ids = tokenizer.encode(&state_text)?;
         let sliced: &[u32] = if truncate_left {
@@ -288,10 +340,16 @@ impl SequenceBuilder {
         ids.extend_from_slice(sliced);
         ids.push(special.sep_id);
 
-        if ids.len() > max_len {
-            ids.truncate(max_len);
+        // `ids[:max_len]`: a negative bound counts from the end.
+        let keep = if max_len >= 0 {
+            usize::try_from(max_len).unwrap_or(usize::MAX)
+        } else {
+            usize::try_from(ids.len() as i64 + max_len).unwrap_or(0)
+        };
+        if ids.len() > keep {
+            ids.truncate(keep);
         }
-        markers.retain(|&m| m < max_len);
+        markers.retain(|&m| (m as i64) < max_len);
 
         let stats = StateTokenStats {
             tokens: state_ids.len(),

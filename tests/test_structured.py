@@ -127,6 +127,19 @@ for score, want in ((0, 3), (2.4, 5), (4, 7)):
     got = answers_to_json({"x": {"type": "score", "score": score}}, SEVERITY_SCHEMA)["x"]
     check("project/score with no probabilities honours minimum (score=%r)" % score, got, want)
 
+# A runner that reports a field as something other than an answer object -- a bare string, number
+# or list -- gives nothing to project. `apply_confidence_gate` already skips a non-dict answer
+# (confidence.py:298); the projection read `.get` off one and raised AttributeError, crashing the
+# whole result. It now omits the field, exactly as an absent answer does.
+malformed = dict(ANSWERS, department="oops", urgency=None, needs_human=["not", "an", "answer"])
+partial = answers_to_json(malformed, SCHEMA)
+check_true("project/non-dict answers are omitted, not fatal",
+           "department" not in partial and "urgency" not in partial
+           and "needs_human" not in partial)
+check("project/valid fields still project beside a non-dict one", partial["priority"], 2)
+check("project/all answers non-dict yields no values",
+      answers_to_json({"department": 5, "urgency": "x"}, SCHEMA), {})
+
 
 # --------------------------------------------------------------- rejections
 def _bad(schema):
@@ -189,6 +202,25 @@ try:
 except SchemaError as exc:
     check("reject/non-array enum names the field and type", str(exc),
           "properties.x: 'enum' must be an array of values, got str")
+# The same guard the `allOf` branch already applies to its wrapper, `anyOf`/`oneOf` did not: a
+# non-array union leaked `TypeError: 'int' object is not iterable` (and a `bool`, which subclasses
+# `int`, leaked `TypeError: 'bool' object is not iterable`) instead of the path-naming SchemaError
+# the module raises for every other malformed property. Both must now reject as an unsupported schema.
+for nonarray in (3, 1.5, True, False):
+    check_raises("reject/non-array union %s %r" % ("anyOf", nonarray), SchemaError,
+                 _bad({"type": "object", "properties": {"x": {"anyOf": nonarray}}}))
+    check_raises("reject/non-array union %s %r" % ("oneOf", nonarray), SchemaError,
+                 _bad({"type": "object", "properties": {"x": {"oneOf": nonarray}}}))
+try:
+    questions_from_json_schema({"type": "object", "properties": {"x": {"anyOf": 3}}})
+except SchemaError as exc:
+    check("reject/non-array union names the field and shows the schema", str(exc),
+          "properties.x: unsupported schema {'anyOf': 3}")
+# Positive control: a real one-non-null-branch union still unwraps (the guard is not over-strict).
+check("accept/optional anyOf still maps",
+      questions_from_json_schema(
+          {"type": "object", "properties": {"x": {"anyOf": [{"type": "boolean"}, {"type": "null"}]}}}
+      )["x"]["type"], "noul")
 check_raises("reject/non-object root", SchemaError, _bad({"type": "array"}))
 check_raises("reject/empty properties", SchemaError, _bad({"type": "object", "properties": {}}))
 
@@ -216,6 +248,21 @@ check("decide/details confidence", details.confidence["department"], 0.9)
 check("decide/details noul probabilities", details.probabilities["needs_human"], {"false": 0.2, "true": 0.8})
 check("decide/details usage", details.usage, {"input_tokens": 1, "output_tokens": 0})
 check("decide/details routing", details.routing, {"model": "english"})
+
+# The same non-dict answer reaches decide through a runner, not only through answers_to_json:
+# `decide` projects onto the schema and builds the DecisionResult from the very same answer objects
+# the confidence gate walks. Before the fix both `decide` and `return_details` raised AttributeError
+# on a field whose answer was not a dict.
+mixed_answers = dict(ANSWERS, department="oops")
+runner = FakeRunner(mixed_answers)
+out = decide(runner, "some state", schema=SCHEMA)
+check_true("decide/non-dict answer omits the field, rest intact",
+           "department" not in out and out["urgency"] == 2 and out["needs_human"] is True)
+details = decide(FakeRunner(mixed_answers), "some state", schema=SCHEMA, return_details=True)
+check_true("decide/details a non-dict answer reports no confidence",
+           "department" not in details.confidence and "department" not in details.probabilities)
+check("decide/details valid answers still report confidence beside it",
+       details.confidence["needs_human"], 0.8)
 
 runner = FakeRunner({"a": {"type": "noul", "noul": 0.9, "confidence": 0.9}})
 out = decide(runner, "s", questions={"a": {"type": "noul", "instructions": "?"}})

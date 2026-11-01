@@ -521,6 +521,72 @@ with patch("urllib.request.build_opener") as _m:
               "Write a Python function to reverse a string", agents).agent_index, 2)
 
 
+# ---------------------------------------------------------------- 5c. Non-Object `answers` Field
+#
+# Section 5 makes `_call_remote` refuse a top-level array, string, number or `true`/`null`. One level
+# deeper is the same arbitrary JSON: a gateway can answer `{"answers": []}`. `res.get("answers", {})`
+# hands back the list -- the key is present, so the `{}` default never fires -- and both consumers then
+# crash on it: route's delegation lookup with `'list' object has no attribute 'get'`, the guardrail
+# screen with `'list' object has no attribute 'items'`. A crash is not the fail-closed path either.
+# A body without `answers`, or with `answers` as an object (even an empty one), is a no-decision
+# response rather than a malformed one, and has to keep routing and screening exactly as it does today.
+from laya.integrations.agno import _call_remote as _agno_call_remote
+
+_AGNO_BAD_ANSWERS = [
+    (["boom"], "list"),
+    ("boom", "str"),
+    (3, "int"),
+    (True, "bool"),
+    (None, "null"),
+]
+for _answers, _label in _AGNO_BAD_ANSWERS:
+    with patch("urllib.request.build_opener") as _m:
+        _m.return_value.open.return_value = DummyHTTPResponse({"answers": _answers})
+        try:
+            _agno_call_remote("http://localhost:8000", "s", {"q": {}})
+            check_true("badans/%s/_call_remote raises" % _label, False, "no error raised")
+        except RuntimeError as _exc:
+            check_true("badans/%s/names answers" % _label,
+                       "'answers' must be a JSON object" in str(_exc), str(_exc))
+        except Exception as _exc:
+            check_true("badans/%s/_call_remote raises" % _label, False, type(_exc).__name__)
+
+        for _entry, _run in (
+            ("route", lambda: LayaAgnoRouter(base_url="http://localhost:8000", api_key="k").route(
+                "Write a Python function to reverse a string", agents)),
+            ("screen", lambda: LayaAgnoGuardrail(base_url="http://localhost:8000",
+                                                 api_key="k").screen(safe_msg)),
+        ):
+            try:
+                _run()
+                check_true("badans/%s/%s raises" % (_label, _entry), False, "no error raised")
+            except RuntimeError:
+                check_true("badans/%s/%s raises" % (_label, _entry), True)
+            except Exception as _exc:
+                check_true("badans/%s/%s raises" % (_label, _entry), False, type(_exc).__name__)
+
+# The refusal names the offending type -- with `answers` nested inside an otherwise valid body, that
+# is the only thing a caller reading a log line can act on.
+with patch("urllib.request.build_opener") as _m:
+    _m.return_value.open.return_value = DummyHTTPResponse({"answers": ["boom"]})
+    try:
+        _agno_call_remote("http://localhost:8000", "s", {"q": {}})
+        check_true("badans/names the type", False, "no error raised")
+    except RuntimeError as _exc:
+        check_true("badans/names the type", "got list" in str(_exc), str(_exc))
+
+# Controls: the two no-decision shapes still route and still screen.
+for _body, _label in (({"model": "laya-multilingual"}, "answers absent"),
+                      ({"answers": {}}, "answers empty")):
+    with patch("urllib.request.build_opener") as _m:
+        _m.return_value.open.return_value = DummyHTTPResponse(_body)
+        check("badans/%s still routes" % _label,
+              LayaAgnoRouter(base_url="http://localhost:8000").route(
+                  "Write a Python function to reverse a string", agents).agent_index, 0)
+        check("badans/%s still screens safe" % _label,
+              LayaAgnoGuardrail(base_url="http://localhost:8000").screen(safe_msg), safe_msg)
+
+
 # ---------------------------------------------------------------- 6. Per-call decision controls
 #
 # The agno module must accept every control in `._controls` – a control added
@@ -799,6 +865,90 @@ check("gate/missing confidence still passes", kept.agent_index, 2)
 
 # ---------------------------------------------------------------- Results Summary
 print(f"PASS: {len(PASS)}")
+
+# ------------------------------------------------------ 5c. Malformed NESTED decision fields
+#
+# The same one-level-deeper shapes as the CrewAI adapter (#1321 guards `answers` itself; these are
+# the fields below it). `route` reads `choice` with `.startswith` and `screen` compares `noul` with
+# `>=`, so a string/null/bool there raised out of the fail-closed path -- or, for `true`, read as a
+# full-probability violation.
+_AGNO_NESTED_ROUTE = [
+    ({"answers": []}, "answers-list"),
+    ({"answers": {"delegation": "agent_1"}}, "answer-str"),
+    ({"answers": {"delegation": None}}, "answer-null"),
+    ({"answers": {"delegation": {"choice": ["agent_1"]}}}, "choice-list"),
+]
+for _body, _label in _AGNO_NESTED_ROUTE:
+    with patch("urllib.request.build_opener") as _m:
+        _m.return_value.open.return_value = DummyHTTPResponse(_body)
+        try:
+            LayaAgnoRouter(base_url="http://localhost:8000").route(
+                "Write a Python function to reverse a string", agents)
+            check_true("nested/%s/route raises" % _label, False, "no error raised")
+        except RuntimeError as exc:
+            check_true("nested/%s/route malformed" % _label,
+                       "Malformed decision response" in str(exc))
+        except Exception as exc:
+            check_true("nested/%s/route is RuntimeError" % _label, False, type(exc).__name__)
+
+# A `choice` may name an index the team does not have. `chosen_key` is remote JSON and `agents` is
+# the caller's list, and `agent_N` was parsed straight into `agents[N]`: `agent_99` raised a bare
+# IndexError out of the routing decision and `agent_-1` wrapped to the LAST agent -- a route no
+# caller asked for and nothing in the decision names. `tools.py:493` answers an unknown decision by
+# name instead of raising, so the index range is checked the same way here.
+_AGNO_CHOICE_INDEX = ["agent_5", "agent_99", "agent_-1", "agent_-99"]
+for _choice in _AGNO_CHOICE_INDEX:
+    with patch("urllib.request.build_opener") as _m:
+        _m.return_value.open.return_value = DummyHTTPResponse(
+            {"answers": {"delegation": {"choice": _choice, "answer_confidence": 0.95}}})
+        try:
+            _d = LayaAgnoRouter(base_url="http://localhost:8000").route(
+                "Write a Python function to reverse a string", agents)
+            check_true("choice-index/%s/route raises" % _choice, False,
+                       "no error raised (routed to index %r)" % (_d.agent_index,))
+        except RuntimeError as exc:
+            check_true("choice-index/%s/route malformed" % _choice,
+                       "Malformed decision response" in str(exc))
+            check_true("choice-index/%s/route names the choice" % _choice, _choice in str(exc))
+            check_true("choice-index/%s/route names the team size" % _choice, "5-agent" in str(exc))
+        except Exception as exc:
+            check_true("choice-index/%s/route is RuntimeError" % _choice, False, type(exc).__name__)
+
+# The last real index still routes: the guard is a range check, not a rejection of the highest one.
+with patch("urllib.request.build_opener") as _m:
+    _m.return_value.open.return_value = DummyHTTPResponse(
+        {"answers": {"delegation": {"choice": "agent_4", "answer_confidence": 0.95}}})
+    check("choice-index/last agent still routes",
+          LayaAgnoRouter(base_url="http://localhost:8000").route(
+              "Write a Python function to reverse a string", agents).agent_index, 4)
+
+_AGNO_NESTED_SCREEN = [
+    ({"answers": []}, "answers-list"),
+    ({"answers": {"harm_severity": "nope"}}, "answer-str"),
+    ({"answers": {"harm_severity": {"type": "noul", "noul": "high"}}}, "noul-str"),
+    ({"answers": {"harm_severity": {"type": "noul", "noul": None}}}, "noul-null"),
+    ({"answers": {"harm_severity": {"type": "noul", "noul": True}}}, "noul-bool"),
+]
+for _body, _label in _AGNO_NESTED_SCREEN:
+    with patch("urllib.request.build_opener") as _m:
+        _m.return_value.open.return_value = DummyHTTPResponse(_body)
+        try:
+            LayaAgnoGuardrail(base_url="http://localhost:8000").screen(
+                "Summarize the quarterly report")
+            check_true("nested/%s/screen raises" % _label, False, "no error raised")
+        except RuntimeError as exc:
+            check_true("nested/%s/screen malformed" % _label,
+                       "Malformed decision response" in str(exc))
+        except Exception as exc:
+            check_true("nested/%s/screen is RuntimeError" % _label, False, type(exc).__name__)
+
+with patch("urllib.request.build_opener") as _m:
+    _m.return_value.open.return_value = DummyHTTPResponse(
+        {"answers": {"delegation": {"choice": "agent_0", "answer_confidence": 0.9}}})
+    check("nested/well-formed route still routes",
+          LayaAgnoRouter(base_url="http://localhost:8000").route(
+              "Write a Python function to reverse a string", agents).agent_index, 0)
+
 print(f"FAIL: {len(FAIL)}")
 for f in FAIL:
     print(f"  - {f}")

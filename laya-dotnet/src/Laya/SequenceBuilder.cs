@@ -114,19 +114,23 @@ public static class SequenceBuilder
         int maxLen, int headMaxLen, bool truncateLeft = false, int[]? stateIds = null)
     {
         var (ids, markers, options) = BuildHead(tokenizer, question, headMaxLen);
-        var room = Math.Max(0, maxLen - ids.Count - 1);
+        // Widened: a per-call budget can be any int, and Python's integers do not wrap.
+        var room = (int)Math.Max(0L, (long)maxLen - ids.Count - 1);
         stateIds ??= tokenizer.Encode(Scrub(PythonJson.State(state), tokenizer.MaskToken));
         ids.AddRange(SliceState(stateIds, room, truncateLeft));
         ids.Add(tokenizer.SepId);
 
-        if (ids.Count > maxLen) ids = ids[..maxLen];
+        // `ids[:max_len]`: a negative bound counts from the end, which leaves ids no marker is in range of
+        // (`markers` below drops them all), so the caller refuses the question exactly as Python does.
+        var keep = maxLen < 0 ? Math.Max(0, ids.Count + maxLen) : Math.Min(ids.Count, maxLen);
+        if (ids.Count > keep) ids = ids[..keep];
         markers.RemoveAll(m => m >= maxLen);
         return new(ids.ToArray(), markers.ToArray(), stateIds.Length,
                    Math.Max(0, stateIds.Length - room), options);
     }
 
     internal static int StateRoom(ILayaTokenizer tokenizer, Question question, int maxLen, int headMaxLen) =>
-        Math.Max(0, maxLen - BuildHead(tokenizer, question, headMaxLen).Ids.Count - 1);
+        (int)Math.Max(0L, (long)maxLen - BuildHead(tokenizer, question, headMaxLen).Ids.Count - 1);
 
     private static (List<int> Ids, List<int> Markers, OptionUsage Options) BuildHead(
         ILayaTokenizer tokenizer, Question question, int headMaxLen)
@@ -152,20 +156,22 @@ public static class SequenceBuilder
             optionIds.Add(fragment);
         }
 
-        var optBudget = headMaxLen - optionIds.Sum(o => o.Count);
+        // Long arithmetic: a per-call head budget can be any int (a huge negative one included), and Python's
+        // integers do not wrap.
+        long optBudget = (long)headMaxLen - optionIds.Sum(o => o.Count);
         int? perOption = null;
         if (optBudget < 16)
         {
-            var per = Math.Max(4, FloorDiv(headMaxLen - 16, Math.Max(1, optionIds.Count)));
+            var per = (int)Math.Max(4L, FloorDiv((long)headMaxLen - 16, Math.Max(1, optionIds.Count)));
             perOption = per;
             for (var i = 0; i < optionIds.Count; i++)
                 if (optionIds[i].Count > per)
                     optionIds[i] = optionIds[i][..per];
-            optBudget = headMaxLen - optionIds.Sum(o => o.Count);
+            optBudget = (long)headMaxLen - optionIds.Sum(o => o.Count);
         }
 
         var headTake = Math.Max(MinHeadTokens, optBudget);
-        if (headIds.Count > headTake) headIds = headIds[..headTake];
+        if (headIds.Count > headTake) headIds = headIds[..(int)headTake];
 
         var ids = new List<int> { tokenizer.ClsId };
         ids.AddRange(headIds);
@@ -198,7 +204,7 @@ public static class SequenceBuilder
     }
 
     /// <summary>Python's <c>//</c>, which floors rather than truncating toward zero.</summary>
-    private static int FloorDiv(int a, int b)
+    private static long FloorDiv(long a, long b)
     {
         var q = a / b;
         return a % b != 0 && (a < 0) != (b < 0) ? q - 1 : q;

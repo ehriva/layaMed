@@ -11,8 +11,10 @@ public sealed class LayaConfig
 {
     private LayaConfig(string? encoder, int maxLen, int headMaxLen,
                        IReadOnlyList<object?> temperatureValues,
-                       IReadOnlyDictionary<string, object?> temperatureByOptionsValues)
+                       IReadOnlyDictionary<string, object?> temperatureByOptionsValues,
+                       object? temperatureSource, Action<LayaConfig>? beforeWarning)
     {
+        TemperatureSource = temperatureSource;
         TemperatureRawValues = temperatureValues;
         TemperatureByOptionsRawValues = temperatureByOptionsValues;
         var temperatureRaw = temperatureValues.Select(AsDouble).ToList();
@@ -38,6 +40,11 @@ public sealed class LayaConfig
             if (Calibration.TemperatureRejected(temperatureValues[i], Temperature[i]))
                 rejected.Add($"temperature[{i}]={PythonFloat.Repr(temperatureValues[i])} -> {PythonFloat.FormatG(Temperature[i])}");
         ClampedTemperatures = rejected;
+
+        // Python resolves `lang_temperatures` between reading these temperatures and warning about them
+        // (onnx_agent.py:249 before :254), so an invalid table refuses the load before this warning is shown and
+        // its own warnings come first.
+        beforeWarning?.Invoke(this);
 
         // Mirrors Python's RuntimeWarning, one warning listing every rejected entry, shown once per process
         // for the same text (WarnOnce); it goes through System.Diagnostics.Trace so a caller can suppress
@@ -100,8 +107,19 @@ public sealed class LayaConfig
     /// </summary>
     public IReadOnlyList<string> ClampedTemperatures { get; }
 
+    /// <summary>
+    /// <c>cfg.get("temperature", [1.0, 1.0, 1.0])</c> as Python holds it, before it is iterated: a list, or the string or
+    /// dictionary a malformed config held (<see cref="TemperatureRawValues"/> then lists its characters or keys).
+    /// What an inheriting language override is checked against.
+    /// </summary>
+    internal object? TemperatureSource { get; }
+
     /// <summary>Read a config from a <c>rl_agent_config.json</c> file.</summary>
     public static LayaConfig Load(string path) => Parse(PythonJsonReader.ReadAllText(path));
+
+    /// <summary><see cref="Load(string)"/> running <paramref name="beforeWarning"/> where Python resolves <c>lang_temperatures</c>.</summary>
+    internal static LayaConfig Load(string path, Action<LayaConfig>? beforeWarning) =>
+        Parse(PythonJsonReader.ReadAllText(path), beforeWarning);
 
     /// <summary>Parse a config from JSON text, read as Python's <c>json.loads</c> reads it.</summary>
     /// <exception cref="InvalidDataException">
@@ -109,7 +127,9 @@ public sealed class LayaConfig
     /// <c>temperature</c> that is not iterable, a <c>temperature_by_options</c> that is not a mapping, or an
     /// integer temperature too large for a float. The message carries Python's exception type and text.
     /// </exception>
-    public static LayaConfig Parse(string json)
+    public static LayaConfig Parse(string json) => Parse(json, null);
+
+    internal static LayaConfig Parse(string json, Action<LayaConfig>? beforeWarning)
     {
         var parsed = PythonJsonReader.Parse(json);
         if (parsed is not IReadOnlyDictionary<string, object?> root)
@@ -124,11 +144,11 @@ public sealed class LayaConfig
         // the key holds is iterated, so a string yields its characters and a dict its keys, while a number, bool or
         // null raises TypeError (onnx_agent.py:247-250).
         var temperature = new List<object?>();
-        if (root.TryGetValue("temperature", out var temp)) temperature.AddRange(Iterate(temp));
-        else temperature.AddRange([1.0, 1.0, 1.0]);
+        object? temperatureSource;
+        if (root.TryGetValue("temperature", out var temp)) { temperature.AddRange(Iterate(temp)); temperatureSource = temp; }
+        else { temperature.AddRange([1.0, 1.0, 1.0]); temperatureSource = new List<object?>(temperature); }
         // A list shorter than three is kept as it is: Python indexes self.temperature[qtype] when a question is
         // answered and raises IndexError there, which Calibration.ResolveTemperature reproduces.
-        ThrowIfOverflow(temperature);
 
         // `{k: clamp_temperature(v) for k, v in temperature_by_options_raw.items()}`: a mapping or AttributeError.
         var byOptions = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -139,7 +159,6 @@ public sealed class LayaConfig
             foreach (var (key, value) in map)
                 byOptions[key] = value;
         }
-        ThrowIfOverflow(byOptions.Values);
 
         var lengths = Lengths(root);
         return new LayaConfig(
@@ -147,7 +166,9 @@ public sealed class LayaConfig
             lengths.MaxLen,
             lengths.HeadMaxLen,
             temperature,
-            byOptions);
+            byOptions,
+            temperatureSource,
+            beforeWarning);
     }
 
     // `for t in raw`: a list's items, a string's characters (code points), a dict's keys.
@@ -171,14 +192,6 @@ public sealed class LayaConfig
             else items.Add(s[i].ToString());
         }
         return items;
-    }
-
-    // clamp_temperature(<int too large for a float>) raises OverflowError, which nothing catches, so Python fails
-    // to load the checkpoint (onnx_agent.py:249-252); a float literal reads as inf instead.
-    private static void ThrowIfOverflow(IEnumerable<object?> values)
-    {
-        if (values.Any(v => v is System.Numerics.BigInteger big && double.IsInfinity((double)big)))
-            throw new InvalidDataException("OverflowError: int too large to convert to float");
     }
 
     // `cfg.get("max_len", 512)` and `cfg.get("head_max_len", 192)`. Python keeps whatever the JSON held and fails at

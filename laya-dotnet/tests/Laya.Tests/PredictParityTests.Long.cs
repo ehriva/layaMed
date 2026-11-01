@@ -9,7 +9,7 @@ public sealed partial class PredictParityTests
         from checkpoint in TestArtifacts.ParityCheckpoints
         where GoldenData.For(checkpoint).Available
         from info in GoldenData.For(checkpoint).Index.Where(i => i.Kind == "long" && !i.ExpectsError)
-        from split in new[] { false, true }
+        from split in TestArtifacts.ParitySplitFlags
         select new object[] { checkpoint, info, split };
 
     public static IEnumerable<object[]> LongErrorCases() =>
@@ -19,18 +19,25 @@ public sealed partial class PredictParityTests
         select new object[] { checkpoint, info };
 
     [Theory]
+    [Trait(TestArtifacts.LayoutTrait, TestArtifacts.AnyLayout)]
     [MemberData(nameof(LongSuccessCases))]
     public void ReproducesLongPredictions(LayaCheckpoint checkpoint, GoldenCaseInfo info, bool split)
     {
-        var engine = split ? fixture.RequireSplit(checkpoint) : fixture.Require(checkpoint);
         using var doc = GoldenData.For(checkpoint).Load(info);
         var root = doc.RootElement;
+        var engine = fixture.RequireFor(checkpoint, root, split);
         var state = GoldenData.ToClr(root.GetProperty("state"))!;
         var questions = GoldenData.BuildQuestions(root.GetProperty("questions"));
         var options = root.GetProperty("options");
-        var got = engine.PredictLong(state, questions, LongInt(options, "window"), LongInt(options, "stride"),
-            options.TryGetProperty("aggregate", out var aggregate) ? aggregate.GetString()! : "auto",
-            LongInt(options, "batch_size"));
+        var lang = CallOptions.Lang(options);
+        var got = engine.PredictLong(state, questions, new LayaLongOptions
+        {
+            Window = LongInt(options, "window"),
+            Stride = LongInt(options, "stride"),
+            Aggregate = options.TryGetProperty("aggregate", out var aggregate) ? aggregate.GetString()! : "auto",
+            BatchSize = LongInt(options, "batch_size"),
+            Lang = lang,
+        });
         var expected = root.GetProperty("result");
         // The SDK keeps its existing model identifier instead of Python ONNXAgent's suffix.
         Assert.Equal("laya-rl-agent-onnx", expected.GetProperty("model").GetString());
@@ -92,7 +99,7 @@ public sealed partial class PredictParityTests
         }
         if (got.Usage.Windows == 1 && questions.Count > 0)
         {
-            var plain = engine.Predict(state, questions);
+            var plain = engine.Predict(state, questions, new LayaPredictOptions { Lang = lang });
             Assert.Equal(plain.Usage.InputTokens, got.Usage.InputTokens);
             foreach (var id in questions.Ids)
             {

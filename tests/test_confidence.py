@@ -127,7 +127,13 @@ from laya.confidence import check_min_confidence, flag_low_confidence  # noqa: E
 for valid in (0.0, 0.5, 1.0, 0, 1, 0.85):
     check("min_confidence/valid %.2f" % valid, check_min_confidence(valid), float(valid))
 
-for invalid in (True, False, -0.01, 1.01, -1.0, 2.0, float("nan"), float("inf"), float("-inf"), "0.5", None, [0.5]):
+for invalid in (True, False, -0.01, 1.01, -1.0, 2.0, float("nan"), float("inf"), float("-inf"), "0.5", None, [0.5],
+                # A JSON integer wider than a double is the third way a client's threshold is not a
+                # number: `math.isfinite` raises `OverflowError` rather than answering "not finite",
+                # so this walked out of `check_min_confidence` -- and out of `validate_min_confidence`,
+                # whose docstring says it "only wraps its ValueError as a clean invalid_min_confidence
+                # the client can read" -- as an interpreter error instead of the refusal.
+                10 ** 400, -(10 ** 400)):
     try:
         check_min_confidence(invalid)
         FAIL.append("min_confidence/should reject %r" % (invalid,))
@@ -245,6 +251,11 @@ odd = [{"answers": {
     # None is not None is also False), so nothing else pinned this down.
     "q_nan_entropy": {"type": "choice", "confidence": float("nan")},
     "q_bool_entropy": {"type": "choice", "confidence": True},
+    # Both readers above end in `math.isfinite`, and a 400-digit integer is what JSON's unbounded
+    # grammar hands them: the gate crashed instead of reporting `unevaluated`, from the same field
+    # it is defined against and from the entropy fallback that already leaked a NaN.
+    "q_overflow": {"type": "choice", "answer_confidence": 10 ** 400},
+    "q_overflow_entropy": {"type": "choice", "confidence": 10 ** 400},
     "q_fine": {"type": "choice", "answer_confidence": 0.99},
 }}]
 apply_confidence_gate(odd, 0.80)
@@ -433,8 +444,9 @@ check("export/laya re-exports the same tuple", laya.GATE_STATES, _confidence.GAT
 # --------------------------------- the two doc pages must attribute confidence per question type
 # `docs/structured.md` and `docs/questions-and-answers.md` each opened their confidence section with
 # "`confidence` is normalized entropy". Neither agent writes that for every type:
-# `Agent._decode_answers` (`laya/agent.py:1369-1398`) and `ONNXAgent._decode_answers`
-# (`laya/onnx_agent.py:715-785`) put `confidence_from_probs(p, k)` = `1 - H(p) / log(k)` in the
+# `Agent._decode_answers` (`laya/agent.py::Agent._decode_answers`) and `ONNXAgent._decode_answers`
+# (`laya/onnx_agent.py::ONNXAgent._decode_answers`) put `confidence_from_probs(p, k)` =
+# `1 - H(p) / log(k)` in the
 # `choice` and `score` answers and `max(p_true, 1 - p_true)` in the `noul` one. Each page printed a
 # `noul` in the very block its sentence introduces, so the sentence was falsifiable from the page
 # alone: the Q&A page's sample answer is `{"type": "noul", "noul": 0.8727, "confidence": 0.8727}`,
@@ -2228,7 +2240,7 @@ for _fn in (test_tl_kernels_drops_the_wrong_row_claim,
 # --------------------------------------- DecisionResult's docstring must split confidence by question type
 # `laya/structured.py`'s `DecisionResult` closed with "confidence keeps the **normalized-entropy
 # value** it has always had, because that is a different quantity on a scale that depends on the
-# label count". `Agent._decode_answers` (`laya/agent.py:1369-1398`) uses two different formulas:
+# label count". `Agent._decode_answers` (`laya/agent.py:1394-1423`) uses two different formulas:
 #   * `choice` and `score`  ->  `confidence_from_probs(p, k)` = `1 - H(p) / log(k)`
 #   * `noul`                ->  `max(p_true, 1 - p_true)`  (its own comment: "identical here:
 #                               over two options `max(p_true, 1 - p_true)` is `max(p)`")
@@ -2475,6 +2487,14 @@ for _name, _answer in (
     ("all-negative-probabilities", _choice(-0.9, -0.1)),
     ("negative-total-near-zero", _choice(-0.61, 0.6)),
     ("negative-score-level", _score(1.5, -0.5, 0.0)),
+    # `float()` and `int()` do not only refuse a value that is not a number, they also refuse one
+    # that is too wide to become one: JSON's grammar has no double limit, so a 400-digit integer
+    # probability arrives as a Python `int` and `float()` raises `OverflowError` out of a function
+    # whose docstring promises no number rather than a made-up one.
+    ("overflowing-integer-probability", _choice(10 ** 400, 1)),
+    ("json-integer-too-wide-for-a-double",
+     _json.loads('{"type":"choice","probabilities":{"a":' + "9" * 400 + ',"b":0.1}}')),
+    ("overflowing-score-level", {"type": "score", "probabilities": {float("inf"): 0.5, 2: 0.5}}),
 ):
     check("jev_confidence/none-for-%s" % _name, jev_confidence(_answer), None)
 

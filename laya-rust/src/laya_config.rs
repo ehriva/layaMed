@@ -6,6 +6,7 @@
 
 use crate::calibration::Calibration;
 use crate::error::{LayaError, Result};
+use crate::lang_temperatures::{self, LangTemperature, LangTemperatures};
 use crate::language_detection::py_strip;
 use crate::laya_router::python_repr_str;
 use crate::long_prediction::emit_warnings;
@@ -130,26 +131,16 @@ fn ascii_float_text(body: &str) -> Option<String> {
 }
 
 /// A JSON temperature entry as `clamp_temperature` reads it: a number as itself, a string through
-/// `float(str)`, and a bool or anything else not at all.
-fn temperature_number(raw: &PyJson) -> Option<f64> {
+/// `float(str)`, and a bool or anything else not at all. An integer too wide for a double does not
+/// convert either (Python's `OverflowError`, which `clamp_temperature` and `temperature_rejected`
+/// catch since 0.4.20), so it is `None` here and becomes the neutral 1.0, named in the warning.
+pub(crate) fn temperature_number(raw: &PyJson) -> Option<f64> {
     match raw {
         PyJson::Int(literal) => PyJson::int_as_f64(literal),
         PyJson::Float(f) => Some(*f),
         PyJson::Str(s) => py_float(s),
         _ => None,
     }
-}
-
-/// Python's `OverflowError` from `clamp_temperature(<huge int>)`, which nothing catches, so the
-/// checkpoint fails to load.
-fn check_temperature_overflow<'a>(values: impl IntoIterator<Item = &'a PyJson>) -> Result<()> {
-    let overflows = |v: &PyJson| matches!(v, PyJson::Int(l) if PyJson::int_as_f64(l).is_none());
-    if values.into_iter().any(overflows) {
-        return Err(LayaError::InvalidConfig(
-            "OverflowError: int too large to convert to float".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 /// Python's name for the type of a JSON value, as it appears in `TypeError` messages.
@@ -199,7 +190,7 @@ fn temperature_options(root: &PyJson) -> Result<Vec<(String, PyJson)>> {
 
 /// `%g` of a clamped temperature (six significant digits, trailing zeros dropped); the value is
 /// always inside `[0.5, 5]` or the neutral `1`, so no exponent form is needed.
-fn percent_g(value: f64) -> String {
+pub(crate) fn percent_g(value: f64) -> String {
     let exponent: i32 = format!("{value:.5e}")
         .split('e')
         .nth(1)
@@ -215,7 +206,7 @@ fn percent_g(value: f64) -> String {
 }
 
 /// Python's `repr()` of a JSON value as `json.load` would have produced it.
-fn py_repr(value: &PyJson) -> String {
+pub(crate) fn py_repr(value: &PyJson) -> String {
     match value {
         PyJson::Null => "None".to_string(),
         PyJson::Bool(true) => "True".to_string(),
@@ -335,12 +326,14 @@ fn length_type_error(kind: &str) -> String {
 
 /// What Python only discovers when a prediction needs it, kept by the engine (not part of the
 /// public [`LayaConfig`]).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct Deferred {
     /// The real length of a `temperature` list shorter than three: Python indexes
     /// `self.temperature[qtype]` for every question, so a question type at or past it raises
     /// `IndexError`, however its bucket resolves.
     pub(crate) short_temperature: Option<usize>,
+    /// The resolved `lang_temperatures` option (Python's `self.lang_temperatures`).
+    pub(crate) lang_temperatures: LangTemperatures,
 }
 
 /// Python opens the file in text mode, which turns `\r\n` and a lone `\r` into `\n` before
@@ -360,12 +353,28 @@ impl LayaConfig {
         Self::parse(&python_text_mode(std::fs::read_to_string(path)?))
     }
 
+    /// [`Self::parse`] with a `lang_temperatures` table resolved the way the engine resolves it:
+    /// right after the checkpoint's temperatures are clamped and before it warns about them. Hidden
+    /// from the docs: it exists so a test can check that order without a model.
+    #[doc(hidden)]
+    #[track_caller]
+    pub fn parse_with_lang_temperatures(
+        json: &str,
+        table: &[(String, Option<LangTemperature>)],
+    ) -> Result<Self> {
+        Self::parse_with(json, table, std::panic::Location::caller()).map(|(config, _)| config)
+    }
+
     /// [`Self::load`] for the engine, which also keeps what Python only discovers at prediction
     /// time.
     #[track_caller]
-    pub(crate) fn load_deferred(path: impl AsRef<Path>) -> Result<(Self, Deferred)> {
+    pub(crate) fn load_deferred(
+        path: impl AsRef<Path>,
+        table: &[(String, Option<LangTemperature>)],
+    ) -> Result<(Self, Deferred)> {
         Self::parse_with(
             &python_text_mode(std::fs::read_to_string(path)?),
+            table,
             std::panic::Location::caller(),
         )
     }
@@ -373,18 +382,29 @@ impl LayaConfig {
     /// Parse a config from JSON text.
     #[track_caller]
     pub fn parse(json: &str) -> Result<Self> {
-        Self::parse_with(json, std::panic::Location::caller()).map(|(config, _)| config)
+        Self::parse_with(json, &[], std::panic::Location::caller()).map(|(config, _)| config)
     }
 
-    fn parse_with(json: &str, at: &std::panic::Location<'_>) -> Result<(Self, Deferred)> {
+    fn parse_with(
+        json: &str,
+        table: &[(String, Option<LangTemperature>)],
+        at: &std::panic::Location<'_>,
+    ) -> Result<(Self, Deferred)> {
         let root = PyJson::parse(json)?;
         check_option_layout(&root)?;
         // Python builds `[clamp_temperature(t) for t in temperature]` and then the by-options dict,
-        // so each container's error, and each overflow, comes in that order.
+        // so each container's error comes in that order.
         let elements = temperature_elements(&root)?;
-        check_temperature_overflow(&elements)?;
         let options = temperature_options(&root)?;
-        check_temperature_overflow(options.iter().map(|(_, v)| v))?;
+
+        // `ONNXAgent.__init__` resolves `lang_temperatures` right after clamping the checkpoint's
+        // own, and only then warns about what it clamped: an invalid table fails the load before
+        // that warning, and a table's warnings come first.
+        let temperature_base = root
+            .get("temperature")
+            .cloned()
+            .unwrap_or_else(|| PyJson::Array(vec![PyJson::Float(1.0); 3]));
+        let lang_temperatures = lang_temperatures::resolve_json(table, &temperature_base, at)?;
 
         let mut temperature_raw: Vec<f64> = elements
             .iter()
@@ -437,6 +457,7 @@ impl LayaConfig {
 
         let deferred = Deferred {
             short_temperature: (elements.len() < 3).then_some(elements.len()),
+            lang_temperatures,
         };
 
         Ok((
@@ -525,7 +546,7 @@ mod tests {
             (r#"{}"#, None),
         ] {
             let (loaded, deferred) =
-                LayaConfig::parse_with(config, std::panic::Location::caller()).unwrap();
+                LayaConfig::parse_with(config, &[], std::panic::Location::caller()).unwrap();
             assert_eq!(short, deferred.short_temperature, "{config}");
             assert_eq!(3, loaded.temperature.len().min(3), "{config}");
         }

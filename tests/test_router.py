@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from laya.common import QTYPES, TEMP_MAX, TEMP_MIN, clamp_temperature, temp_bucket  # noqa: E402
 from laya.lang import analyse, detect_script, guess_latin_language, is_english, state_text  # noqa: E402
+from laya.lang import NON_EN_DIACRITIC_RATE  # noqa: E402
 from laya.lang import _non_english_segment  # noqa: E402
 from laya.router import (  # noqa: E402
     BUNDLE_REPO,
@@ -859,6 +860,16 @@ check("clamp/nan falls back to neutral", clamp_temperature(float("nan")), 1.0)
 check("clamp/inf falls back to neutral", clamp_temperature(float("inf")), 1.0)
 check("clamp/bools are not temperatures", clamp_temperature(True), 1.0)
 check("clamp/False is not a sharpening zero", clamp_temperature(False), 1.0)
+# A JSON integer wider than a double is not a temperature either. `json.load` keeps arbitrary
+# precision, so a 401-digit literal arrives as an `int` and `float()` answers it with
+# `OverflowError` -- which used to escape the clamp, and every load that calls it, after the
+# checkpoint had already been read off disk. `2 ** 1024` is the smallest power of two `float()`
+# refuses, and the same number written as a JSON *float* (`1e400`) parses as `inf`, which the
+# clamp has always answered with 1.0.
+check("clamp/wide integer falls back to neutral", clamp_temperature(10 ** 400), 1.0)
+check("clamp/negative wide integer falls back to neutral", clamp_temperature(-(10 ** 400)), 1.0)
+check("clamp/smallest unconvertible power of two", clamp_temperature(2 ** 1024), 1.0)
+check("clamp/convertible neighbor still clamps", clamp_temperature(2 ** 1023), TEMP_MAX)
 check("clamp/bounds are sane", TEMP_MIN <= 1.0 <= TEMP_MAX, True)
 # 13 options is the bucket the reported skill-router landed in
 check("clamp/13 options is the 11+ bucket", temp_bucket(QTYPES["choice"], 13), "choice:11+")
@@ -1853,6 +1864,24 @@ try:
 except TypeError:
     check("register/a source must be a path, repo or pair", True, True)
 
+# The pair half of that sentence was unchecked, and an empty one is the worst case: `register`
+# reported success, stored the spec, and `registered` / `route(model=...)` / `load()` then raised
+# `ValueError: not enough values to unpack (expected 2, got 1)` from `_split` on every later call.
+for bad_source, why in (([], "empty pair"), (["a", "b", "c"], "three parts"),
+                        ((None, None), "a pair naming no repo"),
+                        (("acme/laya-tone", 5), "a number among the parts")):
+    _r = Router()
+    try:
+        _r.register("tone", bad_source)
+        check("register/refuses %s" % why, False, True)
+    except TypeError as _e:
+        check("register/refuses %s" % why, "'tone'" in str(_e), True)
+    check("register/%s stores nothing" % why, "tone" in _r.registered, False)
+for good in (("acme/laya-tone", None), ["org/repo", "folder"], ("only-repo",)):
+    check("register/still accepts %r" % (good,),
+          Router(models={"tone": good}).registered["tone"]["source"],
+          "/".join([p for p in (good if isinstance(good, list) else list(good)) if p is not None]))
+
 # Every name-taking option accepts a registered name, the way it accepts a built-in one.
 r3 = Router(models={"papers": "/tmp/laya-papers"}, revisions={"papers": "abc123"}, default="papers",
             sha256_digests={"papers": {"model.safetensors": "a" * 64}})
@@ -2284,6 +2313,36 @@ except TypeError as _exc:
 except Exception as _exc:  # noqa: BLE001
     FAIL.append("route validation/questions not dict: raised %s instead of TypeError: %s" %
                 (type(_exc).__name__, _exc))
+
+
+# --------------------------------------------------------------------- Vietnamese
+# Vietnamese is a Latin-script language with no stopword list of its own, so the non-English
+# diacritic set is the only signal that keeps it off the English checkpoint -- but every
+# tone-marked Vietnamese letter (`ả`, `ạ`, `ề`, `ơ`, `ư`, ...) is a precomposed codepoint the
+# set did not hold, and it already claimed Vietnamese coverage through `đ` alone. Everyday
+# sentences carried a diacritic rate of 0.0 and routed to the English checkpoint.
+for text in [
+    "Cảm ơn bạn nhiều nhẻ",
+    "Cảm ơn bạn rất nhiều",
+    "Mình muốn hỏi về đơn hàng đã đặt",
+    "Cho tôi xin hoàn tiền cho đơn hàng này",
+    "CẢM ƠN BẠN RẤT NHIỀU",
+]:
+    check("latin/vietnamese diacritic rate " + text[:24],
+          analyse(text)["diacritic_rate"] > NON_EN_DIACRITIC_RATE, True)
+    check("is_english/vietnamese " + text[:24], is_english(text), False)
+    check("route/vietnamese " + text[:24], _r_lat.route(text).model, "multilingual")
+# English must not move: Vietnamese dishes and names that made it into English (`pho`,
+# `banh mi`, `ao dai`) are plain ASCII, and an accented Vietnamese surname in an otherwise
+# English sentence is one loanword, not a Vietnamese state (#337 rescue).
+for text in [
+    "The pho was great and the banh mi was the best in town",
+    "The ao dai show at the cafe was wonderful",
+    "Thanks Nguyen for the meal we had last night",
+    "Please help Nguyễn with the invoice for the last order",
+]:
+    check("is_english/vietnamese control " + text[:24], is_english(text), True)
+    check("route/vietnamese control " + text[:24], _r_lat.route(text).model, "english")
 
 
 # --------------------------------------------------------------------- report

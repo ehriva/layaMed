@@ -27,6 +27,7 @@ public static class Calibration
     /// <see cref="ClampTemperature(double)"/> for a value read from JSON, exactly as Python's
     /// <c>clamp_temperature</c> treats it: a <see cref="bool"/> is 1.0, and so is anything
     /// <c>float()</c> refuses (<see langword="null"/>, a list, a dictionary, a non-numeric string).
+    /// An integer too wide for a double (Python's <c>OverflowError</c>) is 1.0 as well.
     /// A numeric string such as <c>"2.5"</c>, <c>" 2.5 "</c> or <c>"1e1"</c> is read the way
     /// <c>float()</c> reads it.
     /// </summary>
@@ -63,13 +64,20 @@ public static class Calibration
     public static double ResolveTemperature(LayaConfig config, QuestionType type, int optionCount)
     {
         ArgumentNullException.ThrowIfNull(config);
+        return ResolveTemperature(config.Temperature, config.TemperatureByOptions, type, optionCount);
+    }
+
+    /// <summary><see cref="ResolveTemperature(LayaConfig, QuestionType, int)"/> over temperatures an engine holds, a calibration file's among them.</summary>
+    internal static double ResolveTemperature(
+        IReadOnlyList<double> temperatures, IReadOnlyDictionary<string, double> byOptions, QuestionType type, int optionCount)
+    {
         // `self.temperature_by_options.get(bucket, self.temperature[qt])` evaluates the default first, so a
         // list too short for the question's type fails even when the bucket is present (onnx_agent.py:727).
-        if ((int)type >= config.Temperature.Count)
+        if ((int)type >= temperatures.Count)
             throw new InvalidOperationException("IndexError: list index out of range");
-        return config.TemperatureByOptions.TryGetValue(TempBucket(type, optionCount), out var t)
+        return byOptions.TryGetValue(TempBucket(type, optionCount), out var t)
             ? t
-            : config.Temperature[(int)type];
+            : temperatures[(int)type];
     }
 
     /// <summary>

@@ -1839,6 +1839,206 @@ finally:
     langchain_module.urllib.request.build_opener = _orig_build_opener_lc
 
 
+# --------------------------------------------------------------- Non-Object `answers` Field
+#
+# The section above makes `_call_remote` refuse a top-level array, string, number or `true`/`null`.
+# One level deeper is the same arbitrary JSON: a gateway can answer `{"answers": []}`. Reading
+# `result.get("answers", {})` hands back the list -- the key is present, so the `{}` default never
+# fires -- and the four consumers then either crash (`LayaRouter` subscripts it, the guardrail calls
+# `.items()` on it, the triage `.get("intent", …)`) or hand a non-mapping straight back to user code.
+# None of those is a documented outcome. `answers` absent and `answers` an empty object are the
+# no-decision cases that already have their own behaviour, and that behaviour is pinned unchanged here.
+_LC_BAD_ANSWERS = [
+    (["boom"], "list"),
+    ("boom", "str"),
+    (3, "int"),
+    (True, "bool"),
+    (None, "null"),
+]
+_LC_CRITERIA = {"billing": "invoices, refunds", "technical": "bugs, errors"}
+_lc_orig_opener_badans = langchain_module.urllib.request.build_opener
+try:
+    for _answers, _label in _LC_BAD_ANSWERS:
+        _raw_bad = json.dumps({"answers": _answers})
+        langchain_module.urllib.request.build_opener = (
+            lambda *a, _r=_raw_bad: _RawBodyOpener(_r))
+        try:
+            langchain_module._call_remote("http://localhost:8000", "s", {"q": {}})
+            check_true("badans/%s/_call_remote raises" % _label, False, "no error raised")
+        except RuntimeError as _e:
+            check_true("badans/%s/names answers" % _label,
+                       "'answers' must be a JSON object" in str(_e), str(_e))
+        except Exception as _e:
+            check_true("badans/%s/_call_remote raises" % _label, False, type(_e).__name__)
+
+        for _entry, _run in (
+            ("router", lambda: LayaRouter(criteria=_LC_CRITERIA, base_url="http://localhost:8000",
+                                          api_key="k").invoke("I need an invoice refund")),
+            ("guardrail", lambda: LayaGuardrail(base_url="http://localhost:8000",
+                                                api_key="k").invoke(
+                                                    "What is the capital of France?")),
+            ("triage", lambda: LayaTriage(base_url="http://localhost:8000",
+                                          api_key="k").invoke({"state": "I want a refund"})),
+        ):
+            try:
+                _run()
+                check_true("badans/%s/%s raises" % (_label, _entry), False, "no error raised")
+            except RuntimeError:
+                check_true("badans/%s/%s raises" % (_label, _entry), True)
+            except Exception as _e:
+                check_true("badans/%s/%s raises" % (_label, _entry), False, type(_e).__name__)
+
+    # The refusal names the offending type -- with `answers` nested inside an otherwise valid body,
+    # that is the only thing a caller reading a log line can act on.
+    langchain_module.urllib.request.build_opener = (
+        lambda *a: _RawBodyOpener(json.dumps({"answers": ["boom"]})))
+    try:
+        langchain_module._call_remote("http://localhost:8000", "s", {"q": {}})
+        check_true("badans/names the type", False, "no error raised")
+    except RuntimeError as _e:
+        check_true("badans/names the type", "got list" in str(_e), str(_e))
+
+    # Controls: a real decision still routes, screens and triages...
+    langchain_module.urllib.request.build_opener = (lambda *a: _RawBodyOpener(json.dumps({
+        "answers": {
+            "route": {"type": "choice", "choice": "billing",
+                      "confidence": 0.9, "answer_confidence": 0.9},
+        }})))
+    check("badans/object still routes",
+          LayaRouter(criteria=_LC_CRITERIA, base_url="http://localhost:8000").invoke(
+              "I need an invoice refund"), "billing")
+    check("badans/object still screens safe",
+          LayaGuardrail(base_url="http://localhost:8000").invoke(
+              "What is the capital of France?"), "What is the capital of France?")
+    check_true("badans/object still triages",
+               isinstance(LayaTriage(base_url="http://localhost:8000").invoke(
+                   {"state": "I want a refund"}), dict))
+
+    # ...and an empty-but-object `answers` keeps the two no-decision behaviours it already had: the
+    # router's own KeyError naming the question it asked, the guardrail reporting no violations.
+    langchain_module.urllib.request.build_opener = (
+        lambda *a: _RawBodyOpener(json.dumps({"answers": {}})))
+    check("badans/empty answers still screens safe",
+          LayaGuardrail(base_url="http://localhost:8000").invoke(
+              "What is the capital of France?"), "What is the capital of France?")
+    try:
+        LayaRouter(criteria=_LC_CRITERIA, base_url="http://localhost:8000").invoke(
+            "I need an invoice refund")
+        check_true("badans/empty answers keeps its KeyError", False, "no error raised")
+    except KeyError as _e:
+        check_true("badans/empty answers keeps its KeyError", str(_e) == "'route'", str(_e))
+
+    # A body with no `answers` key at all is the other no-decision shape: the guard fires on a present
+    # field only, so the guardrail still reports no violations rather than refusing the response.
+    langchain_module.urllib.request.build_opener = (
+        lambda *a: _RawBodyOpener(json.dumps({"model": "laya-multilingual"})))
+    check("badans/answers absent still screens safe",
+          LayaGuardrail(base_url="http://localhost:8000").invoke(
+              "What is the capital of France?"), "What is the capital of France?")
+    check_true("badans/answers absent still triages",
+               isinstance(LayaTriage(base_url="http://localhost:8000").invoke(
+                   {"state": "I want a refund"}), dict))
+finally:
+    langchain_module.urllib.request.build_opener = _lc_orig_opener_badans
+
+
+# ---------------------------------------------- Nested answer objects and `noul` values
+#
+# The section above stops at `answers` itself. Two consumers -- `LayaGuardrail._finish` and
+# `LayaTriage._finish` -- then trusted everything under it, while `LayaTaskGuard.screen` and
+# `LayaAgentRouter.screen` had already moved to `_guard.answers_map`/`_guard.answer_number` (#1335).
+# Three levels leaked here: an answer that is not an object, a `noul` that is not a number, and a
+# `noul` key the answer does not carry.
+_LC_NESTED_ANSWER = [
+    ({"answers": {"jailbreak": "nope"}}, "answer-str", "guardrail"),
+    ({"answers": {"jailbreak": ["nope"]}}, "answer-list", "guardrail"),
+    ({"answers": {"jailbreak": None}}, "answer-null", "guardrail"),
+    ({"answers": {"jailbreak": {"type": "noul", "noul": "high"}}}, "noul-str", "guardrail"),
+    ({"answers": {"jailbreak": {"type": "noul", "noul": None}}}, "noul-null", "guardrail"),
+    ({"answers": {"jailbreak": {"type": "noul", "noul": True}}}, "noul-bool", "guardrail"),
+    ({"answers": {"jailbreak": {"type": "noul", "noul": float("nan")}}}, "noul-nan", "guardrail"),
+    ({"answers": {"intent": "escalate"}}, "answer-str", "triage"),
+    ({"answers": {"intent": ["escalate"]}}, "answer-list", "triage"),
+    ({"answers": {"intent": None}}, "answer-null", "triage"),
+    ({"answers": {"is_urgent": {"noul": "0.9"}}}, "noul-str", "triage"),
+    ({"answers": {"is_urgent": {"noul": None}}}, "noul-null", "triage"),
+    ({"answers": {"is_urgent": {"noul": True}}}, "noul-bool", "triage"),
+    ({"answers": {"churn_risk": {"noul": float("nan")}}}, "noul-nan", "triage"),
+]
+_lc_orig_opener_nested = langchain_module.urllib.request.build_opener
+try:
+    for _body, _label, _entry in _LC_NESTED_ANSWER:
+        _name = "%s/%s" % (_entry, _label)
+        langchain_module.urllib.request.build_opener = (
+            lambda *a, _r=json.dumps(_body): _RawBodyOpener(_r))
+        _run = (lambda: LayaGuardrail(base_url="http://localhost:8000",
+                                      api_key="k").invoke("What is the capital of France?")) \
+            if _entry == "guardrail" else \
+            (lambda: LayaTriage(base_url="http://localhost:8000",
+                                api_key="k").invoke({"state": "I want a refund"}))
+        try:
+            _run()
+            check_true("nested/%s raises" % _name, False, "no error raised")
+        except RuntimeError as _e:
+            check_true("nested/%s raises" % _name, True)
+            check_true("nested/%s malformed" % _name,
+                       "Malformed decision response" in str(_e), str(_e))
+            check_true("nested/%s names the field" % _name,
+                       ("'jailbreak'" in str(_e) or "noul" in str(_e) or "'intent'" in str(_e)
+                        or "is_urgent" in str(_e) or "churn_risk" in str(_e)), str(_e))
+        except Exception as _e:
+            check_true("nested/%s raises" % _name, False, type(_e).__name__)
+
+    # A `{"type": "noul"}` with no `noul` at all used to raise KeyError: 'noul' as soon as the
+    # threshold let the comparison through, because the value was re-read from the answer after the
+    # `>=` guard. It now reads as the 0.0 the comparison already used, exactly as `LayaTaskGuard`
+    # reports it, so the guardrail answers instead of crashing.
+    langchain_module.urllib.request.build_opener = (
+        lambda *a: _RawBodyOpener(json.dumps({"answers": {"jailbreak": {"type": "noul"}}})))
+    _annotated = LayaGuardrail(base_url="http://localhost:8000", api_key="k",
+                               action="annotate", threshold=0.0).invoke(
+                                   {"state": "What is the capital of France?"})
+    check("nested/guardrail/noul-absent records the default",
+          _annotated["guardrails"]["violations"], {"jailbreak": {"probability": 0.0,
+                                                                "confidence": 0.0}})
+
+    # Controls: a well-formed body projects the same numbers it always did, on both surfaces.
+    langchain_module.urllib.request.build_opener = (
+        lambda *a: _RawBodyOpener(json.dumps({"answers": {
+            "jailbreak": {"type": "noul", "noul": 0.9, "confidence": 0.4},
+            "toxicity": {"type": "score", "score": 3, "probabilities": {"0": 0.0, "1": 0.2,
+                                                                       "2": 0.3, "3": 0.5}}}})))
+    _violated = LayaGuardrail(base_url="http://localhost:8000", api_key="k",
+                              action="annotate").invoke({"state": "hello"})
+    check("nested/guardrail/well-formed still records noul",
+          _violated["guardrails"]["violations"]["jailbreak"],
+          {"probability": 0.9, "confidence": 0.4})
+    check("nested/guardrail/well-formed still records score",
+          _violated["guardrails"]["violations"]["toxicity"]["probability"], 0.8)
+    langchain_module.urllib.request.build_opener = (
+        lambda *a: _RawBodyOpener(json.dumps({"answers": {
+            "intent": {"type": "choice", "choice": "refund", "confidence": 0.8},
+            "is_urgent": {"type": "noul", "noul": 0.7},
+            "churn_risk": {"type": "noul", "noul": 0.1},
+            "refund_requested": {"type": "noul", "noul": 0.9},
+            "frustration": {"type": "score", "score": 2}}})))
+    check("nested/triage/well-formed still projects",
+          LayaTriage(base_url="http://localhost:8000", api_key="k").invoke(
+              {"state": "I want a refund"})["triage"],
+          {"intent": "refund", "intent_confidence": 0.8, "is_urgent": True,
+           "frustration_score": 2, "churn_risk": False, "refund_requested": True})
+
+    # A missing question in the body is still the no-decision case it was: `{}` answers read as 0.0,
+    # so nothing is refused and nothing is flagged.
+    langchain_module.urllib.request.build_opener = (
+        lambda *a: _RawBodyOpener(json.dumps({"answers": {"intent": {"type": "choice"}}})))
+    check("nested/triage/absent noul questions stay false",
+          LayaTriage(base_url="http://localhost:8000", api_key="k").invoke(
+              {"state": "hi"})["triage"]["is_urgent"], False)
+finally:
+    langchain_module.urllib.request.build_opener = _lc_orig_opener_nested
+
+
 # --------------------------------------------------------------- Summary
 print(f"PASS: {len(PASS)}")
 print(f"FAIL: {len(FAIL)}")

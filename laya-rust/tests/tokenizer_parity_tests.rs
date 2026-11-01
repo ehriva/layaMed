@@ -25,6 +25,14 @@ const CHECKPOINTS: [LayaCheckpoint; 3] = [
     LayaCheckpoint::TypedDecisions,
 ];
 
+/// The checkpoints this run covers (all, or those `LAYA_TEST_CHECKPOINTS` selects).
+fn checkpoints() -> Vec<LayaCheckpoint> {
+    CHECKPOINTS
+        .into_iter()
+        .filter(|c| test_artifacts::is_selected(*c))
+        .collect()
+}
+
 /// Loads the tokenizer for `checkpoint`, or prints a skip line and returns `None` when
 /// `tokenizer/tokenizer.json` is not available locally.
 fn load_tokenizer(checkpoint: LayaCheckpoint) -> Option<HfTokenizer> {
@@ -57,7 +65,7 @@ fn to_u32(values: Vec<i64>) -> Vec<u32> {
 
 #[test]
 fn special_token_ids_match_the_recorded_values() {
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let Some(tok) = load_tokenizer(checkpoint) else {
             continue;
         };
@@ -110,7 +118,7 @@ fn special_token_ids_match_the_recorded_values() {
 
 #[test]
 fn encodes_every_probe_string_exactly_as_python_does() {
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let Some(tok) = load_tokenizer(checkpoint) else {
             continue;
         };
@@ -156,7 +164,7 @@ fn adds_no_special_tokens_of_its_own() {
     // The shipped tokenizer.json has a TemplateProcessing post-processor that wraps every encode.
     // Left in place it would inject the checkpoint's CLS and SEP ids into every fragment, shifting
     // all marker positions. HfTokenizer must never invoke it.
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let Some(tok) = load_tokenizer(checkpoint) else {
             continue;
         };
@@ -178,7 +186,7 @@ fn adds_no_special_tokens_of_its_own() {
 
 #[test]
 fn encodes_the_empty_string_to_nothing() {
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let Some(tok) = load_tokenizer(checkpoint) else {
             continue;
         };
@@ -192,7 +200,7 @@ fn encodes_the_empty_string_to_nothing() {
 
 #[test]
 fn builds_the_recorded_sequence_for_every_question() {
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let Some(tok) = load_tokenizer(checkpoint) else {
             continue;
         };
@@ -202,12 +210,21 @@ fn builds_the_recorded_sequence_for_every_question() {
         }
 
         let meta = golden.meta();
-        let max_len = meta["max_len"].as_u64().unwrap() as usize;
-        let head_max_len = meta["head_max_len"].as_u64().unwrap() as usize;
+        let config_max_len = meta["max_len"].as_i64().unwrap();
+        let config_head_max_len = meta["head_max_len"].as_i64().unwrap();
 
         for case in golden.success_cases() {
             let root = golden.load_case(&case);
             let state = root["state"].clone();
+            // A case that passes its own token budget was recorded with it
+            // (Python: system_one(max_len=...)); a bool is the int 0 or 1.
+            let budget = |name: &str, fallback: i64| match &root["options"][name] {
+                Value::Bool(b) => i64::from(*b),
+                Value::Number(n) => n.as_i64().expect("integer budget"),
+                _ => fallback,
+            };
+            let max_len = budget("max_len", config_max_len);
+            let head_max_len = budget("head_max_len", config_head_max_len);
             let questions = golden_data::build_questions(&root["questions"]).unwrap_or_else(|e| {
                 panic!(
                     "{}/{case}: failed to build questions: {e}",
@@ -247,11 +264,17 @@ fn builds_the_recorded_sequence_for_every_question() {
                     checkpoint.subdir()
                 );
 
-                let (ids, markers) =
-                    SequenceBuilder::build(&tok, &state, question, max_len, head_max_len, false)
-                        .unwrap_or_else(|e| {
-                            panic!("{}/{case}/{id}: build failed: {e}", checkpoint.subdir())
-                        });
+                let (ids, markers) = SequenceBuilder::build_signed(
+                    &tok,
+                    &state,
+                    question,
+                    max_len,
+                    head_max_len,
+                    false,
+                )
+                .unwrap_or_else(|e| {
+                    panic!("{}/{case}/{id}: build failed: {e}", checkpoint.subdir())
+                });
 
                 assert_eq!(
                     golden_data::indices(&recorded["markers"]),
@@ -275,7 +298,7 @@ fn serializes_state_exactly_as_python_does() {
     // State serialization is checkpoint-independent (it is the same JSON serializer for all), but
     // exercising it across checkpoints gives coverage over diverse state shapes in the golden
     // corpus of every checkpoint.
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let golden = CheckpointGoldenData::for_checkpoint(checkpoint.subdir());
         if !golden.available() {
             continue;

@@ -8,6 +8,8 @@ corpus from `laya-rust/tools/routing_cases.py` and writes one JSON file per prob
 
     lang_probe.json              lang.analyse / detect_script / script_profile /
                                   latin_profile / state_text, for every LANG_STATES entry.
+    route_batch_probe.json       Router.route_batch() decisions for every ROUTE_BATCH_CASES entry,
+                                  plus the errors it raises (ROUTE_BATCH_ERROR_CASES).
     route_probe.json             Router.route() decisions (model, reason, detection,
                                   workflow -- `repo` is intentionally omitted: the ported
                                   RouteDecision has no Repo field) for every ROUTE_CASES entry.
@@ -19,6 +21,19 @@ corpus from `laya-rust/tools/routing_cases.py` and writes one JSON file per prob
                                   its ranking/cosine/tie-break logic against this file). NaN/Inf
                                   values in a matrix are written as the strings "nan"/"inf"/
                                   "-inf" (see meta.json) because JSON has no literal for them.
+    confidence_probe.json        laya.confidence's own answers over the synthetic inputs of
+                                  tools/confidence_cases.py: threshold validation (check_min_confidence and
+                                  _map, with the error text), _option_bucket, resolve_min_confidence,
+                                  apply_confidence_gate (incl. reused payloads, #910) and jev_confidence.
+                                  Non-finite floats are written as "nan"/"inf"/"-inf" strings.
+    lang_temperatures_probe.json laya.common.resolve_lang_temperatures over the synthetic inputs of
+                                  tools/lang_temperature_cases.py: the resolved table (key normalisation, last
+                                  duplicate wins, inheriting the checkpoint's temperature, clamping) or the
+                                  exception (type and ValueError text), plus every warning raised, per case.
+                                  Non-finite floats are written as "nan"/"inf"/"-inf" strings.
+    router_forwarding_probe.json What a Router hands the agent it routed to: Router.predict / predict_long / predict_batch over
+                                  stub agents that record the keyword arguments they received (the language, the
+                                  token budgets, the batch grouping), from tools/lang_temperature_cases.py. No model.
     hashing_embedder_probe.json  Exact laya-rust/tools/hashing_embedder.embed() vectors for a fixed probe
                                   list of strings, including non-ASCII and astral input.
     sample_inputs.json           The combined routing sample's fixed inputs (detection states,
@@ -38,10 +53,12 @@ given -- a content diff, not a mtime check, so re-running with no corpus changes
 silent no-op.
 """
 import argparse
+import copy
 import json
 import math
 import os
 import sys
+import warnings
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(TOOLS))
@@ -52,6 +69,8 @@ from routing_cases import (  # noqa: E402
     EMAIL_CLEAN_CASES,
     EMAIL_STATE_CASES,
     LANG_STATES,
+    ROUTE_BATCH_CASES,
+    ROUTE_BATCH_ERROR_CASES,
     ROUTE_CASES,
     SAMPLE_BANKING_CRITERIA,
     SAMPLE_BANKING_INSTRUCTIONS,
@@ -67,8 +86,12 @@ from routing_cases import (  # noqa: E402
     SHORTLIST_CASES,
 )
 
+import confidence_cases as cc  # noqa: E402
+import lang_temperature_cases as ltc  # noqa: E402
 import hashing_embedder  # noqa: E402
 
+from laya import confidence  # noqa: E402
+from laya.common import TEMP_MAX, TEMP_MIN, resolve_lang_temperatures  # noqa: E402
 from laya.email import clean_email_body, email_state  # noqa: E402
 from laya.lang import analyse, detect_script, latin_profile, script_profile, state_text  # noqa: E402
 from laya.router import Router  # noqa: E402
@@ -185,6 +208,220 @@ def build_route_probe():
             "decision": _decision_payload(decision),
         })
     return out
+
+
+def build_route_batch_probe():
+    cases = []
+    for label, router_kwargs, requests in ROUTE_BATCH_CASES:
+        decisions = Router(**router_kwargs).route_batch(requests)
+        cases.append({
+            "label": label,
+            "router_kwargs": router_kwargs,
+            "requests": requests,
+            "decisions": [_decision_payload(d) for d in decisions],
+        })
+    errors = []
+    for label, router_kwargs, requests in ROUTE_BATCH_ERROR_CASES:
+        try:
+            Router(**router_kwargs).route_batch(requests)
+        except (TypeError, ValueError) as e:
+            errors.append({
+                "label": label,
+                "router_kwargs": router_kwargs,
+                "requests": requests,
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+            })
+        else:
+            raise SystemExit("route_batch case %r was expected to raise but did not" % label)
+    return {"cases": cases, "errors": errors}
+
+
+# ============================================================================ confidence_probe
+def _checked(fn, arg):
+    """`{"valid": True, "result": ...}` or `{"valid": False, "error_type", "error_message"}`."""
+    try:
+        return {"valid": True, "result": fn(arg)}
+    except ValueError as e:
+        return {"valid": False, "error_type": type(e).__name__, "error_message": str(e)}
+
+
+def _gate_verdict(answers):
+    """What the gate wrote on each answer: only the keys that are present."""
+    return {
+        qid: {k: a[k] for k in ("low_confidence", "abstention", "abstention_threshold") if k in a}
+        for qid, a in answers.items()
+    }
+
+
+def _gate(answers, threshold):
+    """apply_confidence_gate exactly as ONNXAgent.predict_batch calls it: validate, then gate."""
+    mc = confidence.check_min_confidence(threshold) if threshold is not None else None
+    confidence.apply_confidence_gate([{"answers": answers}], mc)
+
+
+def build_confidence_probe():
+    # jev_confidence sums floats; CPython 3.12 made sum() compensated, and the SDKs reproduce that.
+    if sys.version_info < (3, 12):
+        sys.exit("confidence_probe.json must be recorded with Python 3.12 or later "
+                 "(sum() of floats is compensated from 3.12 on), got %d.%d" % sys.version_info[:2])
+    scalars = [dict(value=v, **_checked(confidence.check_min_confidence, v)) for v in cc.SCALAR_THRESHOLDS]
+
+    maps = []
+    for pairs in cc.MAP_THRESHOLDS:
+        # Python's dict keeps one entry per key, at its first position, holding its last value.
+        checked = _checked(confidence.check_min_confidence, dict(pairs))
+        if checked["valid"]:
+            checked["result"] = [list(item) for item in checked["result"].items()]
+        maps.append(dict(pairs=[list(pair) for pair in pairs], **checked))
+
+    buckets = [{"answer": a, "bucket": confidence._option_bucket(a)} for a in cc.BUCKET_ANSWERS]
+
+    resolve = [
+        {"thresholds": m, "answer": a, "result": confidence.resolve_min_confidence(a, m)}
+        for m in cc.RESOLVE_MAPS for a in cc.RESOLVE_ANSWERS
+    ]
+
+    gate_cases = []
+    for threshold in cc.GATE_THRESHOLDS:
+        answers = copy.deepcopy(cc.GATE_ANSWERS)
+        _gate(answers, threshold)
+        gate_cases.append({"threshold": threshold, "expected": _gate_verdict(answers)})
+
+    reuse = []
+    for steps in cc.REUSE_SEQUENCES:
+        answers = copy.deepcopy(cc.GATE_ANSWERS)
+        recorded = []
+        for threshold in steps:
+            _gate(answers, threshold)
+            recorded.append({"threshold": threshold, "expected": _gate_verdict(answers)})
+        reuse.append({"steps": recorded})
+
+    jev = [dict(case, result=confidence.jev_confidence(case["answer"])) for case in cc.JEV_CASES]
+
+    return {
+        "bucket_keys": sorted(confidence.bucket_keys()),
+        "gate_states": list(confidence.GATE_STATES),
+        "scalars": scalars,
+        "maps": maps,
+        "buckets": buckets,
+        "resolve": resolve,
+        "gate_answers": cc.GATE_ANSWERS,
+        "gate": gate_cases,
+        "reuse": reuse,
+        "jev": jev,
+    }
+
+
+# ============================================================================ lang_temperatures_probe
+def _resolve_recorded(pairs, base):
+    """`resolve_lang_temperatures(dict(pairs), base)` with its warnings: `{"result"|"error", "warnings"}`."""
+    raw = None if pairs is None else dict(pairs)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            outcome = {"result": resolve_lang_temperatures(raw, base)}
+        except Exception as e:  # the helper promises ValueError; anything else is a finding, so it is recorded too
+            outcome = {"error_type": type(e).__name__, "error_message": str(e)}
+    outcome["warnings"] = [{"category": w.category.__name__, "message": str(w.message)} for w in caught]
+    return outcome
+
+
+def build_lang_temperatures_probe():
+    cases = []
+    for label, pairs, base, typed in ltc.PROBE_CASES:
+        cases.append(dict(
+            label=label,
+            typed=typed,
+            pairs=None if pairs is None else [[key, entry] for key, entry in pairs],
+            base=base,
+            **_resolve_recorded(pairs, base),
+        ))
+    return {"temp_min": TEMP_MIN, "temp_max": TEMP_MAX, "cases": cases}
+
+
+# ============================================================================ router_forwarding_probe
+class _StubAgent:
+    """An agent that answers nothing and records the keyword arguments each entry point received.
+
+    `lang_temperatures` is what a Router tests (`getattr(agent, "lang_temperatures", None)`) before it splits a
+    batch by language. `takes_lang=False` swaps `predict_long` for one with no `lang` parameter.
+    """
+
+    def __init__(self, name, log, has_lang_temperatures=False, takes_lang=True):
+        self.name, self.log = name, log
+        self.lang_temperatures = {"de": {}} if has_lang_temperatures else {}
+        if not takes_lang:
+            self.predict_long = self._predict_long_without_lang
+
+    def _answer(self, state):
+        return {"model": self.name, "answers": {}, "usage": {"input_tokens": 0, "output_tokens": 0}}
+
+    def system_one(self, state, questions, **kwargs):
+        self.log.append({"model": self.name, "entry": "system_one", "states": [state], "kwargs": kwargs})
+        return self._answer(state)
+
+    def predict_batch(self, states, questions, batch_size=None, **kwargs):
+        self.log.append({"model": self.name, "entry": "predict_batch", "states": list(states), "kwargs": kwargs})
+        return [self._answer(s) for s in states]
+
+    def predict_long(self, state, questions, window=None, stride=None, aggregate="auto", batch_size=None, **kwargs):
+        self.log.append({"model": self.name, "entry": "predict_long", "states": [state], "kwargs": kwargs})
+        return self._answer(state)
+
+    def _predict_long_without_lang(self, state, questions, window=None, stride=None, aggregate="auto",
+                                   batch_size=None):
+        self.log.append({"model": self.name, "entry": "predict_long", "states": [state], "kwargs": {}})
+        return self._answer(state)
+
+
+def _stub_router(log, has_lang_temperatures=None, takes_lang=True):
+    has = has_lang_temperatures or {}
+    router = Router()
+    for name in ("english", "multilingual"):
+        router.attach(name, _StubAgent(name, log, has.get(name, False), takes_lang))
+    return router
+
+
+def _warned(caught):
+    return [{"category": w.category.__name__, "message": str(w.message)} for w in caught]
+
+
+def build_router_forwarding_probe():
+    predict = []
+    for label, args in ltc.ROUTER_PREDICT_CASES:
+        log = []
+        kwargs = dict(args)
+        result = _stub_router(log).predict(kwargs.pop("state"), ltc.ROUTER_QUESTIONS, **kwargs)
+        (call,) = log
+        predict.append({"label": label, "args": args, "model": result["routing"]["model"],
+                        "agent": call["model"], "received": call["kwargs"]})
+
+    long = []
+    for label, args in ltc.ROUTER_LONG_CASES:
+        log = []
+        kwargs = dict(args)
+        takes_lang = kwargs.pop("stub_takes_lang", True)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = _stub_router(log, takes_lang=takes_lang).predict_long(
+                kwargs.pop("state"), ltc.ROUTER_QUESTIONS, **kwargs)
+        (call,) = log
+        long.append({"label": label, "args": args, "model": result["routing"]["model"],
+                     "received": call["kwargs"], "warnings": _warned(caught)})
+
+    batch = []
+    for label, has, requests in ltc.ROUTER_BATCH_CASES:
+        log = []
+        results = _stub_router(log, has).predict_batch(copy.deepcopy(requests))
+        batch.append({
+            "label": label,
+            "has_lang_temperatures": has,
+            "requests": requests,
+            "models": [r["routing"]["model"] for r in results],
+            "calls": [{"model": c["model"], "states": c["states"], "kwargs": c["kwargs"]} for c in log],
+        })
+    return {"predict": predict, "long": long, "batch": batch}
 
 
 # ============================================================================ email_probe
@@ -356,6 +593,10 @@ def main() -> int:
 
     lang_probe = build_lang_probe()
     route_probe = build_route_probe()
+    route_batch_probe = build_route_batch_probe()
+    confidence_probe = build_confidence_probe()
+    lang_temperatures_probe = build_lang_temperatures_probe()
+    router_forwarding_probe = build_router_forwarding_probe()
     email_probe = build_email_probe()
     shortlist_probe = build_shortlist_probe()
     hashing_probe = build_hashing_embedder_probe()
@@ -376,6 +617,19 @@ def main() -> int:
         "counts": {
             "lang_probe": len(lang_probe),
             "route_probe": len(route_probe),
+            "route_batch_probe": len(route_batch_probe["cases"]),
+            "route_batch_probe_errors": len(route_batch_probe["errors"]),
+            "confidence_probe_scalars": len(confidence_probe["scalars"]),
+            "confidence_probe_maps": len(confidence_probe["maps"]),
+            "confidence_probe_buckets": len(confidence_probe["buckets"]),
+            "confidence_probe_resolve": len(confidence_probe["resolve"]),
+            "confidence_probe_gate": len(confidence_probe["gate"]),
+            "confidence_probe_reuse": len(confidence_probe["reuse"]),
+            "confidence_probe_jev": len(confidence_probe["jev"]),
+            "lang_temperatures_probe": len(lang_temperatures_probe["cases"]),
+            "router_forwarding_probe_predict": len(router_forwarding_probe["predict"]),
+            "router_forwarding_probe_long": len(router_forwarding_probe["long"]),
+            "router_forwarding_probe_batch": len(router_forwarding_probe["batch"]),
             "email_probe_clean": len(email_probe["clean"]),
             "email_probe_state": len(email_probe["state"]),
             "shortlist_probe": len(shortlist_probe),
@@ -386,6 +640,18 @@ def main() -> int:
     results = {}
     results["lang_probe.json"] = dump(lang_probe, os.path.join(out_dir, "lang_probe.json"), args.force)
     results["route_probe.json"] = dump(route_probe, os.path.join(out_dir, "route_probe.json"), args.force)
+    results["route_batch_probe.json"] = dump(
+        route_batch_probe, os.path.join(out_dir, "route_batch_probe.json"), args.force
+    )
+    results["confidence_probe.json"] = dump(
+        _encode_floats(confidence_probe), os.path.join(out_dir, "confidence_probe.json"), args.force
+    )
+    results["lang_temperatures_probe.json"] = dump(
+        _encode_floats(lang_temperatures_probe), os.path.join(out_dir, "lang_temperatures_probe.json"), args.force
+    )
+    results["router_forwarding_probe.json"] = dump(
+        router_forwarding_probe, os.path.join(out_dir, "router_forwarding_probe.json"), args.force
+    )
     results["email_probe.json"] = dump(email_probe, os.path.join(out_dir, "email_probe.json"), args.force)
     results["shortlist_probe.json"] = dump(shortlist_probe, os.path.join(out_dir, "shortlist_probe.json"), args.force)
     results["hashing_embedder_probe.json"] = dump(

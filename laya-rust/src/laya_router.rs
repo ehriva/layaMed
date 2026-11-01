@@ -37,11 +37,14 @@
 //! blocks on the lock, then sees the checkpoint already resident).
 
 use crate::answers::LayaResult;
+use crate::batch_prediction::BatchOptions;
+use crate::confidence::apply_confidence_gate;
 use crate::error::{LayaError, Result};
 use crate::language_detection::{LanguageAnalysis, LanguageDetection, prefix_chars, py_strip};
-use crate::laya_engine::LayaEngine;
+use crate::laya_engine::{LayaEngine, refuse_null_states};
 use crate::laya_options::{LayaCheckpoint, LayaOptions};
 use crate::long_prediction::LongOptions;
+use crate::predict_options::PredictOptions;
 use crate::questions::QuestionSet;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -60,6 +63,32 @@ pub trait LayaPredictor: Send + Sync {
     /// Answer every question in `questions` about `state`.
     fn predict(&self, state: Value, questions: &QuestionSet) -> Result<LayaResult>;
 
+    /// [`Self::predict`] with the per-call `lang`, `max_len` and `head_max_len` the router
+    /// forwards. The default drops `lang`, as Python's router does for an attached agent whose
+    /// `system_one` takes none, and refuses a token-budget override, which Python passes on and
+    /// such an agent rejects with a `TypeError`; [`LayaEngine`] and [`LayaRouter`] honour all
+    /// three. `options.min_confidence` is never set: the router applies the gate itself.
+    fn predict_with_options(
+        &self,
+        state: Value,
+        questions: &QuestionSet,
+        options: &PredictOptions,
+    ) -> Result<LayaResult> {
+        if options.max_len.is_some() || options.head_max_len.is_some() {
+            return Err(LayaError::NotSupported(
+                "this predictor does not accept max_len or head_max_len".to_string(),
+            ));
+        }
+        self.predict(state, questions)
+    }
+
+    /// Whether this predictor carries per-language temperatures, which is when the router groups
+    /// a batch by language (Python's `getattr(agent, "lang_temperatures", None)`). The default is
+    /// `false`.
+    fn has_lang_temperatures(&self) -> bool {
+        false
+    }
+
     /// This predictor's scan capability, if it has one. The default is `None`, so implementing
     /// [`LayaPredictor`] elsewhere keeps compiling; [`LayaEngine`] and [`LayaRouter`] return
     /// themselves. [`LayaRouter::predict_long`] needs it: Rust has no run-time interface check on
@@ -68,6 +97,25 @@ pub trait LayaPredictor: Send + Sync {
     fn as_long_predictor(&self) -> Option<&dyn LayaLongPredictor> {
         None
     }
+
+    /// This predictor's batch capability, if it has one. The default is `None`, so implementing
+    /// [`LayaPredictor`] elsewhere keeps compiling; [`LayaEngine`] and [`LayaRouter`] return
+    /// themselves. [`LayaRouter::predict_batch`] needs it.
+    fn as_batch_predictor(&self) -> Option<&dyn LayaBatchPredictor> {
+        None
+    }
+}
+
+/// A [`LayaPredictor`] that can score many states against the same questions in shared forward
+/// passes. The Rust counterpart of Python's router calling `agent.predict_batch`.
+pub trait LayaBatchPredictor: LayaPredictor {
+    /// Answer `questions` about every state, in input order. See [`LayaEngine::predict_batch`].
+    fn predict_batch(
+        &self,
+        states: &[Value],
+        questions: &QuestionSet,
+        options: &BatchOptions,
+    ) -> Result<Vec<LayaResult>>;
 }
 
 /// A [`LayaPredictor`] that can also scan a state longer than one sequence. The Rust counterpart
@@ -88,8 +136,36 @@ impl LayaPredictor for LayaEngine {
         LayaEngine::predict(self, state, questions)
     }
 
+    fn predict_with_options(
+        &self,
+        state: Value,
+        questions: &QuestionSet,
+        options: &PredictOptions,
+    ) -> Result<LayaResult> {
+        LayaEngine::predict_with_options(self, state, questions, options)
+    }
+
+    fn has_lang_temperatures(&self) -> bool {
+        !self.lang_temperatures().is_empty()
+    }
+
     fn as_long_predictor(&self) -> Option<&dyn LayaLongPredictor> {
         Some(self)
+    }
+
+    fn as_batch_predictor(&self) -> Option<&dyn LayaBatchPredictor> {
+        Some(self)
+    }
+}
+
+impl LayaBatchPredictor for LayaEngine {
+    fn predict_batch(
+        &self,
+        states: &[Value],
+        questions: &QuestionSet,
+        options: &BatchOptions,
+    ) -> Result<Vec<LayaResult>> {
+        LayaEngine::predict_batch(self, states, questions, options)
     }
 }
 
@@ -262,6 +338,97 @@ impl std::fmt::Display for RouteDecision {
     }
 }
 
+/// One request of [`LayaRouter::route_batch`] / [`LayaRouter::predict_batch`]: a state, its
+/// questions and the same optional routing overrides [`LayaRouter::route_with_lang_guess`] takes.
+/// Python passes these as a request dict with the keys `state`, `questions`, `model`, `task`,
+/// `lang` and `lang_guess`.
+///
+/// A request may also carry its own `max_len` and `head_max_len`, which override the checkpoint's
+/// token budget for that request alone (requests that ask for different budgets, or different
+/// languages when the engine has per-language temperatures, do not share a forward pass). Build
+/// one with [`Self::new`] and the chained setters.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct BatchRequest {
+    /// What to decide about. A `null` state is refused, as Python's `TypeError`.
+    pub state: Value,
+    /// The questions to answer. Shared by `Arc`, so requests that ask the same questions need not
+    /// each hold a copy; requests with equal question schemas share a forward pass either way.
+    pub questions: Arc<QuestionSet>,
+    /// Route to this checkpoint (a name or alias), skipping detection.
+    pub model: Option<String>,
+    /// Route by task, such as `"typed_decisions"`.
+    pub task: Option<String>,
+    /// A language code that decides English or not, ahead of detection. It also selects the
+    /// per-language temperatures when the engine has any, falling back to the detected language.
+    pub lang: Option<String>,
+    /// A per-request language hint; see [`LayaRouter::route_with_lang_guess`].
+    pub lang_guess: Option<LangGuess>,
+    /// Override the checkpoint's `max_len` for this request; see [`PredictOptions::max_len`].
+    pub max_len: Option<i64>,
+    /// Override the checkpoint's `head_max_len` for this request; see
+    /// [`PredictOptions::head_max_len`].
+    pub head_max_len: Option<i64>,
+}
+
+impl BatchRequest {
+    /// A request with no routing overrides.
+    pub fn new(state: impl Into<Value>, questions: impl Into<Arc<QuestionSet>>) -> Self {
+        Self {
+            state: state.into(),
+            questions: questions.into(),
+            model: None,
+            task: None,
+            lang: None,
+            lang_guess: None,
+            max_len: None,
+            head_max_len: None,
+        }
+    }
+
+    /// Set [`Self::model`].
+    #[must_use]
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Set [`Self::task`].
+    #[must_use]
+    pub fn task(mut self, task: impl Into<String>) -> Self {
+        self.task = Some(task.into());
+        self
+    }
+
+    /// Set [`Self::lang`].
+    #[must_use]
+    pub fn lang(mut self, lang: impl Into<String>) -> Self {
+        self.lang = Some(lang.into());
+        self
+    }
+
+    /// Set [`Self::lang_guess`].
+    #[must_use]
+    pub fn lang_guess(mut self, lang_guess: impl Into<LangGuess>) -> Self {
+        self.lang_guess = Some(lang_guess.into());
+        self
+    }
+
+    /// Set [`Self::max_len`].
+    #[must_use]
+    pub fn max_len(mut self, max_len: i64) -> Self {
+        self.max_len = Some(max_len);
+        self
+    }
+
+    /// Set [`Self::head_max_len`].
+    #[must_use]
+    pub fn head_max_len(mut self, head_max_len: i64) -> Self {
+        self.head_max_len = Some(head_max_len);
+        self
+    }
+}
+
 /// Configuration for [`LayaRouter`]. `engine_options` is the template every loaded checkpoint's
 /// [`LayaOptions`] is built from (provider, threads, download settings, cache, HF token); its own
 /// `checkpoint` field is ignored, since each load overrides it with the checkpoint being built.
@@ -410,9 +577,9 @@ impl LayaRouter {
             "multilingual" => Ok(LayaCheckpoint::Multilingual),
             "typed-decisions" => Ok(LayaCheckpoint::TypedDecisions),
             _ => Err(LayaError::InvalidConfig(format!(
-                "unknown model {}; choose one of \"english\", \"multilingual\", \"typed-decisions\" \
-                 (or an alias: \"en\", \"laya\", \"default\", \"multi\", \"ml\", \"laya-multilingual\", \
-                 \"typed\", \"typed_decisions\", \"laya-typed-decisions\", \"decisions\")",
+                "unknown model {}; choose one of ['english', 'multilingual', 'typed-decisions'] \
+                 (or an alias: ['decisions', 'default', 'en', 'laya', 'laya-multilingual', \
+                 'laya-typed-decisions', 'ml', 'multi', 'typed', 'typed_decisions'])",
                 python_repr_str(name)
             ))),
         }
@@ -808,14 +975,252 @@ impl LayaRouter {
         lang: Option<&str>,
         lang_guess: Option<&LangGuess>,
     ) -> Result<LayaResult> {
+        self.predict_with_options(
+            state,
+            questions,
+            model,
+            task,
+            lang,
+            lang_guess,
+            &PredictOptions::default(),
+        )
+    }
+
+    /// [`Self::predict_with_lang_guess`] with per-call [`PredictOptions`]. Ports
+    /// `Router.predict(min_confidence=...)`: a `null` state is refused first, then the threshold is
+    /// validated ([`LayaError::InvalidMinConfidence`]), both before anything is routed or loaded.
+    /// The gate runs on the router's own result, so it also covers an attached predictor that
+    /// knows nothing of it.
+    ///
+    /// The predictor is handed `lang` (else the language the routing detection found, as
+    /// Python's `effective_lang`) and `options.max_len` / `options.head_max_len`;
+    /// `options.lang` is not read here, the `lang` argument being the one that also routes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn predict_with_options(
+        &self,
+        state: impl Into<Value>,
+        questions: &QuestionSet,
+        model: Option<&str>,
+        task: Option<&str>,
+        lang: Option<&str>,
+        lang_guess: Option<&LangGuess>,
+        options: &PredictOptions,
+    ) -> Result<LayaResult> {
         let state = state.into();
+        // Python's `Router.predict` refuses `None` before it routes or loads anything.
+        refuse_null_states(std::slice::from_ref(&state))?;
+        let min_confidence = options.min_confidence.as_ref();
+        if let Some(min_confidence) = min_confidence {
+            min_confidence.validate()?;
+        }
         let decision =
             self.route_with_lang_guess(&state, Some(questions), model, task, lang, lang_guess)?;
         let engine = self.load_checkpoint(decision.model)?;
         // Inference deliberately runs after the `Arc<dyn LayaPredictor>` clone above and outside
         // any lock: see the module docs on eviction safety.
-        let result = engine.predict(state, questions)?;
+        // Python passes `lang` always, and the token budgets only when set; the gate is the
+        // router's own, so the predictor is not handed it.
+        let forwarded = PredictOptions {
+            min_confidence: None,
+            lang: effective_lang(lang, &decision),
+            max_len: options.max_len,
+            head_max_len: options.head_max_len,
+        };
+        let mut results = [engine.predict_with_options(state, questions, &forwarded)?];
+        apply_confidence_gate(&mut results, min_confidence);
+        let [result] = results;
         Ok(result.with_routing(decision))
+    }
+
+    /// Route a heterogeneous request batch without loading any checkpoint. Ports
+    /// `Router.route_batch`: each request is routed as [`Self::route_with_lang_guess`] routes it
+    /// from its own `model`, `task`, `lang` and `lang_guess`, and the decisions come back in
+    /// input order.
+    ///
+    /// A request whose state is `null` is refused with [`LayaError::InvalidState`], naming the
+    /// request's index as Python does; the first failing request fails the call.
+    pub fn route_batch(&self, requests: &[BatchRequest]) -> Result<Vec<RouteDecision>> {
+        requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                if request.state.is_null() {
+                    return Err(LayaError::InvalidState(format!(
+                        "request {index} 'state' must not be None; pass a string, dict, or list"
+                    )));
+                }
+                self.route_with_lang_guess(
+                    &request.state,
+                    Some(&request.questions),
+                    request.model.as_deref(),
+                    request.task.as_deref(),
+                    request.lang.as_deref(),
+                    request.lang_guess.as_ref(),
+                )
+            })
+            .collect()
+    }
+
+    /// Route and answer a heterogeneous request batch with minimal model churn. Ports
+    /// `Router.predict_batch`: requests are routed first (nothing loads if routing fails), grouped
+    /// by checkpoint in order of first appearance, and within a checkpoint by question schema
+    /// (order-sensitive: ids, types, instructions and options), so the states of one group share
+    /// forward passes through [`LayaEngine::predict_batch`]. Each result carries its request's
+    /// [`LayaResult::routing`] and the results come back in input order.
+    ///
+    /// `options` goes to every group: `batch_size` caps states per forward pass and
+    /// `sort_by_length` reorders within a group only when that group clears the engine's own
+    /// `1 < batch_size < group size` gate. No requests give an empty list. The first failing group
+    /// fails the call. Returns [`LayaError::NotSupported`] when a chosen predictor (for example
+    /// one registered with [`Self::attach`]) has no batch capability.
+    ///
+    /// `options.min_confidence` is validated before anything is routed
+    /// ([`LayaError::InvalidMinConfidence`]) and gates every result of the call, as one batch-wide
+    /// threshold: it takes no part in the grouping, and each result is gated here, by the router,
+    /// so an attached predictor needs no support for it.
+    ///
+    /// Each request's `max_len` and `head_max_len` join the question schema in the grouping key,
+    /// since one forward pass carries one budget; so does the request's `lang` (else the detected
+    /// language), raw and unnormalised, but only when the predictor has per-language temperatures
+    /// ([`LayaPredictor::has_lang_temperatures`]). The group's values are what the predictor is
+    /// handed. As in Python, which has no such arguments on `Router.predict_batch`, a batch-wide
+    /// `options.lang`, `options.max_len` or `options.head_max_len` is refused with
+    /// [`LayaError::NotSupported`] (`... got an unexpected keyword argument '<name>'`); put them on
+    /// the requests.
+    pub fn predict_batch(
+        &self,
+        requests: &[BatchRequest],
+        options: &BatchOptions,
+    ) -> Result<Vec<LayaResult>> {
+        // Python's `Router.predict_batch` takes no batch-wide language or token budget: each
+        // request names its own, so the call itself is a `TypeError` before anything is read.
+        for (given, name) in [
+            (options.lang.is_some(), "lang"),
+            (options.max_len.is_some(), "max_len"),
+            (options.head_max_len.is_some(), "head_max_len"),
+        ] {
+            if given {
+                return Err(LayaError::NotSupported(format!(
+                    "Router.predict_batch() got an unexpected keyword argument '{name}'"
+                )));
+            }
+        }
+        let min_confidence = options.min_confidence.as_ref();
+        if let Some(min_confidence) = min_confidence {
+            min_confidence.validate()?;
+        }
+        let decisions = self.route_batch(requests)?;
+        if decisions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Insertion order keeps cache effects deterministic and collapses an interleaved
+        // workload to one load per routed checkpoint for this call.
+        let mut groups: Vec<(LayaCheckpoint, Vec<usize>)> = Vec::new();
+        for (index, decision) in decisions.iter().enumerate() {
+            match groups
+                .iter_mut()
+                .find(|(model, _)| *model == decision.model)
+            {
+                Some((_, indices)) => indices.push(index),
+                None => groups.push((decision.model, vec![index])),
+            }
+        }
+
+        // The gate is the router's: the predictors score ungated, whatever the caller asked for.
+        // The language and budgets are each request's own, set per group below.
+        let ungated = BatchOptions {
+            min_confidence: None,
+            lang: None,
+            max_len: None,
+            head_max_len: None,
+            ..options.clone()
+        };
+        let mut results: Vec<Option<LayaResult>> = Vec::with_capacity(requests.len());
+        results.resize_with(requests.len(), || None);
+        for (model, indices) in groups {
+            let predictor = self.load_checkpoint(model)?;
+            let batcher = predictor.as_batch_predictor().ok_or_else(|| {
+                LayaError::NotSupported(format!(
+                    "the predictor for '{}' has no predict_batch, so a batch cannot share \
+                     forward passes",
+                    model.subdir()
+                ))
+            })?;
+
+            // Order-sensitive at every level: options are positional, so two equal schemas with
+            // different orders must not share a group.
+            // Requests also split on their token budgets, since one forward pass carries one, and
+            // on language, but only for an engine with per-language temperatures: the language is
+            // otherwise unused, and splitting on it would break up a group that shares a pass. The
+            // language is the request's own, else the one detected, compared as written.
+            let has_lang_temperatures = predictor.has_lang_temperatures();
+            type GroupKey = (String, Option<i64>, Option<i64>, Option<String>);
+            let mut question_groups: Vec<(GroupKey, Vec<usize>)> = Vec::new();
+            let mut last: Option<(&Arc<QuestionSet>, String)> = None;
+            for &index in &indices {
+                let request = &requests[index];
+                let questions = &request.questions;
+                let schema = match &last {
+                    Some((seen, key)) if Arc::ptr_eq(seen, questions) => key.clone(),
+                    _ => questions.schema_key(),
+                };
+                last = Some((questions, schema.clone()));
+                let lang_key = if has_lang_temperatures {
+                    request.lang.clone().or_else(|| {
+                        decisions[index]
+                            .detection
+                            .as_ref()
+                            .and_then(|detection| detection.language.clone())
+                    })
+                } else {
+                    None
+                };
+                let key = (schema, request.max_len, request.head_max_len, lang_key);
+                match question_groups.iter_mut().find(|(known, _)| *known == key) {
+                    Some((_, items)) => items.push(index),
+                    None => question_groups.push((key, vec![index])),
+                }
+            }
+
+            for ((_, max_len, head_max_len, lang), items) in question_groups {
+                let grouped = BatchOptions {
+                    lang,
+                    max_len,
+                    head_max_len,
+                    ..ungated.clone()
+                };
+                let states: Vec<Value> = items
+                    .iter()
+                    .map(|&index| requests[index].state.clone())
+                    .collect();
+                let batch =
+                    batcher.predict_batch(&states, &requests[items[0]].questions, &grouped)?;
+                if batch.len() != items.len() {
+                    return Err(LayaError::Onnx(format!(
+                        "internal error: predict_batch returned {} results for {} states",
+                        batch.len(),
+                        items.len()
+                    )));
+                }
+                for (&index, result) in items.iter().zip(batch) {
+                    results[index] = Some(result.with_routing(decisions[index].clone()));
+                }
+            }
+        }
+
+        let mut results = results
+            .into_iter()
+            .map(|result| {
+                result.ok_or_else(|| {
+                    LayaError::Onnx(
+                        "internal error: batch execution did not produce every result".to_string(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        apply_confidence_gate(&mut results, min_confidence);
+        Ok(results)
     }
 
     /// Route once, on the original state, then scan the whole state on the chosen checkpoint with
@@ -823,6 +1228,9 @@ impl LayaRouter {
     ///
     /// Returns [`LayaError::NotSupported`] when the chosen predictor (for example one registered
     /// with [`Self::attach`]) has no scan capability, rather than truncating the state.
+    ///
+    /// The scan is handed `lang`, else the language the routing detection found; `options.lang` is
+    /// not read here.
     pub fn predict_long(
         &self,
         state: impl Into<Value>,
@@ -849,9 +1257,16 @@ impl LayaRouter {
         lang_guess: Option<&LangGuess>,
     ) -> Result<LayaResult> {
         let state = state.into();
+        // Python's `Router.predict` refuses `None` before it routes or loads anything.
+        refuse_null_states(std::slice::from_ref(&state))?;
         let decision =
             self.route_with_lang_guess(&state, Some(questions), model, task, lang, lang_guess)?;
         let engine = self.load_checkpoint(decision.model)?;
+        // Python hands the scan the explicit language, else the one detected.
+        let options = LongOptions {
+            lang: effective_lang(lang, &decision),
+            ..options.clone()
+        };
         let scanner = engine.as_long_predictor().ok_or_else(|| {
             LayaError::NotSupported(format!(
                 "the predictor for '{}' has no predict_long, so a state longer than its window \
@@ -859,7 +1274,7 @@ impl LayaRouter {
                 decision.model.subdir()
             ))
         })?;
-        let result = scanner.predict_long(state, questions, options)?;
+        let result = scanner.predict_long(state, questions, &options)?;
         Ok(result.with_routing(decision))
     }
 }
@@ -871,8 +1286,62 @@ impl LayaPredictor for LayaRouter {
         LayaRouter::predict(self, state, questions, None, None, None)
     }
 
+    /// [`LayaRouter::predict_with_options`] with `options.lang` as the explicit language.
+    fn predict_with_options(
+        &self,
+        state: Value,
+        questions: &QuestionSet,
+        options: &PredictOptions,
+    ) -> Result<LayaResult> {
+        LayaRouter::predict_with_options(
+            self,
+            state,
+            questions,
+            None,
+            None,
+            options.lang.as_deref(),
+            None,
+            options,
+        )
+    }
+
     fn as_long_predictor(&self) -> Option<&dyn LayaLongPredictor> {
         Some(self)
+    }
+
+    fn as_batch_predictor(&self) -> Option<&dyn LayaBatchPredictor> {
+        Some(self)
+    }
+}
+
+impl LayaBatchPredictor for LayaRouter {
+    /// [`LayaRouter::predict_batch`] with every override left at its default: each state is
+    /// routed on its own, as [`LayaRouter::predict`] routes one.
+    fn predict_batch(
+        &self,
+        states: &[Value],
+        questions: &QuestionSet,
+        options: &BatchOptions,
+    ) -> Result<Vec<LayaResult>> {
+        let questions = Arc::new(questions.clone());
+        let requests: Vec<BatchRequest> = states
+            .iter()
+            .map(|state| {
+                let mut request = BatchRequest::new(state.clone(), Arc::clone(&questions));
+                request.lang = options.lang.clone();
+                request.max_len = options.max_len;
+                request.head_max_len = options.head_max_len;
+                request
+            })
+            .collect();
+        // The language and budgets became each request's own above.
+        let options = BatchOptions {
+            lang: None,
+            max_len: None,
+            head_max_len: None,
+            ..options.clone()
+        };
+        LayaRouter::predict_batch(self, &requests, &options)
     }
 }
 
@@ -884,8 +1353,28 @@ impl LayaLongPredictor for LayaRouter {
         questions: &QuestionSet,
         options: &LongOptions,
     ) -> Result<LayaResult> {
-        LayaRouter::predict_long(self, state, questions, options, None, None, None)
+        LayaRouter::predict_long(
+            self,
+            state,
+            questions,
+            options,
+            None,
+            None,
+            options.lang.as_deref(),
+        )
     }
+}
+
+/// The language a call hands the predictor: the explicit `lang`, else the language the routing
+/// detection found (`router.py`'s `effective_lang`). An empty detected language counts as none.
+fn effective_lang(lang: Option<&str>, decision: &RouteDecision) -> Option<String> {
+    lang.map(str::to_string).or_else(|| {
+        decision
+            .detection
+            .as_ref()
+            .and_then(|detection| detection.language.clone())
+            .filter(|language| !language.is_empty())
+    })
 }
 
 /// Python `repr()` for a string: single-quoted unless the string itself contains a `'` and no

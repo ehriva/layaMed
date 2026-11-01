@@ -7,10 +7,43 @@ All notable changes to the `laya-onnx` crate are documented here. The format fol
 ## [0.1.0] - unreleased
 
 First release: a port of the Laya Python SDK, checked against goldens and routing probes
-regenerated from laya (Python) 0.4.11 for the supported paths (see the known gaps below).
+regenerated from laya (Python) 0.4.14 for the supported paths (see the known gaps below).
 
 ### Added
 
+- Per-language temperatures and per-call overrides, ported from `laya/common.py`
+  `resolve_lang_temperatures` and `ONNXAgent`: `LayaOptions::lang_temperatures` (a table of
+  `LangTemperature` entries, resolved with Python's key normalisation `lang.split('-')[0].lower()`,
+  last-duplicate-wins, clamp and one warning per language through the `log` facade; a temperature
+  list that is not three long is `LayaError::InvalidConfig` with Python's `ValueError` text), the
+  public `resolve_lang_temperatures`, and the router passing the table to every engine it builds.
+  `PredictOptions::lang`, `BatchOptions::lang` and `LongOptions::lang` select an entry per call
+  (it replaces both checkpoint maps, with no fallback to the checkpoint's bucket); the router uses
+  its explicit `lang` argument, else the detected language, and `predict_batch` adds a request's
+  `lang` to the grouping key, raw, only for an engine with a table. `PredictOptions`,
+  `BatchOptions` and `BatchRequest` also take `max_len` and `head_max_len` (`i64`: Python does not
+  validate them, so `0` and negative values follow its arithmetic, and a question that loses an
+  option marker is `LayaError::NoMarkers` naming the value as written); the router splits a batch
+  on them. `predict_long` takes neither, as in Python. `LayaRouter::predict_batch` refuses a batch-wide
+  `BatchOptions::{lang, max_len, head_max_len}` with Python's `TypeError` text, as the request is
+  where they belong. API notes: **breaking:** the `max_len` and `head_max_len` fields of
+  `LayaError::NoMarkers` change from `usize` to `i64`, so code that reads or builds them must adapt;
+  `LayaOptions` has a new public field, and `LayaPredictor` gained the provided methods `predict_with_options` and `has_lang_temperatures`.
+- The abstention gate, ported from `laya/confidence.py`: `PredictOptions::min_confidence` with
+  `LayaEngine::predict_with_options` and `LayaRouter::predict_with_options`, and
+  `BatchOptions::min_confidence` for `predict_batch` on the engine and the router (one threshold
+  for the whole batch, applied to every result and no part of the router's grouping).
+  `MinConfidence` is a scalar or a per-bucket map, built with `MinConfidence::scalar` and
+  `MinConfidence::map`, which refuse what `check_min_confidence` refuses with Python's `ValueError`
+  text (`LayaError::InvalidMinConfidence`); the router validates before it routes or loads, and the
+  engine before it looks at the states. With a threshold set, `Answer::{low_confidence, abstention,
+  abstention_threshold}` report the gate (`GATE_STATES`: passed, abstained, unevaluated); without
+  one they report nothing. `Answer::jev_confidence` is Python's `jev_confidence` and
+  `bucket_keys()` its `bucket_keys`. `predict_long` takes no threshold, as in Python. Checked
+  against `routing/confidence_probe.json`, which Python's own `confidence.py` writes. Two API
+  notes: `BatchOptions` no longer derives `Eq` (it now holds floats), and `LayaError` is not
+  `#[non_exhaustive]`, so an exhaustive `match` on it outside the crate needs an arm for
+  `InvalidMinConfidence`.
 - `LangGuess` and `LayaRouter::{route_with_lang_guess, predict_with_lang_guess,
   predict_long_with_lang_guess, with_lang_guess}`: Python's `lang_guess` hint (a language code or a
   callback taking the state), per call or installed on the router, checked after an explicit `lang`
@@ -25,11 +58,30 @@ regenerated from laya (Python) 0.4.11 for the supported paths (see the known gap
 - `LayaEngine::predict_long` and `LayaRouter::predict_long` (`aggregate="auto"`): scan a state
   longer than one sequence in overlapping token windows and keep the most confident window per
   question, with `Answer::window()` attribution, `LayaResult::scan_usage()` and summed
-  `state_usage()`. Matches Python's `ONNXAgent.predict_long` and the .NET SDK; hooks, per-language
-  temperatures and the confidence gate are not part of it. New `LongOptions`, `LayaLongPredictor`,
+  `state_usage()`. Matches Python's `ONNXAgent.predict_long` and the .NET SDK; hooks are not part
+  of it, and, as in Python, it takes no `min_confidence`. New `LongOptions`, `LayaLongPredictor`,
   `LayaError::{UnsupportedAggregate, InvalidWindow, NotSupported}` and a default
   `LayaTokenizer::decode`. `LayaError` is not `#[non_exhaustive]`, so an exhaustive `match` on it
   outside the crate needs arms for the three new variants.
+- `LayaEngine::predict_batch` (and `predict_batch_serialize`) and `LayaRouter::{predict_batch,
+  route_batch}`: Python's `ONNXAgent.predict_batch` and `Router.predict_batch` / `route_batch`. One
+  result per state in input order, `batch_size` states per forward pass (`None`, `0` and, in
+  Python, negative values send them all in one), and `sort_by_length` windows of eight batches
+  that apply only with a `batch_size` above one and below the state count. The router groups
+  requests by checkpoint and then by question schema, restores request order, attaches each
+  request's `routing`, and honours each request's `model`, `task`, `lang` and `lang_guess`;
+  `route_batch` loads nothing. New `BatchOptions`, `BatchRequest` (both `#[non_exhaustive]`, with
+  chained setters, so hooks can be added later), `LayaBatchPredictor` with the provided method `LayaPredictor::as_batch_predictor` (a
+  default of `None`, so existing implementors keep compiling) and `LayaError::InvalidState`, raised
+  for a `null` state as Python raises `TypeError`. Hooks and the router's `diagnostics` report are
+  not part of it. `LayaError`
+  is not `#[non_exhaustive]`, so an exhaustive `match` on it outside the crate needs an arm for the
+  new variant.
+- Behaviour change: `LayaEngine::predict` and `predict_serialize` now act as Python's `system_one`,
+  a one-state `predict_batch`. A `null` state returns `LayaError::InvalidState` (Python's
+  `TypeError`) instead of being scored as the text `"null"`, and an empty `QuestionSet` returns an
+  empty result with zero usage instead of `LayaError::InvalidQuestion`. `predict_long` refuses a
+  `null` state the same way, before it checks the aggregate mode, as Python does.
 - `predict` now runs through a shared multi-state core that scores several states in one forward
   pass; its results are unchanged.
 - Advisory parity CI on every push and PR: regenerate fixtures from the current Python checkout,
@@ -61,13 +113,11 @@ regenerated from laya (Python) 0.4.11 for the supported paths (see the known gap
   checkpoint whose temperatures were clamped emits Python's warning, each with Python's text
   through the `log` facade (`warn`, target `laya`); `log` is a new dependency.
 - A string in a checkpoint's `temperature` or `temperature_by_options` is read as Python's `float(str)` reads it (surrounding whitespace, any-script digits, single underscores, `inf`/`nan`) before clamping, instead of being replaced by 1.0.
-- A checkpoint whose temperature is a JSON integer too large for a float fails to load with `LayaError::InvalidConfig("OverflowError: int too large to convert to float")`, as Python's `clamp_temperature` raises; a float literal such as `1e400` is read as infinity and replaced by 1.0, as in Python.
+- A checkpoint whose temperature is a JSON integer too large for a float loads with the neutral 1.0 for it, and the load warning names the integer digit for digit, as Python 0.4.20's `clamp_temperature` and `temperature_rejected` answer it; a float literal such as `1e400` is read as infinity and replaced by 1.0, as in Python.
 - The bare JSON constants `NaN`, `Infinity` and `-Infinity`, which Python's `json.loads` reads as floats, are accepted in `rl_agent_config.json` and `tokenizer_config.json` (a temperature of `NaN` clamps to 1.0 with Python's warning).
 - Checkpoint JSON (`rl_agent_config.json`, `tokenizer_config.json`) is read by a reader that follows Python's `json.loads`: integers keep their literal (the temperature warning prints `0` for `-0` and big integers as Python does), `NaN`/`Infinity`/`-Infinity` are numbers only in value position, and nothing is encoded in-band. `serde_json` now uses `float_roundtrip` so JSON floats equal Python's `float()` bit for bit. An identical warning is emitted once per process, as Python's default filter does.
 - Config loading matches Python's `ONNXAgent.__init__` and `json.loads` further: `option_layout` other than `sequential` is refused with Python's message; an integer literal of more than 4300 digits is refused with Python's `ValueError` text; `max_len`/`head_max_len` read `true`/`false` as 1/0 and `-0` as 0, and a float, string, `null`, list or object is an error (Python fails at the first prediction; this port refuses the config when it is loaded, with the same `TypeError` text, `head_max_len` first). A negative value is refused too, since Python slices from the end for it. The JSON reader no longer re-validates the rest of the document for every character of a string.
-- Config JSON errors read like Python's `JSONDecodeError` (`Expecting ',' delimiter: line 1 column 7 (char 6)`, checked on 1,500 generated malformed texts), a file is read in text mode (`
-` becomes `
-` first), and `temperature` / `temperature_by_options` of the wrong JSON type fail while loading with Python's `TypeError` / `AttributeError` text (a string iterates its characters, a dict its keys).
+- Config JSON errors read like Python's `JSONDecodeError` (`Expecting ',' delimiter: line 1 column 7 (char 6)`, checked on 1,500 generated malformed texts), a file is read in text mode (`\r\n` becomes `\n` first), and `temperature` / `temperature_by_options` of the wrong JSON type fail while loading with Python's `TypeError` / `AttributeError` text (a string iterates its characters, a dict its keys).
 - A `temperature` list shorter than three loads, and `predict` fails with `IndexError: list index out of range` for a question whose type index it lacks (choice 0, score 1, noul 2), as Python does when it evaluates `self.temperature[qtype]` (even when a `temperature_by_options` bucket matches); entries past the third are ignored.
 - `LangGuess` callbacks receive the state as Python passes it (`GuessInput::Value`, or the original
   bytes as `GuessInput::Bytes` from `LayaRouter::route_bytes`).
@@ -96,11 +146,14 @@ regenerated from laya (Python) 0.4.11 for the supported paths (see the known gap
   confirmed by the `Sent:`/`Enviado:`/`Date:` line after them), the wrapped-attribution tail,
   Portuguese/Spanish/French sign-offs, the English sign-off name rule, device and mail-app footers,
   and Portuguese/Spanish/French disclaimers. A bare `From:` line that opens a sentence is kept.
+- Language detection follows Python 0.4.14: the English stop list counts question words, auxiliaries,
+  pronouns and connectives (116 words, up from 34), so a short request such as "Why hasn't my card
+  been delivered?" is read as English instead of staying undecided and taking the multilingual
+  checkpoint. The opt-in `explain` diagnostics Python added in 0.4.14 are not ported.
 - Dependency: `unicode-normalization` (canonical combining classes for `unicodedata.combining`).
 
 ### Known gaps
 
-- Language detection, routing and email cleaning follow the regenerated Python 0.4.11 probes; a
+- Language detection, routing and email cleaning follow the regenerated Python 0.4.14 probes; a
   later Python change needs the probes regenerated.
-- Not yet ported: abstention (`min_confidence`, including per-bucket thresholds),
-  histogram-binning calibration and `lang_temperatures`.
+- Not yet ported: histogram-binning calibration and per-call hooks.

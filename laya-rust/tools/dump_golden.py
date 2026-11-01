@@ -8,7 +8,8 @@ unmodified, so every number written here is what Python actually answers -- not 
 paraphrase of it. It also means no 1.3 GB safetensors checkpoint is needed: the exported
 ONNX graph supplies the forward pass.
 
-Long cases run the genuine `ONNXAgent.predict_long`, sharing that same verified session.
+Long cases run the genuine `ONNXAgent.predict_long`, sharing that same verified session. Batch cases
+run the genuine `ONNXAgent.predict_batch` the same way.
 
 Before writing anything the script checks option logits and unrounded action probabilities
 against the PyTorch reference vectors bundled in `fixtures.npz`. Raw action logits are
@@ -39,7 +40,23 @@ REPO = os.path.dirname(os.path.dirname(TOOLS))
 sys.path.insert(0, REPO)
 sys.path.insert(0, TOOLS)
 
-from golden_cases import CASES, ERROR_CASES, LONG_CASES, LONG_ERROR_CASES, SHORTLIST_E2E_CASES  # noqa: E402
+from golden_cases import (  # noqa: E402
+    BATCH_CASES,
+    BATCH_ERROR_CASES,
+    BUDGET_CASES,
+    BUDGET_ERROR_CASES,
+    CASES,
+    ERROR_CASES,
+    LANG_BATCH_CASES,
+    LANG_BATCH_ERROR_CASES,
+    LANG_CASES,
+    LANG_LONG_CASES,
+    LONG_CASES,
+    LONG_ERROR_CASES,
+    MIN_CONFIDENCE_CASES,
+    MIN_CONFIDENCE_ERROR_CASES,
+    SHORTLIST_E2E_CASES,
+)
 from repr_cases import build_repr_probe  # noqa: E402
 
 import hashing_embedder  # noqa: E402
@@ -51,6 +68,7 @@ from laya.common import (  # noqa: E402
     clamp_temperature,
     render_criterion,
     render_options,
+    resolve_lang_temperatures,
     serialize_state,
 )
 
@@ -236,7 +254,19 @@ def build_agent(onnx_dir: str):
     agent.temperature_by_options = {
         k: clamp_temperature(v) for k, v in cfg.get("temperature_by_options", {}).items()
     }
+    agent.lang_temperatures = {}
     return agent
+
+
+def with_lang_temperatures(target, case: dict) -> None:
+    """Install the case's `lang_temperatures` table exactly as the `lang_temperatures=` constructor option does.
+
+    `resolve_lang_temperatures` is the helper both `Agent.__init__` and `ONNXAgent.__init__` call, with the
+    checkpoint's raw `temperature` list as the base that an entry without its own inherits. A case without a
+    table gets an empty one, which is what an agent built without the option holds.
+    """
+    target.lang_temperatures = resolve_lang_temperatures(
+        case.get("lang_temperatures"), target.cfg.get("temperature", [1.0, 1.0, 1.0]))
 
 
 def self_check(agent: Agent, onnx_dir: str) -> dict:
@@ -284,14 +314,17 @@ def self_check(agent: Agent, onnx_dir: str) -> dict:
     return report
 
 
-def describe_questions(agent: Agent, state, questions: dict) -> list:
+def describe_questions(agent: Agent, state, questions: dict, options: dict = None) -> list:
     """Per-question tokenisation, recomputed exactly as system_one does it.
 
     Recorded separately from the answers so a port's SequenceBuilder can be checked with no
-    model present -- tokenisation is where a port silently drifts.
+    model present -- tokenisation is where a port silently drifts. A per-call `max_len` /
+    `head_max_len` in `options` replaces the checkpoint's, as it does in `_encode_state`.
     """
-    max_len = agent.cfg.get("max_len", 512)
-    head_max_len = agent.cfg.get("head_max_len", 192)
+    options = options or {}
+    max_len = agent.cfg.get("max_len", 512) if options.get("max_len") is None else options["max_len"]
+    head_max_len = (agent.cfg.get("head_max_len", 192) if options.get("head_max_len") is None
+                    else options["head_max_len"])
     mask_tok = agent.tok.mask_token
     out = []
     for qid, qdef in questions.items():
@@ -314,10 +347,12 @@ def describe_questions(agent: Agent, state, questions: dict) -> list:
 
 def record_case(agent: Agent, case: dict) -> dict:
     state, questions = case["state"], case["questions"]
-    per_question = describe_questions(agent, state, questions)
-    result = agent.system_one(state, questions)
+    options = case.get("options")
+    per_question = describe_questions(agent, state, questions, options)
+    with_lang_temperatures(agent, case)
+    result = agent.system_one(state, questions, **(options or {}))
     last = agent.model.last
-    return {
+    rec = {
         "name": case["name"],
         "state": state,
         "serialized_state": serialize_state(state),
@@ -335,6 +370,12 @@ def record_case(agent: Agent, case: dict) -> dict:
         "act_logits": last["act_logits"].tolist(),
         "result": result,
     }
+    if options:
+        rec["options"] = options
+    # Only for a case that carries a table, so every earlier golden stays byte-identical.
+    if case.get("lang_temperatures") is not None:
+        rec["lang_temperatures"] = case["lang_temperatures"]
+    return rec
 
 
 def record_shortlist_case(agent: Agent, case: dict) -> dict:
@@ -388,16 +429,23 @@ def record_shortlist_case(agent: Agent, case: dict) -> dict:
 
 
 def record_error_case(agent: Agent, case: dict) -> dict:
+    options = case.get("options")
+    with_lang_temperatures(agent, case)
     try:
-        agent.system_one(case["state"], case["questions"])
+        agent.system_one(case["state"], case["questions"], **(options or {}))
     except ValueError as e:
-        return {
+        rec = {
             "name": case["name"],
             "state": case["state"],
             "questions": case["questions"],
             "error_type": "ValueError",
             "error_message": str(e),
         }
+        if options:
+            rec["options"] = options
+        if case.get("lang_temperatures") is not None:
+            rec["lang_temperatures"] = case["lang_temperatures"]
+        return rec
     raise SystemExit("case %r was expected to raise ValueError but did not" % case["name"])
 
 
@@ -410,10 +458,12 @@ def record_long_case(agent: Agent, case: dict, expects_error: bool = False) -> d
     onnx.cfg, onnx.tok, onnx.session = agent.cfg, agent.tok, agent.model.sess
     onnx.temperature = agent.temperature
     onnx.temperature_by_options = agent.temperature_by_options
-    onnx.lang_temperatures = {}
+    with_lang_temperatures(onnx, case)
     options = case.get("options", {})
     state, questions = case.get("state"), case["questions"]
     rec = {"name": case["name"], "state": state, "questions": questions, "options": options}
+    if case.get("lang_temperatures") is not None:
+        rec["lang_temperatures"] = case["lang_temperatures"]
     if expects_error:
         try:
             onnx.predict_long(state, questions, **options)
@@ -453,6 +503,65 @@ def record_long_case(agent: Agent, case: dict, expects_error: bool = False) -> d
                 break
     rec["windows"] = windows
     rec["result"] = onnx.predict_long(state, questions, **options)
+    return rec
+
+
+class RecordingSession:
+    """Forwards to the verified ONNX session and notes each run's input shape, so a batch case
+    can record how `predict_batch` actually chunked and ordered its states."""
+
+    def __init__(self, session: ort.InferenceSession):
+        self.session = session
+        self.runs = []
+
+    def run(self, names, feeds):
+        self.runs.append([int(d) for d in feeds["input_ids"].shape])
+        return self.session.run(names, feeds)
+
+
+def record_batch_case(agent: Agent, case: dict, expects_error: bool = False) -> dict:
+    """Run the genuine ONNXAgent.predict_batch, sharing the already verified session/tokenizer."""
+    from laya.onnx_agent import ONNXAgent
+
+    session = RecordingSession(agent.model.sess)
+    onnx = ONNXAgent.__new__(ONNXAgent)
+    onnx.cfg, onnx.tok, onnx.session = agent.cfg, agent.tok, session
+    onnx.temperature = agent.temperature
+    onnx.temperature_by_options = agent.temperature_by_options
+    with_lang_temperatures(onnx, case)
+    onnx.hooks = []
+    onnx.model_id = "golden"
+    states, questions = case["states"], case["questions"]
+    options = case.get("options", {})
+    rec = {"name": case["name"], "states": states, "questions": questions, "options": options}
+    if case.get("lang_temperatures") is not None:
+        rec["lang_temperatures"] = case["lang_temperatures"]
+    if expects_error:
+        expected = {"TypeError": TypeError, "ValueError": ValueError}[case["error_type"]]
+        try:
+            onnx.predict_batch(states, questions, **options)
+        except expected as e:
+            rec.update(error_type=type(e).__name__, error_message=str(e))
+            return rec
+        raise SystemExit("batch case %r was expected to raise %s but did not" % (case["name"], case["error_type"]))
+
+    # Each state's widest question row: the key sort_by_length orders by. Recorded separately from
+    # the results so the C# chunk planning can be checked against Python's own token counts.
+    widths = []
+    if questions and states:
+        ids = list(questions.keys())
+        internal = {qid: onnx._to_internal(questions[qid]) for qid in ids}
+        # The call's budgets, else the checkpoint's: the key sort_by_length orders by is the encoded row's width.
+        max_len = onnx.cfg.get("max_len", 512) if options.get("max_len") is None else options["max_len"]
+        head_max_len = (onnx.cfg.get("head_max_len", 192) if options.get("head_max_len") is None
+                        else options["head_max_len"])
+        for state in states:
+            items = onnx._encode_state(state, ids, internal, max_len, head_max_len)
+            widths.append(max(len(item["ids"]) for item in items))
+    rec["state_widths"] = widths
+    session.runs.clear()
+    rec["results"] = onnx.predict_batch(states, questions, **options)
+    rec["runs"] = list(session.runs)
     return rec
 
 
@@ -557,6 +666,45 @@ def run_checkpoint(onnx_dir: str, out_dir: str) -> int:
                 "name": case["name"], "file": "case_%s.json" % case["name"],
                 "expects_error": expects_error, "kind": "long",
             })
+
+    for cases, expects_error in ((BATCH_CASES, False), (BATCH_ERROR_CASES, True)):
+        for case in cases:
+            rec = record_batch_case(agent, case, expects_error)
+            dump(rec, os.path.join(out_dir, "case_%s.json" % case["name"]))
+            index.append({
+                "name": case["name"], "file": "case_%s.json" % case["name"],
+                "expects_error": expects_error, "kind": "batch",
+            })
+
+    # Appended after the batch cases, so index.json's diff stays a pure append. No `kind`: these are
+    # standard system_one cases whose recorded `options` the parity tests forward.
+    for cases, expects_error in ((MIN_CONFIDENCE_CASES, False), (MIN_CONFIDENCE_ERROR_CASES, True)):
+        for case in cases:
+            rec = (record_error_case if expects_error else record_case)(agent, case)
+            dump(rec, os.path.join(out_dir, "case_%s.json" % case["name"]))
+            index.append({"name": case["name"], "file": "case_%s.json" % case["name"],
+                          "expects_error": expects_error})
+
+    # Per-language temperatures and per-call lang / max_len / head_max_len, appended in the same order
+    # for the same reason: standard system_one cases first (the recorded `options` and `lang_temperatures`
+    # are forwarded by the parity tests), then the batch and long cases with their `kind`.
+    for cases, expects_error in ((LANG_CASES, False), (BUDGET_CASES, False), (BUDGET_ERROR_CASES, True)):
+        for case in cases:
+            rec = (record_error_case if expects_error else record_case)(agent, case)
+            dump(rec, os.path.join(out_dir, "case_%s.json" % case["name"]))
+            index.append({"name": case["name"], "file": "case_%s.json" % case["name"],
+                          "expects_error": expects_error})
+    for cases, expects_error in ((LANG_BATCH_CASES, False), (LANG_BATCH_ERROR_CASES, True)):
+        for case in cases:
+            rec = record_batch_case(agent, case, expects_error)
+            dump(rec, os.path.join(out_dir, "case_%s.json" % case["name"]))
+            index.append({"name": case["name"], "file": "case_%s.json" % case["name"],
+                          "expects_error": expects_error, "kind": "batch"})
+    for case in LANG_LONG_CASES:
+        rec = record_long_case(agent, case)
+        dump(rec, os.path.join(out_dir, "case_%s.json" % case["name"]))
+        index.append({"name": case["name"], "file": "case_%s.json" % case["name"],
+                      "expects_error": False, "kind": "long"})
 
     dump(index, os.path.join(out_dir, "index.json"))
     dump(build_repr_probe(), os.path.join(out_dir, "repr_probe.json"))

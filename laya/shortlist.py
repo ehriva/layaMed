@@ -248,10 +248,16 @@ def embed_fn_from_agent(
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError("batch_size must be a positive integer, got %r" % (batch_size,))
 
-    import torch
+    # The two attributes the docstring names are the only ones here that were never checked: an
+    # agent that is not a loaded checkpoint answered with the interpreter's own AttributeError, the
+    # one leak in this function, while `_call_predict` below refuses the same mistake for the agent
+    # it does use. Checked before `import torch` so a wrong argument does not pay for the import.
+    tok = getattr(agent, "tok", None)
+    encoder = getattr(getattr(agent, "model", None), "encoder", None)
+    if tok is None or encoder is None:
+        raise TypeError("agent must provide tok and model.encoder")
 
-    tok = agent.tok
-    encoder = agent.model.encoder
+    import torch
 
     def embed_fn(texts: Sequence[str]) -> np.ndarray:
         rows = ["" if text is None else str(text) for text in texts]

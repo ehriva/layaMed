@@ -14,11 +14,18 @@ use serde_json::Value;
 
 const CHECKPOINTS: [&str; 3] = ["multilingual", "english", "typed-decisions"];
 
+/// The checkpoints this run covers (all, or those `LAYA_TEST_CHECKPOINTS` selects).
+fn checkpoints() -> impl Iterator<Item = &'static str> {
+    CHECKPOINTS
+        .into_iter()
+        .filter(|c| common::test_artifacts::is_selected_subdir(c))
+}
+
 #[test]
 fn golden_questions_render_exactly_as_recorded() {
     let mut checked_any = false;
 
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in checkpoints() {
         let data = CheckpointGoldenData::for_checkpoint(checkpoint);
         if !data.available() {
             eprintln!("skip: no golden data for '{checkpoint}'");

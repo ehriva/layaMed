@@ -115,6 +115,9 @@ fn refuses_an_empty_batch() {
 
 #[test]
 fn reproduces_the_recorded_batch_tensors() {
+    if !common::test_artifacts::is_selected_subdir("multilingual") {
+        return;
+    }
     let data = CheckpointGoldenData::for_checkpoint("multilingual");
     if !data.available() {
         eprintln!("skip: no golden data for 'multilingual'");

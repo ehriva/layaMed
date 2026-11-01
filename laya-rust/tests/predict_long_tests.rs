@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::engines::{self, CHECKPOINTS};
+use common::engines;
 use common::golden_data::{self, CheckpointGoldenData};
 use common::result_compare::assert_answers_match;
 use common::stub_tokenizer::StubTokenizer;
@@ -105,6 +105,7 @@ fn long_options(options: &Value) -> LongOptions {
         .get("aggregate")
         .and_then(Value::as_str)
         .map(str::to_string);
+    built.lang = golden_data::recorded_lang(options);
     built
 }
 
@@ -335,8 +336,15 @@ fn check_long_case(engine: &LayaEngine, where_case: &str, root: &Value) {
     }
 
     if windows == 1 && !questions.is_empty() {
-        // The one-pass shortcut is the ordinary predict path, so it must agree with it exactly.
-        let plain = engine.predict(state, &questions).expect("plain predict");
+        // The one-pass shortcut is the ordinary predict path, so it must agree with it exactly,
+        // with the same language (Python's predict_long passes lang to system_one).
+        let mut one_pass = laya::predict_options::PredictOptions::new();
+        if let Some(lang) = root["options"]["lang"].as_str() {
+            one_pass = one_pass.lang(lang);
+        }
+        let plain = engine
+            .predict_with_options(state, &questions, &one_pass)
+            .expect("plain predict");
         assert_eq!(plain.usage(), got.usage(), "{where_case}: one-pass usage");
         for id in questions.ids() {
             assert_eq!(
@@ -364,7 +372,7 @@ fn run_success_cases(
     unavailable: &str,
 ) {
     let mut checked_any = false;
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in engines::checkpoints() {
         let Some(engine) = load(checkpoint) else {
             continue;
         };
@@ -409,7 +417,7 @@ fn reproduces_the_recorded_long_predictions_for_the_split_layout() {
 #[test]
 fn rejects_the_same_long_requests_python_rejects() {
     let mut checked_any = false;
-    for checkpoint in CHECKPOINTS {
+    for checkpoint in engines::checkpoints() {
         let Some(engine) = engines::load(checkpoint) else {
             continue;
         };
@@ -494,6 +502,9 @@ impl Drop for ScratchDir {
 /// fine. The messages were produced by Python's `common.build_sequence` and `_decode_answers`.
 #[test]
 fn config_lengths_and_temperatures_are_refused_or_deferred_as_agreed() {
+    if !common::test_artifacts::is_selected(LayaCheckpoint::English) {
+        return;
+    }
     let Some(source) = common::test_artifacts::locate(LayaCheckpoint::English).filter(|dir| {
         dir.join("model.onnx").is_file() && dir.join("tokenizer").join("tokenizer.json").is_file()
     }) else {

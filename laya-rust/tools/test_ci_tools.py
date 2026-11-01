@@ -56,6 +56,17 @@ class SkipGuardTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(1, self.check(text))
 
+    def test_shard_floor_is_per_shard_and_selected_checkpoint_skips_fail(self):
+        # Each parity shard passes its own --min-passed. A shard that loaded no checkpoint scores
+        # only the model-free tests, which a whole-lane floor of 200 would have let through if the
+        # other shards had made up the count; its own floor does not.
+        model_free_only = summary(passed=60)
+        self.assertEqual(0, self.check(model_free_only, minimum=60))
+        self.assertEqual(1, self.check(model_free_only, minimum=61))
+        self.assertEqual(1, self.check(
+            "skip: no ONNX artifacts for 'english'; set LAYA_ONNX_ROOT\n" + summary(passed=500),
+            minimum=61))
+
     def test_missing_output_fails(self):
         with patch("sys.argv", ["guard", "missing.log"]), patch.object(
             guard.Path, "read_text", side_effect=FileNotFoundError("missing")

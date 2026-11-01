@@ -436,7 +436,19 @@ public sealed class PythonJsonReaderTests
     }
 }
 
+/// <summary>
+/// Classes that observe or reset the process-wide warning state (<see cref="WarnOnce"/>, <c>Trace.Listeners</c>) share
+/// this collection, and it never runs in parallel: xunit runs it alone, so no other class warns or resets meanwhile.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class WarningStateCollection
+{
+    /// <summary>The collection name.</summary>
+    public const string Name = "warning-state";
+}
+
 /// <summary>Python's default warnings filter: one trace per distinct (site, text) per process.</summary>
+[Collection(WarningStateCollection.Name)]
 public sealed class WarnOnceTests
 {
     private sealed class Capture : TraceListener

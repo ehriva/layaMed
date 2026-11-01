@@ -8,7 +8,11 @@
 //! parses to an integer `Number`, `3.0` to a float `Number`), so a parsed `Value` can be handed
 //! straight to [`laya::questions::Question`] constructors.
 
+use indexmap::IndexMap;
+use laya::confidence::MinConfidence;
 use laya::error::Result as LayaResult;
+use laya::lang_temperatures::{LangTemperature, LangTemperatureTable, TemperatureValue};
+use laya::predict_options::PredictOptions;
 use laya::questions::{Question, QuestionSet};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -19,6 +23,107 @@ pub fn golden_base_dir() -> PathBuf {
     match std::env::var("LAYA_GOLDEN_DIR") {
         Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
         _ => Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden"),
+    }
+}
+
+/// The `min_confidence` a recorded case passed to Python (`options.min_confidence`), written as
+/// the variant itself and not through the validating constructors, so an invalid recorded value
+/// reaches the engine's own validation. `None` when the case recorded no threshold.
+pub fn recorded_min_confidence(options: &Value) -> Option<MinConfidence> {
+    match options.get("min_confidence")? {
+        Value::Object(map) => Some(MinConfidence::Map(
+            map.iter()
+                .map(|(key, value)| (key.clone(), value.as_f64().expect("a float threshold")))
+                .collect::<IndexMap<_, _>>(),
+        )),
+        value => Some(MinConfidence::Scalar(
+            value.as_f64().expect("a float threshold"),
+        )),
+    }
+}
+
+/// A recorded per-call token budget. Python does no validation, so the recording holds whatever
+/// the case passed: an int (`0` and negatives included), a bool (the int 1 or 0), or nothing.
+pub fn recorded_budget(options: &Value, key: &str) -> Option<i64> {
+    match options.get(key)? {
+        Value::Bool(flag) => Some(i64::from(*flag)),
+        Value::Null => None,
+        value => Some(value.as_i64().expect("an integer token budget")),
+    }
+}
+
+/// A recorded per-call `lang`, as written (`""` is a language that selects nothing).
+pub fn recorded_lang(options: &Value) -> Option<String> {
+    options.get("lang")?.as_str().map(str::to_string)
+}
+
+/// The per-call options of a recorded `system_one` case: its `options`, when it recorded any.
+pub fn recorded_predict_options(case: &Value) -> PredictOptions {
+    let mut options = PredictOptions::new();
+    if let Some(recorded) = case.get("options") {
+        options.min_confidence = recorded_min_confidence(recorded);
+        options.lang = recorded_lang(recorded);
+        options.max_len = recorded_budget(recorded, "max_len");
+        options.head_max_len = recorded_budget(recorded, "head_max_len");
+    }
+    options
+}
+
+/// A recorded temperature number: a float, or the strings `"nan"`, `"inf"` and `"-inf"` the dumper
+/// writes for the values JSON has no literal for.
+fn recorded_temperature(value: &Value) -> TemperatureValue {
+    match value {
+        Value::Number(number) => TemperatureValue::Float(number.as_f64().expect("a float")),
+        Value::String(text) => TemperatureValue::Float(match text.as_str() {
+            "nan" => f64::NAN,
+            "inf" => f64::INFINITY,
+            "-inf" => f64::NEG_INFINITY,
+            other => panic!("unexpected recorded temperature {other:?}"),
+        }),
+        other => panic!("unexpected recorded temperature {other}"),
+    }
+}
+
+/// One recorded `lang_temperatures` entry: `null` (inherit) or an object with optional
+/// `temperature` (a list, or `null` to inherit) and `temperature_by_options` (an object, or `null`).
+pub fn recorded_lang_entry(entry: &Value) -> Option<LangTemperature> {
+    let entry = entry.as_object()?;
+    let mut built = LangTemperature::new();
+    if let Some(list) = entry.get("temperature").and_then(Value::as_array) {
+        built = built.temperature(list.iter().map(recorded_temperature).collect::<Vec<_>>());
+    }
+    if let Some(buckets) = entry
+        .get("temperature_by_options")
+        .and_then(Value::as_object)
+    {
+        built = built.temperature_by_options(
+            buckets
+                .iter()
+                .map(|(key, value)| (key.clone(), recorded_temperature(value)))
+                .collect::<Vec<_>>(),
+        );
+    }
+    Some(built)
+}
+
+/// A recorded `lang_temperatures` table, in the order it was written: an object (a case's table)
+/// or a list of `[key, entry]` pairs (the probe's). `null` is no table.
+pub fn recorded_lang_table(table: &Value) -> LangTemperatureTable {
+    match table {
+        Value::Object(entries) => entries
+            .iter()
+            .map(|(key, entry)| (key.clone(), recorded_lang_entry(entry)))
+            .collect(),
+        Value::Array(pairs) => pairs
+            .iter()
+            .map(|pair| {
+                (
+                    pair[0].as_str().expect("a string key").to_string(),
+                    recorded_lang_entry(&pair[1]),
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -146,6 +251,22 @@ impl CheckpointGoldenData {
             .collect()
     }
 
+    /// Cases recorded with `"kind": "batch"` that return results (`ONNXAgent.predict_batch`).
+    pub fn batch_cases(&self) -> Vec<GoldenCaseInfo> {
+        self.index()
+            .into_iter()
+            .filter(|c| c.kind.as_deref() == Some("batch") && !c.expects_error)
+            .collect()
+    }
+
+    /// Cases recorded with `"kind": "batch"` that raise a Python `TypeError`.
+    pub fn batch_error_cases(&self) -> Vec<GoldenCaseInfo> {
+        self.index()
+            .into_iter()
+            .filter(|c| c.kind.as_deref() == Some("batch") && c.expects_error)
+            .collect()
+    }
+
     /// Cases recorded with `"kind": "shortlist"` (`shortlist_many_options`): a hashing-embedder
     /// reduced choice question run through the ordinary predict pipeline, not a plain
     /// `Agent.predict` recording, so it is kept out of [`Self::success_cases`].
@@ -159,6 +280,21 @@ impl CheckpointGoldenData {
     /// Parse the file for one case.
     pub fn load_case(&self, info: &GoldenCaseInfo) -> Value {
         self.load(&info.file)
+    }
+
+    /// The `lang_temperatures` table the cases that carry one were recorded with. One table serves
+    /// every case, so an engine built with it answers each case, those without a `lang` included,
+    /// as Python's agent for that case did. Empty when the golden data has none (not regenerated).
+    pub fn lang_table(&self) -> LangTemperatureTable {
+        if !self.available() {
+            return Vec::new();
+        }
+        for info in self.index() {
+            if info.name == "lang_replace_de" {
+                return recorded_lang_table(&self.load_case(&info)["lang_temperatures"]);
+            }
+        }
+        Vec::new()
     }
 }
 
