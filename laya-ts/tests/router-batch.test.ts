@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Agent, Router, clearDefaultHooks, setDefaultHooks } from "../src/index.js";
-import type { BatchRequest } from "../src/index.js";
+import type { BatchRequest, PredictContext } from "../src/index.js";
 
 // TS mirror of tests/test_router_batch.py and the orchestration part of tests/test_batch.py.
 
@@ -498,6 +498,64 @@ describe("Router.routeBatch / predictBatch", () => {
     expect(calls[1][3]).toEqual({ batchSize: null, maxLen: 64 });
   });
 
+  it("seeds request budgets before hooks and groups by both final budgets", async () => {
+    const { router, calls } = makeRouter();
+    const seen: unknown[] = [];
+    const results = await router.predictBatch([
+      req("a", { model: "english", maxLen: 64, headMaxLen: 16 }),
+      req("b", { model: "english", maxLen: 128, headMaxLen: 16 }),
+      req("c", { model: "english", maxLen: 64, headMaxLen: 32 }),
+      req("d", { model: "english", maxLen: 64, headMaxLen: 16 }),
+    ], 2, {
+      onPredictStart(ctx) { seen.push([ctx.maxLen, ctx.headMaxLen]); },
+    });
+    expect(seen).toEqual([[64, 16], [128, 16], [64, 32], [64, 16]]);
+    expect(calls.map((c) => [c[1], c[3]])).toEqual([
+      [["a", "d"], { batchSize: 2, maxLen: 64, headMaxLen: 16 }],
+      [["b"], { batchSize: 2, maxLen: 128, headMaxLen: 16 }],
+      [["c"], { batchSize: 2, maxLen: 64, headMaxLen: 32 }],
+    ]);
+    expect(results.map((r) => r.answers.seen)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("lets hooks replace or clear explicit budgets before grouping", async () => {
+    const { router, calls } = makeRouter();
+    const seen: unknown[] = [];
+    await router.predictBatch([
+      req("replace", { model: "english", maxLen: 64, headMaxLen: 16 }),
+      req("clear", { model: "english", maxLen: 128, headMaxLen: 32 }),
+      req("defaults", { model: "english" }),
+    ], null, {
+      onPredictStart(ctx) {
+        seen.push([ctx.maxLen, ctx.headMaxLen]);
+        if (ctx.states[0] === "replace") {
+          ctx.maxLen = 96;
+          ctx.headMaxLen = 24;
+        } else if (ctx.states[0] === "clear") {
+          ctx.maxLen = ctx.headMaxLen = null;
+        }
+      },
+    });
+    expect(seen).toEqual([[64, 16], [128, 32], [null, null]]);
+    expect(calls.map((c) => [c[1], c[3]])).toEqual([
+      [["replace"], { batchSize: null, maxLen: 96, headMaxLen: 24 }],
+      [["clear", "defaults"], { batchSize: null }],
+    ]);
+  });
+
+  it("keeps absent and null budgets unset without dropping zero overrides", async () => {
+    const { router, calls } = makeRouter();
+    await router.predictBatch([
+      req("absent", { model: "english" }),
+      req("null", { model: "english", maxLen: null, headMaxLen: null }),
+      req("zero", { model: "english", maxLen: 0, headMaxLen: 0 }),
+    ]);
+    expect(calls.map((c) => [c[1], c[3]])).toEqual([
+      [["absent", "null"], { batchSize: null }],
+      [["zero"], { batchSize: null, maxLen: 0, headMaxLen: 0 }],
+    ]);
+  });
+
   it("raises when the agent returns the wrong number of results", async () => {
     const router = new Router({
       loader: (() => ({
@@ -508,6 +566,37 @@ describe("Router.routeBatch / predictBatch", () => {
     await expect(
       router.predictBatch([req("a", { model: "english" }), req("b", { model: "english" })]),
     ).rejects.toThrow(/returned 0 results for 2 states/);
+  });
+
+  it.each([false, true])("forwards fallback budgets with hook override=%s", async (override) => {
+    const calls: unknown[] = [];
+    const router = new Router({
+      loader: (() => ({
+        langTemperatures: { en: {} },
+        async systemOne(state: unknown, _questions: unknown, opts: unknown) {
+          calls.push([state, opts]);
+          return { model: "stub", answers: { seen: state }, usage: {} };
+        },
+      })) as never,
+    });
+    const results = await router.predictBatch([
+      req("budgeted", { model: "english", lang: "en", maxLen: 64, headMaxLen: 16 }),
+      req("defaults", { model: "english", lang: "en", maxLen: null, headMaxLen: null }),
+      req("zero", { model: "english", lang: "en", maxLen: 0, headMaxLen: 0 }),
+    ], 2, {
+      onPredictStart(ctx) {
+        if (override && ctx.states[0] === "budgeted") {
+          ctx.maxLen = 96;
+          ctx.headMaxLen = 24;
+        }
+      },
+    });
+    expect(calls).toEqual([
+      ["budgeted", { lang: "en", maxLen: override ? 96 : 64, headMaxLen: override ? 24 : 16 }],
+      ["defaults", { lang: "en" }],
+      ["zero", { lang: "en", maxLen: 0, headMaxLen: 0 }],
+    ]);
+    expect(results.map((r) => r.answers.seen)).toEqual(["budgeted", "defaults", "zero"]);
   });
 
   it("falls back to systemOne for agent-like objects without predictBatch", async () => {
@@ -521,6 +610,60 @@ describe("Router.routeBatch / predictBatch", () => {
     const results = await router.predictBatch([req("a", { model: "english" }), req("b", { model: "english" })]);
     expect(results.map((r) => r.answers.seen)).toEqual(["a", "b"]);
     expect(results.every((r) => r.routing.model === "english")).toBe(true);
+  });
+
+  // TS mirror of tests/test_hooks.py:1407-1420 (class AliasPin).
+  it("shares one forward pass with requests whose on_route pin names the checkpoint by alias", async () => {
+    const models: unknown[] = [];
+    const { router, built, calls } = makeRouter({
+      hooks: [
+        {
+          onRoute(ctx: PredictContext) {
+            if (ctx.states[0] === "alias") ctx.decision = { ...ctx.decision, model: "ml" };
+          },
+        },
+      ],
+      onPredictStart(ctx: PredictContext) {
+        models.push(ctx.model);
+      },
+    });
+    const results = await router.predictBatch([req("alias"), req("full", { model: "multilingual" })]);
+    // One `multilingual` group, not one per spelling: the alias and the canonical name are
+    // the same checkpoint, so both states share the agent's single forward pass.
+    expect(calls.map(([checkpoint, states]) => [checkpoint, states])).toEqual([
+      ["multilingual", ["alias", "full"]],
+    ]);
+    expect(built).toEqual(["multilingual"]);
+    // The context reports the resolved checkpoint, as Python's PredictContext.model does.
+    expect(models).toEqual(["multilingual", "multilingual"]);
+    // `routing` is still the decision the caller's hook wrote, unnormalised.
+    expect(results.map((r) => r.routing.model)).toEqual(["ml", "multilingual"]);
+    expect(results.map((r) => r.answers.seen)).toEqual(["alias", "full"]);
+    // predictMany is the same code path; the pin shares its pass there too.
+    calls.length = 0;
+    await router.predictMany([req("alias"), req("full", { model: "multilingual" })]);
+    expect(calls.map(([checkpoint, states]) => [checkpoint, states])).toEqual([
+      ["multilingual", ["alias", "full"]],
+    ]);
+  });
+
+  // Python builds the groups with `Router.resolve`, so an unresolvable pin is refused before
+  // any checkpoint loads; reading the raw name deferred it to the first `load` of that group.
+  it("refuses an on_route pin naming a checkpoint the Router does not know, before loading anything", async () => {
+    const { router, built, calls } = makeRouter({
+      hooks: [
+        {
+          onRoute(ctx: PredictContext) {
+            if (ctx.states[0] === "bogus") ctx.decision = { ...ctx.decision, model: "not-a-checkpoint" };
+          },
+        },
+      ],
+    });
+    await expect(
+      router.predictBatch([req("fine", { model: "english" }), req("bogus")]),
+    ).rejects.toThrow(/unknown model/);
+    expect(built).toEqual([]);
+    expect(calls).toEqual([]);
   });
 });
 
@@ -667,5 +810,150 @@ describe("Agent.predictBatch", () => {
     const resGatedCamel = await router.decideBatch(["alpha"], schema, { minConfidence: 0.99 });
     expect(resGatedCamel).toHaveLength(1);
     expect(resGatedCamel[0].flag).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------ minConfidence gating
+// TS mirror of tests/test_router_batch.py::test_router_predict_and_predict_batch_min_confidence
+// and ::test_end_hooks_see_the_low_confidence_flag. Python's `Router.predict_batch` validates
+// `min_confidence` on its first line -- before routing, so a refusal costs nothing -- and gates
+// every request's results before its end hooks run, on the success path and on the path that
+// fails the rest of the group (`laya/router.py`: `mc = check_min_confidence(...)`,
+// `apply_confidence_gate(ctx.results, mc)`). `predict` has always done the same for one request.
+
+const answerFlags = (res: unknown): Record<string, boolean> => {
+  const answers = (res as { answers: Record<string, Record<string, unknown>> }).answers;
+  return Object.fromEntries(
+    Object.entries(answers).map(([qid, a]) => [qid, a.low_confidence === true]),
+  );
+};
+
+const makeScoredRouter = (opts: Record<string, unknown> = {}) => {
+  const built: string[] = [];
+  const scored = () => ({
+    model: "fake",
+    answers: {
+      q1: { type: "choice", choice: "yes", probabilities: { yes: 0.95, no: 0.05 }, answer_confidence: 0.95 },
+      q2: { type: "choice", choice: "no", probabilities: { yes: 0.4, no: 0.6 }, answer_confidence: 0.6 },
+    },
+    usage: {},
+  });
+  const loader = () => {
+    built.push("english");
+    return {
+      async predictBatch(states: unknown[]) {
+        if (states.includes("raise")) throw new Error("inference failed");
+        return states.map(scored);
+      },
+      async systemOne() {
+        return scored();
+      },
+    };
+  };
+  const router = new Router({ default: "english", loader: loader as never, ...opts });
+  return { router, built };
+};
+
+describe("Router.predictBatch minConfidence", () => {
+  it("writes no marker at all when the caller names no threshold", async () => {
+    const { router } = makeScoredRouter();
+    const batch = await router.predictBatch([req("hello"), req("world")]);
+    expect(batch.map(answerFlags)).toEqual([{ q1: false, q2: false }, { q1: false, q2: false }]);
+  });
+
+  it("gates the batch on minConfidence the way predict gates one request", async () => {
+    const { router } = makeScoredRouter();
+    expect(answerFlags(await router.predict("hello", Q))).toEqual({ q1: false, q2: false });
+    expect(answerFlags(await router.predict("hello", Q, { minConfidence: 0.8 })))
+      .toEqual({ q1: false, q2: true });
+
+    const batch = await router.predictBatch([req("hello"), req("world")], null, { minConfidence: 0.8 });
+    expect(batch.map(answerFlags)).toEqual([{ q1: false, q2: true }, { q1: false, q2: true }]);
+    // gating marks, it does not rewrite: the scored answer is what the caller still reads
+    expect(batch[0].answers.q2.answer_confidence).toBe(0.6);
+    expect(batch[0].answers.q2.choice).toBe("no");
+    expect(await router.predictMany([req("hello")], null, { minConfidence: 0.8 }))
+      .toEqual([expect.objectContaining({ answers: expect.objectContaining({
+        q2: expect.objectContaining({ low_confidence: true }),
+      }) })]);
+  });
+
+  it("reads the snake_case min_confidence alias on the batch path", async () => {
+    const { router } = makeScoredRouter();
+    const [res] = await router.predictBatch([req("hello")], null, { min_confidence: 0.8 });
+    expect(answerFlags(res)).toEqual({ q1: false, q2: true });
+  });
+
+  it("gates a per-bucket threshold map per answer, as predict does", async () => {
+    const { router } = makeScoredRouter();
+    const [strict] = await router.predictBatch([req("hello")], null, {
+      minConfidence: { "choice:2": 0.99 },
+    });
+    expect(answerFlags(strict)).toEqual({ q1: true, q2: true });
+    const [lenient] = await router.predictBatch([req("hello")], null, {
+      minConfidence: { "choice:2": 0.8 },
+    });
+    expect(answerFlags(lenient)).toEqual({ q1: false, q2: true });
+  });
+
+  it("refuses a threshold it cannot gate at, before routing or loading anything", async () => {
+    const routed: unknown[] = [];
+    const { router, built } = makeScoredRouter({
+      hooks: [{ onRoute(ctx: never) { routed.push((ctx as { states: unknown[] }).states[0]); } }],
+    });
+    for (const bad of [1.5, -0.1, true, "0.8", Number.NaN]) {
+      await expect(router.predictBatch([req("hello")], null, { minConfidence: bad as never }))
+        .rejects.toThrow(/min_confidence must be a float/);
+    }
+    expect(routed).toEqual([]); // validated ahead of route_batch, like Python
+    expect(built).toEqual([]);
+    expect(router.loaded).toEqual([]);
+  });
+
+  it("shows the marker to onPredictEnd, not only to the caller", async () => {
+    const seen: Record<string, boolean>[] = [];
+    const { router } = makeScoredRouter({
+      hooks: [{
+        onPredictEnd(ctx: never) {
+          const c = ctx as { results: unknown[] | null };
+          seen.push(answerFlags(c.results![0]));
+        },
+      }],
+    });
+    await router.predict([("hello")], Q, { minConfidence: 0.8 });
+    expect(seen).toEqual([{ q1: false, q2: true }]);
+    seen.length = 0;
+    await router.predictBatch([req("hello")], null, { minConfidence: 0.8 });
+    expect(seen).toEqual([{ q1: false, q2: true }]);
+  });
+
+  it("gates a hook-skipped request when the rest of its group fails", async () => {
+    const ends: Record<string, boolean>[] = [];
+    const { router } = makeScoredRouter({
+      hooks: [{
+        onPredictStart(ctx: never) {
+          const c = ctx as { states: unknown[]; skip: (r: unknown[]) => void };
+          if (c.states[0] === "cached") {
+            c.skip([{
+              model: "cached",
+              answers: {
+                q1: { type: "choice", choice: "yes", probabilities: { yes: 0.95, no: 0.05 }, answer_confidence: 0.95 },
+                q2: { type: "choice", choice: "no", probabilities: { yes: 0.4, no: 0.6 }, answer_confidence: 0.6 },
+              },
+              usage: {},
+            }]);
+          }
+        },
+        onPredictEnd(ctx: never) {
+          const c = ctx as { states: unknown[]; results: unknown[] | null };
+          if (c.results !== null) ends.push(answerFlags(c.results[0]));
+        },
+      }],
+    });
+    await expect(
+      router.predictBatch([req("cached"), req("raise")], null, { minConfidence: 0.8 }),
+    ).rejects.toThrow("inference failed");
+    // the request that already had its answer still ends gated, as Python's failure path gates it
+    expect(ends).toEqual([{ q1: false, q2: true }]);
   });
 });

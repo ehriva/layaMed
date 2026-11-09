@@ -213,6 +213,32 @@ function scriptOf(ch: string): string | null {
   return null;
 }
 
+/** Python's `len()`: the number of code points, not of UTF-16 units. Python's `lang.py` divides
+ * the diacritic count by `len(lowered)`, and every other port counts code points too (Go
+ * `utf8.RuneCountInString`, Rust `chars().count()`, Java `codePointLength`, C++ `RuneCount`), so
+ * an astral character must count as one here as well. `String.length` counts it as two, which
+ * understated `diacriticRate` on any text carrying emoji -- e.g. `analyse()` on
+ * `"é\uD83D\uDE00\uD83D\uDE00" + "-".repeat(46)` read `isEnglish: true` in this port where
+ * Python answers `false`, routing the text to the English checkpoint. */
+function width(text: string): number {
+  let count = 0;
+  for (const _ch of text) count++;
+  return count;
+}
+
+/** Python's `text[:count]`: a prefix cut at code points, so a surrogate pair is never split
+ * in half. Python's `lang.py` slices the same budgets by code points (`state_text`,
+ * `_non_english_segment`, the 4000-character leaf samples), and the email port already cuts this
+ * way (`cutCodePoints` in `email.ts`, added when a budget cut an emoji in half). `String.slice`
+ * counts UTF-16 units, so `stateText("A".repeat(3999) + "\uD83D\uDE00" + "...")` used to return a
+ * string ending in the orphaned high half of the emoji -- text Python never produces, and a lone
+ * surrogate the serve side already refuses as malformed (#454, #814). */
+function cutCodePoints(text: string, count: number): string {
+  const chars = Array.from(text);
+  const end = count < 0 ? Math.max(0, chars.length + count) : Math.min(count, chars.length);
+  return chars.slice(0, end).join("");
+}
+
 /** String leaves of a state. Keys are ignored: they are usually English field names. */
 function iterText(state: unknown, depth = 0): string[] {
   if (depth > 6 || state == null) return [];
@@ -238,7 +264,7 @@ function iterText(state: unknown, depth = 0): string[] {
 }
 
 export function stateText(state: unknown, maxChars = 4000): string {
-  return iterText(state).join(" ").slice(0, maxChars);
+  return cutCodePoints(iterText(state).join(" "), maxChars);
 }
 
 export function detectScript(text: string): string {
@@ -350,7 +376,7 @@ export function latinProfile(text: string): LatinProfile {
   for (const ch of lowered) {
     if (NON_EN_DIACRITICS.has(ch)) diac += 1;
   }
-  const diacRate = diac / Math.max(1, lowered.length);
+  const diacRate = diac / Math.max(1, width(lowered));
   const nonEnglish = diacRate >= NON_EN_DIACRITIC_RATE;
   const nordicOverlap = words.some((w) => NORDIC_OVERLAP_WORDS.has(w)) &&
     !words.some((w) => EN_ONLY_WORDS.has(w));
@@ -443,12 +469,12 @@ function shouted(text: string): boolean {
 
 /** Whether an all-caps line's evidence for `lang` is more than acronym-shaped tokens. */
 function shoutedEvidence(tokens: string[], lang: string, diacriticRate: number): boolean {
-  if (!tokens.some((t) => t.length >= SHOUTED_MIN_WORD)) return false;
+  if (!tokens.some((t) => width(t) >= SHOUTED_MIN_WORD)) return false;
   if (diacriticRate >= NON_EN_DIACRITIC_RATE) return true;
   const stopSet = STOP[lang];
   if (!stopSet) return false;
   const matched = new Set(tokens.map((t) => t.toLowerCase()).filter((t) => stopSet.has(t)));
-  return [...matched].some((w) => w.length >= SHOUTED_MIN_STOPWORD);
+  return [...matched].some((w) => width(w) >= SHOUTED_MIN_STOPWORD);
 }
 
 /** Language code for one non-code line, or null when it does not name a foreign language.
@@ -493,8 +519,8 @@ function nonEnglishSegment(state: unknown, maxChars = 4000): [string, string] | 
   for (const leaf of iterText(state)) {
     for (const seg of leaf.split("\n")) {
       if (seen >= maxChars) return null;
-      const capped = seg.slice(0, maxChars - seen);
-      seen += capped.length;
+      const capped = cutCodePoints(seg, maxChars - seen);
+      seen += [...capped].length;
       const lang = namedProseLanguage(capped);
       if (lang) return [lang, capped.trim()];
     }
@@ -586,7 +612,7 @@ function analyseText(text: string): AnalyseResult {
       // `sag mir das HEUTIGE DATUM` lost its verdict). Diacritic evidence stays measured on the
       // original text, so a shouted foreign word cannot be blanked out of the safety net.
       const caps = (text.match(LETTER_RUN_RE) ?? []).filter((m) => m === m.toUpperCase());
-      if (caps.length > 0 && !caps.some((c) => c.length >= SHOUTED_MIN_WORD)) {
+      if (caps.length > 0 && !caps.some((c) => width(c) >= SHOUTED_MIN_WORD)) {
         const blanked = text.replace(LETTER_RUN_RE, (m) => (m === m.toUpperCase() ? " " : m));
         if (blanked !== text) lang = latinProfile(blanked).language;
       }
@@ -608,23 +634,51 @@ function alphaCount(text: string): number {
   return n;
 }
 
-/** A string value that is itself not safe for the English checkpoint, else null. */
+/** A string value that is itself not safe for the English checkpoint, else null.
+ *
+ * A one-word name ("José") and a capitalised non-Latin name stay out: the same rules
+ * `latinProfile` and `nonLatinWords` already use, so a name field cannot pull an English
+ * ticket onto the multilingual checkpoint. Code lines, acronyms and slash compounds stay out
+ * too, matching `nonEnglishSegment`, so a pasted traceback is not a message. Each line is
+ * capped at 4000 characters on its own. Unlike the segment scan, a long earlier line does
+ * not consume the budget of the next one (#384, #1449): sampling the first 4000 characters
+ * of the whole leaf hid a German line that followed a longer English prefix.
+ */
 function leafNonEnglish(leaf: string): AnalyseResult | null {
-  const sample = leaf.slice(0, 4000);
-  if (!sample.trim()) return null;
-  const det = analyseText(sample);
-  if (det.isEnglish) return null;
-  if (det.language !== null && det.language !== "en") return det;
-  const nAlpha = alphaCount(sample);
-  if (det.script !== "latin" && det.script !== "unknown") {
-    if (nonLatinWords(sample).length > 0 && nAlpha >= NON_LATIN_MIN_LETTERS) return det;
-    return null;
+  let bestN = -1;
+  let best: AnalyseResult | null = null;
+  for (const line of leaf.split("\n")) {
+    // A line this short cannot be selected, so skip it before the slice, the blank check,
+    // the code-line scan and a full `analyseText` pass. Each branch below needs four word
+    // tokens or NON_LATIN_MIN_LETTERS letters. The word scan matches maximal runs of letters
+    // and letter-like numerals, so four tokens need three separators between them: seven
+    // characters, and ten letters need ten. What makes seven safe rather than six is that
+    // every one of those counts is taken on the raw line -- `İ` lowers to two code points,
+    // so counting on the lowered line would let a four-character line reach four tokens.
+    if (width(line) < 7) continue;
+    const sample = cutCodePoints(line, 4000);
+    if (!sample.trim() || CODE_LINE_RE.test(sample)) continue;
+    const det = analyseText(sample);
+    if (det.isEnglish) continue;
+    // A named language still has to survive `namedProseLanguage`: acronyms and slash
+    // compounds are not words. A veto is not a verdict of English, so a line that was named
+    // and then disbelieved falls through to the diacritic branch instead of being dropped.
+    // `languageUndecided` is not required: that line is in the same position as one never named.
+    const named = det.language !== null && det.language !== "en" && namedProseLanguage(sample) !== null;
+    const nAlpha = alphaCount(sample);
+    if (!named) {
+      if (det.script !== "latin" && det.script !== "unknown") {
+        if (nonLatinWords(sample).length === 0 || nAlpha < NON_LATIN_MIN_LETTERS) continue;
+      } else if (!(det.diacriticRate >= NON_EN_DIACRITIC_RATE && (sample.match(WORD_RE) ?? []).length >= 4)) {
+        continue;
+      }
+    }
+    if (nAlpha > bestN) {
+      bestN = nAlpha;
+      best = det;
+    }
   }
-  const words = sample.match(WORD_RE) ?? [];
-  if (det.languageUndecided && det.diacriticRate >= NON_EN_DIACRITIC_RATE && words.length >= 4) {
-    return det;
-  }
-  return null;
+  return best;
 }
 
 export function analyse(state: unknown): AnalyseResult {
@@ -663,7 +717,7 @@ export function analyse(state: unknown): AnalyseResult {
   for (const leaf of iterText(state)) {
     const det = leafNonEnglish(leaf);
     if (!det) continue;
-    const n = alphaCount(leaf.slice(0, 4000));
+    const n = alphaCount(cutCodePoints(leaf, 4000));
     if (n > bestN) {
       bestN = n;
       best = det;

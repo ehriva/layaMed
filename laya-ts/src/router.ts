@@ -1,7 +1,7 @@
 import { analyse, type AnalyseResult } from "./lang.js";
 import { checkQuestion, type PredictOptions, type QuestionDef, type SystemOneResult } from "./agent.js";
 import { skippedLongResult, validateLongOptions, validateLongResult, type LongPredictOptions, type LongResult } from "./predict-long.js";
-import { checkMinConfidence, flagLowConfidence } from "./common.js";
+import { checkMaxLoaded, checkMinConfidence, flagLowConfidence } from "./common.js";
 import { decide, decideBatch, type DecideOptions, type DecideBatchOptions, type DecisionResult } from "./structured.js";
 import {
   HookRegistry,
@@ -162,6 +162,13 @@ export interface RouterOptions {
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
   hooksRaise?: boolean;
+  /**
+   * Per-hook time limit in seconds, applied to every hook this Router waits for; null or absent
+   * means no limit. Python's `Router(hooks_timeout=...)`, the same bound `Agent` applies.
+   */
+  hooksTimeout?: number | null;
+  /** Python-parity snake_case alias for `hooksTimeout`. */
+  hooks_timeout?: number | null;
 }
 
 export interface RouteOptions {
@@ -175,21 +182,38 @@ export interface RouteOptions {
 }
 
 /**
- * Per-call options for `Router.predictBatch` / `predictMany` / `routeBatch`.
+ * Per-call options for `Router.predictBatch` / `predictMany`; `Router.routeBatch` takes the
+ * same bag less the threshold, as `RouteBatchOptions`.
  * `hooks`, `onPredictStart` and `onPredictEnd` are composed the same way as on `predict`:
  * `setDefaultHooks` defaults, then installed hooks, then this call's hooks.
  * `null`, `undefined` and `[]` add nothing.
  * `hooksRaise` overrides the Router's policy for this call, including `onRoute`.
  * The start and end callables apply to each request's predict lifecycle, not to routing.
+ * `minConfidence` (Python's `min_confidence`, #361/#394) is the opt-in abstention threshold
+ * `predict` takes: either a number in [0.0, 1.0] or a per-bucket map. Every request's answers
+ * below it come back marked `low_confidence: true`, and each request's `onPredictEnd` hooks see
+ * the mark. `null` or absent writes nothing, exactly as on `predict`.
  */
 export interface PredictBatchOptions {
   hooks?: HookArg;
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
   hooksRaise?: boolean;
+  minConfidence?: PredictOptions["minConfidence"];
+  /** Python parity alias for minConfidence. */
+  min_confidence?: PredictOptions["min_confidence"];
 }
 
-/** One item of a Router.predictBatch/routeBatch batch: state, questions, route overrides. */
+/**
+ * What `Router.routeBatch` takes: `PredictBatchOptions` without the abstention threshold.
+ * Routing runs no inference, so there is nothing there for a threshold to gate, and Python's
+ * `route_batch` takes no `min_confidence` either. The type says so, rather than letting
+ * `router.routeBatch(requests, { minConfidence: 0.8 })` read like a request for gating that
+ * silently asked for none.
+ */
+export type RouteBatchOptions = Omit<PredictBatchOptions, "minConfidence" | "min_confidence">;
+
+/** One item of a Router.predictBatch/routeBatch batch: state, questions, route and budget overrides. */
 export interface BatchRequest {
   state: unknown;
   questions: Record<string, QuestionDef>;
@@ -198,6 +222,9 @@ export interface BatchRequest {
   lang?: string | null;
   langGuess?: LangGuess;
   lang_guess?: LangGuess;
+  /** Per-request token budgets; null = agent config. Start hooks may override them. */
+  maxLen?: number | null;
+  headMaxLen?: number | null;
 }
 
 function questionSchema(questions: Record<string, unknown>): string {
@@ -269,6 +296,7 @@ function repoStr(spec: ModelSpec): string {
 
 export class Router extends HookRegistry {
   hooksRaise: boolean;
+  hooksTimeout: number | null;
   models: Record<string, ModelSpec>;
   device: string | null;
   token: string | null | undefined;
@@ -293,6 +321,9 @@ export class Router extends HookRegistry {
     // onPredictEnd hooks wrap the whole route+infer call and see ctx.decision; see hooks.ts.
     this.hooks = normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     this.hooksRaise = opts.hooksRaise ?? true;
+    // `None if hooks_timeout is None else validate_timeout(hooks_timeout)` (laya/router.py): read
+    // the limit on the constructor line, so a caller who sets a deadline knows now that it is one.
+    this.hooksTimeout = validateHooksTimeout(opts.hooksTimeout ?? opts.hooks_timeout ?? null);
     const base: Record<string, string | ModelSpec> = opts.standaloneRepos ?? opts.standalone_repos
       ? { ...STANDALONE_MODELS }
       : Object.fromEntries(Object.entries(DEFAULT_MODELS).map(([k, v]) => [k, { ...v }]));
@@ -321,7 +352,9 @@ export class Router extends HookRegistry {
         this.sha256Digests[normaliseName(name)] = val;
       }
     }
-    this.maxLoaded = Math.max(1, Math.trunc(Number(opts.maxLoaded ?? opts.max_loaded ?? 2)));
+    // `max(1, int(max_loaded))`, read the way `int()` reads: a cap `Number()` turns into NaN would
+    // leave `_evict`'s `length > maxLoaded` forever false, so check it instead of disabling it.
+    this.maxLoaded = checkMaxLoaded(opts.maxLoaded ?? opts.max_loaded ?? 2);
     this.default = normaliseName(opts.default ?? "multilingual");
     this.autoTaskDetection = Boolean(opts.autoTaskDetection ?? opts.auto_task_detection ?? false);
     this.langGuess = opts.langGuess ?? opts.lang_guess ?? null;
@@ -331,6 +364,11 @@ export class Router extends HookRegistry {
     } else if (Array.isArray(opts.preload)) {
       void this.preload(opts.preload);
     }
+  }
+
+  /** `hooksTimeout` in the milliseconds `dispatchAsync` races against; null starts no timer. */
+  private get hooksTimeoutMs(): number | null {
+    return this.hooksTimeout === null ? null : this.hooksTimeout * 1000;
   }
 
   async load(name: string): Promise<unknown> {
@@ -374,14 +412,14 @@ export class Router extends HookRegistry {
           composeHooks(this.hooks),
           "onEvict",
           new PredictContext({ states: [], questions: {}, model: victim, router: this }),
-          { raiseErrors: this.hooksRaise },
+          { raiseErrors: this.hooksRaise, timeoutMs: this.hooksTimeoutMs },
         );
       }
       await dispatchAsync(
         composeHooks(this.hooks),
         "onLoad",
         new PredictContext({ states: [], questions: {}, model: key, agent, router: this }),
-        { raiseErrors: this.hooksRaise },
+        { raiseErrors: this.hooksRaise, timeoutMs: this.hooksTimeoutMs },
       );
       return agent;
     });
@@ -641,8 +679,13 @@ export class Router extends HookRegistry {
     const mc = mcOpt !== undefined && mcOpt !== null ? checkMinConfidence(mcOpt) : null;
     const active = composeHooks(this.hooks, opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     const raiseErrors = opts.hooksRaise ?? this.hooksRaise;
-    const timeout = scan ? validateHooksTimeout(scan.hooksTimeout) : null;
-    const timeoutMs = timeout === null ? null : timeout * 1000;
+    // `self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)`
+    // (laya/router.py predict): a per-call limit replaces the Router's, it does not shorten it.
+    // One read covers both paths because `predictLong` hands the same object as `opts` and `scan`,
+    // and it gives the long path the Router default it did not have -- before, a limit there came
+    // only from `scan.hooksTimeout`, never from the Router the caller built.
+    const hooksTimeout = validateHooksTimeout(opts.hooksTimeout ?? this.hooksTimeout);
+    const timeoutMs = hooksTimeout === null ? null : hooksTimeout * 1000;
     const hasStart = active.some((h) => typeof h.onPredictStart === "function");
     // The per-call token-budget overrides seed the context, so a start hook can read and rewrite
     // them exactly as it can `states`/`questions`; the values it leaves are what reaches the agent
@@ -832,7 +875,7 @@ export class Router extends HookRegistry {
    * validated before anything loads, so a malformed batch fails fast. Entries keep input
    * order; routing is deterministic, so repeated batches route identically.
    */
-  routeBatch(requests: BatchRequest[], opts: PredictBatchOptions = {}): RouteDecision[] {
+  routeBatch(requests: BatchRequest[], opts: RouteBatchOptions = {}): RouteDecision[] {
     if (!Array.isArray(requests)) {
       throw new TypeError("requests must be an array of request objects");
     }
@@ -876,6 +919,8 @@ export class Router extends HookRegistry {
    * Route and run many requests in one call (Python `Router.predict_batch` parity).
    * Requests are routed first, then grouped by checkpoint so each loaded Agent scores its
    * requests in as few forward passes as possible; results are restored to input order.
+   * The group key is the resolved checkpoint, so an `onRoute` pin that spells it as an alias
+   * ("ml") shares the canonical group's pass instead of splitting into a second forward pass.
    * Requests routed to the same checkpoint still split into separate `predictBatch` calls
    * when their question schemas differ (order-sensitively), when per-request start hooks
    * set different maxLen/headMaxLen overrides, or — for an agent carrying
@@ -891,18 +936,32 @@ export class Router extends HookRegistry {
    * `null` and `[]` add nothing. `hooks`
    * also run `onRoute`. `opts.hooksRaise` overrides the Router's policy for this call, the way
    * `predict` uses `opts.hooksRaise ?? this.hooksRaise`.
+   * `opts.minConfidence` (or `min_confidence`) is the abstention threshold `predict` takes, and it
+   * gates this call the same way: validated on the entry line, before anything routes or loads,
+   * and applied to every request's answers before its `onPredictEnd` runs. A batch is not a
+   * second-class entry point for it -- an audit hook on either path sees the same marker.
    */
   async predictBatch(
     requests: BatchRequest[],
     batchSize: number | null = null,
     opts: PredictBatchOptions = {},
   ): Promise<RoutedResult[]> {
+    // Validated on the entry line, before `routeBatch`, as Python does: a threshold the caller
+    // cannot gate at must not cost a routing pass, an `onRoute` hook or a checkpoint load.
+    const mcOpt = opts.minConfidence ?? opts.min_confidence;
+    const mc = mcOpt !== undefined && mcOpt !== null ? checkMinConfidence(mcOpt) : null;
     const decisions = this.routeBatch(requests, opts);
     if (decisions.length === 0) return [];
 
     const groups = new Map<string, number[]>();
     for (let i = 0; i < decisions.length; i++) {
-      const model = decisions[i].model;
+      // Indexed, not typed off `RouteDecision.model`: an `onRoute` hook may replace the decision
+      // with a plain object, which `predict` accepts too. Resolved, because such a hook may name
+      // the checkpoint by an alias ("ml") and that request must share its checkpoint's forward
+      // pass -- reading the raw spelling split it into a second `predictBatch` call on the same
+      // Agent. `normaliseName` is what `load` uses, so a pin naming a checkpoint this Router does
+      // not know is refused here, before any group loads or runs.
+      const model = normaliseName(decisions[i].model);
       const bucket = groups.get(model);
       if (bucket) bucket.push(i);
       else groups.set(model, [i]);
@@ -915,6 +974,18 @@ export class Router extends HookRegistry {
     // `opts.hooks`; start and end are validated here, after routing and before a checkpoint loads.
     const active = composeHooks(this.hooks, opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     const raiseErrors = opts.hooksRaise ?? this.hooksRaise;
+    // Marks every request that has results, once its group settles and before any end hook runs,
+    // so a request skipped by a start hook and one that just ran through inference read the same
+    // `low_confidence` the caller does. Python's `Router.predict_batch` gates `ctx.results` from
+    // both paths -- the two `apply_confidence_gate(ctx.results, mc)` calls around `_end_contexts`
+    // in `laya/router.py`. With no threshold named this writes nothing: an ungated batch returns
+    // exactly the answers it returned before, marker absent rather than marker false.
+    const gate = (contexts: PredictContext[]): void => {
+      if (mc === null) return;
+      for (const ctx of contexts) {
+        if (ctx.results !== null) flagLowConfidence(ctx.results, mc);
+      }
+    };
 
     for (const [modelName, indices] of groups) {
       const agent = (await this.load(modelName)) as {
@@ -931,7 +1002,7 @@ export class Router extends HookRegistry {
         systemOne(
           state: unknown,
           questions: Record<string, QuestionDef>,
-          opts?: { lang?: string | null },
+          opts?: { lang?: string | null; maxLen?: number | null; headMaxLen?: number | null },
         ): Promise<SystemOneResult>;
         langTemperatures?: Record<string, unknown>;
       };
@@ -945,6 +1016,8 @@ export class Router extends HookRegistry {
             model: modelName,
             agent,
             router: this,
+            maxLen: requests[i].maxLen ?? null,
+            headMaxLen: requests[i].headMaxLen ?? null,
           });
           started.push(ctx);
           dispatch(active, "onPredictStart", ctx, { raiseErrors });
@@ -1032,7 +1105,10 @@ export class Router extends HookRegistry {
             // still work; their states simply share no forward pass.
             batchResults = [];
             for (const [, ctx] of group.items) {
-              const singleOpts = group.lang === null ? {} : { lang: group.lang };
+              const singleOpts: { lang?: string; maxLen?: number; headMaxLen?: number } =
+                group.lang === null ? {} : { lang: group.lang };
+              if (group.maxLen !== null) singleOpts.maxLen = group.maxLen;
+              if (group.headMaxLen !== null) singleOpts.headMaxLen = group.headMaxLen;
               markDefaultsRan(singleOpts);
               batchResults.push(
                 await agent.systemOne(
@@ -1056,6 +1132,7 @@ export class Router extends HookRegistry {
           }
         }
       } catch (err) {
+        gate(started);
         for (const ctx of started) {
           if (ctx.results === null) {
             ctx.error = err;
@@ -1073,6 +1150,7 @@ export class Router extends HookRegistry {
         }
         throw err;
       }
+      gate(started);
       this._endContexts(active, started, raiseErrors);
       for (let s = 0; s < indices.length; s++) {
         results[indices[s]] = started[s].results![0] as unknown as RoutedResult;

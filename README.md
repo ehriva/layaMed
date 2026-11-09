@@ -5,6 +5,25 @@
   </picture>
 </p>
 
+> **Cite this work.** M, N.; M, A. From Laya to Vega: Open Non-Autoregressive Decision Models with Calibrated Probabilities. *Preprints* **2026**, 2026110781. [https://doi.org/10.20944/preprints202611.0781.v1](https://doi.org/10.20944/preprints202611.0781.v1)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@article{m2026laya_vega,
+  title   = {From Laya to Vega: Open Non-Autoregressive Decision Models with Calibrated Probabilities},
+  author  = {M, N. and M, A.},
+  journal = {Preprints},
+  year    = {2026},
+  pages   = {2026110781},
+  doi     = {10.20944/preprints202611.0781.v1},
+  url     = {https://doi.org/10.20944/preprints202611.0781.v1}
+}
+```
+
+</details>
+
 **Multilingual, non-autoregressive System 1 decision engine.** Typed decisions over 100+ languages in a single forward pass — 33 ms — trained with reinforcement learning against strictly proper scoring rules (RLCD), with a router that picks the right checkpoint per request.
 
 <div align="center">
@@ -29,7 +48,7 @@ python -m pip install laya
 
 With [uv](https://docs.astral.sh/uv/), run `uv add laya` in a uv project or `uv pip install laya` in a virtual environment.
 
-Python 3.10 or newer. Optional extras: `laya[serve]` (HTTP server), `laya[mcp]` (MCP server), `laya[langchain]` (LangChain and LangGraph), `laya[llamaindex]` (LlamaIndex selectors), `laya[crewai]` (CrewAI routing), `laya[onnx]` (ONNX Runtime), `laya[fast]` (TileLang GPU fast path), `laya[structured]` (pydantic models in `decide`). Step-by-step setup for each platform, CPU-only or GPU PyTorch builds, and troubleshooting are in [Installation details](#installation-details).
+Python 3.10 or newer. Optional extras: `laya[serve]` (HTTP server), `laya[mcp]` (MCP server), `laya[langchain]` (LangChain and LangGraph), `laya[llamaindex]` (LlamaIndex selectors), `laya[crewai]` (CrewAI routing), `laya[onnx]` (ONNX Runtime), `laya[fast]` (TileLang GPU fast path), `laya[structured]` (pydantic models in `decide`), `laya[vision]` (Pillow and torchvision, for `predict(image=...)` and `predict(video=...)`), `laya[audio]` (soundfile, to decode audio files). Step-by-step setup for each platform, CPU-only or GPU PyTorch builds, and troubleshooting are in [Installation details](#installation-details).
 
 For TypeScript / Node.js / browser, see [`laya-ts/`](https://github.com/NandhaKishorM/laya/tree/main/laya-ts/). npm releases (`npm install laya-ts`) are published from this repository's `laya-ts-v*` release tags.
 
@@ -41,18 +60,27 @@ For TypeScript / Node.js / browser, see [`laya-ts/`](https://github.com/NandhaKi
 
 ## Quickstart
 
-> **Long documents: `laya-multilingual` reads up to 8,192 tokens.** It ships with a 1,024-token limit that cuts long documents off, so pass `max_len=8192` for them:
->
-> ```python
-> result = router.predict(long_document, questions, model="multilingual", max_len=8192)
-> ```
->
-> In the table above, 16 to 18 of 20 requests were answered correctly with up to about 4,000 tokens of text before them; beyond that results vary (8 to 17 of 20), so check long-document accuracy on your own data. Short inputs give identical answers with `max_len=8192`, and speed follows the input's real length, not the limit: short inputs are unchanged, and a 4,000-token input takes about 1.7 s on an Apple GPU. Name the checkpoint with `model="multilingual"`, since long mostly-English text would otherwise route to the English checkpoint.
+One argument puts vegaml's engine under laya's names: a frozen 0.8B reader with a small physics engine on top, so every answer carries a conformal prediction set, an abstain flag, an out-of-distribution flag and a route decided without a threshold you had to guess at. Text, images, speech and 73k-token documents go through the same call. Python 3.10 or newer; details in [vega inside laya](#vega-inside-laya-agentvegamltrue).
+
+```bash
+python -m pip install -U laya   # 0.4.23 or newer: vegaml comes with it
+```
 
 ```python
-from laya import Router
+import laya
 
-router = Router()  # downloads a checkpoint on first use; Router(preload=True) loads all three up front
+agent = laya.Agent(vegaml=True)   # the 0.8B universal reader (nandakishorm/vega-U), the default
+
+# Switching the model underneath is one string. Every option keeps the same engine, questions and fields:
+#   laya.Agent(vegaml="4b")                                # the Qwen3.5-4B reader from the same Hub repo
+#   laya.Agent(vegaml="gemma-1b")                          # the gemma-3-1b-it reader, same repo
+#   laya.Agent(vegaml="nandakishorm/vega-U")               # any Hub repo id holding a vega-U checkpoint
+#   laya.Agent(vegaml="./my-reader/")                      # a local dir from VegaAgent.attach(...), your own LLM ported in
+#   laya.Agent(vegaml=True, backbone="Qwen/Qwen3.5-0.8B")  # name the reader weights explicitly, e.g. a mirror
+# Without the argument, laya's own encoders, also by Hub name:
+#   laya.Agent("convaiinnovations/laya")                   # English, 33 ms on a T4
+#   laya.Agent("convaiinnovations/laya-multilingual")      # 100+ languages, up to 8,192 tokens with max_len=8192
+#   laya.Agent("convaiinnovations/laya-typed-decisions")   # fine-tuned for the typed-decisions workflows
 
 state = "Hi, we were billed twice for March. Please refund the duplicate today or we will cancel our plan."
 questions = {
@@ -65,13 +93,146 @@ questions = {
     "churn_risk": {"type": "noul", "instructions": "Does the user threaten to cancel or leave?"},
 }
 
+out = agent.predict(state, questions)
+ans = out["answers"]["department"]
+print(ans["choice"])             # billing
+print(ans["probabilities"])      # {"billing": 0.91, "technical": 0.04, "other": 0.05}
+print(ans["prediction_set"])     # ["billing"]: the options the answer could still be, at alpha 0.1
+print(ans["abstain"])            # False: the engine is not refusing this one
+print(ans["unbound"])            # False: the state looks like something it has seen
+print(ans["route"])              # "auto"; "review" when the set, abstain or unbound say so
+print(out["answers"]["churn_risk"]["noul"])   # probability the answer is yes
+```
+
+The output keeps laya's shape (`choice`, `score`, `noul`, `probabilities`, `answer_confidence`) and adds vega's fields. Gate on `route`, not on a confidence number: it comes from the conformal set and the fitted band, which stay right on answers where the top probability does not.
+
+**Model switching.** Keep a laya encoder for short English text and let vega take the rest:
+
+```python
+from laya.vega import Router
+
+router = Router(fast=laya.Agent(), vega=agent)
+out = router.predict(state, questions)
+print(out["routing"])            # {"model": "fast", "reason": "short English text, no fitted head: the fast encoder is enough"}
+out = router.predict("मुझसे मार्च में दो बार शुल्क लिया गया, कृपया डुप्लिकेट राशि वापस करें।", questions)
+print(out["routing"]["model"])   # vega: non-English goes to the reader
+```
+
+The rule, in order: an image or audio goes to vega; text longer than the fast model's context goes to vega; non-English or non-Latin text goes to vega; a question with a fitted head goes to vega; everything else goes to the encoder. `model="vega"` or `model="fast"` forces one.
+
+**Images, speech, video, long documents.** The questions and the answer shape do not change with the input:
+
+```python
+# text: up to 73,728 tokens in one pass; usage["truncated"] says if a state hit the limit
+agent.predict_long(seventy_page_contract, questions)
+# image: PIL image, path or HxWx3 array, any format Pillow opens; scaled to ~1 megapixel, no file-size cap
+#        needs pip install 'laya[vision]' (Pillow and torchvision), as does video
+agent.predict(image="invoice.png", questions=questions)
+# audio: path or bytes (wav, flac, ogg, mp3; needs pip install 'laya[audio]') or a 1-D waveform with sampling_rate=;
+#        any length, resampled to 16 kHz, transcribed in 30 s windows, transcript counts toward the 73,728 tokens
+agent.predict(audio=wave, questions=questions, sampling_rate=16000)
+# video: path or bytes, any container ffmpeg opens, any length and resolution (needs the ffmpeg binary);
+#        speech is transcribed and decided as text, a silent clip is decided on 4 sampled frames as one image
+agent.predict(video="call.mp4", questions=questions)
+```
+
+
+**Fit and calibrate on your own labels.** Seconds, no gradient step, and the route is decided for you. Labels are a CSV with a `state` column and one column per question id; [`examples/data/routing_labels.csv`](https://github.com/NandhaKishorM/laya/blob/main/examples/data/routing_labels.csv) is a 60-row example that routes messages to billing, HR, PR, sales or technical and rates their urgency:
+
+```csv
+state,team,urgency
+"We were charged twice for the March invoice, please refund the duplicate.",billing,2
+"I would like to apply for the open backend engineer role. Where do I send my CV?",hr,0
+"A journalist from the Economic Times is asking for a comment on today's outage.",pr,2
+```
+
+The whole loop, from import to the answer, is [`examples/42_fit_and_calibrate_vegaml.py`](https://github.com/NandhaKishorM/laya/blob/main/examples/42_fit_and_calibrate_vegaml.py). It holds out 4 rows per team (20), fits on the other 40, and measures the same 20 rows before and after. Condensed:
+
+```python
+import csv, laya
+
+questions = {
+    "team": {"type": "choice", "instructions": "Which team should handle this message?",
+             "criteria": {"billing": "invoices, payments, refunds", "hr": "jobs, payroll, leave, policy",
+                          "pr": "press, media, public statements", "sales": "pricing, demos, quotes, trials",
+                          "technical": "bugs, outages, API and product questions"}},
+    "urgency": {"type": "score", "instructions": "How soon does this need a reply?",
+                "criteria": ["can wait", "this week", "today"]},
+}
+rows = list(csv.DictReader(open("examples/data/routing_labels.csv")))
+held, fit_rows = rows[-20:], rows[:-20]            # the script holds out 4 per team; same idea
+
+agent = laya.Agent(vegaml=True)
+print(laya.VegaAgent.min_rows(questions))         # 35: the fewest rows fit() accepts for these questions
+
+before = agent.predict(held[0]["state"], questions)["answers"]["team"]       # the cold engine
+
+report = agent.fit([{"state": r["state"], "gold": {"team": r["team"], "urgency": r["urgency"]}}
+                    for r in fit_rows], questions=questions)                # or agent.fit("examples/data/routing_labels.csv", questions=questions)
+print(report["n_fit"], report["n_calibrate"])     # 30 fit the heads, 10 are held out inside fit() to calibrate on
+print(report["serving"])                          # the questions whose head beat the engine on the same rows
+print(report["calibration"]["band"])              # the review line per question, or None where it could not hold
+
+after = agent.predict(held[0]["state"], questions)["answers"]["team"]
+agent.save_calibration("fit-routing/")            # heads + calibration; agent.load_calibration("fit-routing/") later
+```
+
+What the script printed on a laptop GPU, every number measured in that run:
+
+```
+minimum rows fit() accepts for these questions: 35 (5 per option of the widest question for the heads, plus a quarter held out to calibrate on, never fewer than 10)
+
+== before: the cold engine, 20 held-out rows
+   team accuracy      0.600   ECE 0.221   mean confidence 0.629
+   urgency accuracy   0.400   ECE 0.412   MAE 0.65 levels
+   team set sizes     {1: 13, 2: 7}   abstain 12   route {'auto': 6, 'review': 14}
+
+== fit + calibrate on 40 rows in 9s: 30 fit the heads, 10 held out to calibrate on
+   team     head cv 0.767 vs engine 0.633 on the same rows  ->  SERVED
+   urgency  head cv 0.400 vs engine 0.400 on the same rows  ->  left to the engine
+   team     temperature 0.83  conformal q-hat 0.987  ECE on the calibration rows 0.281 -> 0.241
+   urgency  temperature 6.44  conformal q-hat 0.741  ECE on the calibration rows 0.515 -> 0.142
+   review line per question: {'team': None, 'urgency': None}
+   ['team', 'urgency']: no line holds precision 0.95 with a 95% bound on 10 calibration rows, so the conformal set routes those answers
+
+== after: heads + calibration, 20 held-out rows
+   team accuracy      0.900   ECE 0.206   mean confidence 0.749
+   urgency accuracy   0.400   ECE 0.059   MAE 0.65 levels
+   team set sizes     {2: 2, 3: 2, 4: 6, 5: 10}   abstain 0   route {'review': 20}
+
+== change on held-out rows: team accuracy +0.300, team ECE -0.015, urgency MAE +0.00
+
+== one held-out message: "Why was a late fee added to this month's bill when we paid on the due "  (gold: billing)
+   before: {"choice": "billing", "probabilities": {"billing": 0.999995, "hr": 3e-06, "pr": 0.0, "sales": 1e-06, "technical": 1e-06}, "answer_confidence": 0.999995, "prediction_set": ["billing"], "abstain": false, "unbound": false, "readout": "engine", "route": "auto", "route_reason": "conformal singleton, not abstaining, in distribution"}
+   after:  {"choice": "billing", "probabilities": {"billing": 0.674496, "hr": 0.186172, "pr": 0.068743, "sales": 0.041369, "technical": 0.029221}, "answer_confidence": 0.674496, "prediction_set": ["billing", "hr", "pr", "sales", "technical"], "abstain": false, "unbound": null, "readout": "ttt", "route": "review", "route_reason": "band could not hold precision 0.95 on 10 calibration rows, so the conformal rule decides: conformal set at alpha 0.1 holds 5 options"}
+
+== ablation: fitting rows per team, same 20 held-out rows
+   per team  rows  team acc  team ECE  urg. acc  urg. MAE  route
+   cold      0     0.600     0.221     0.400     0.65      {'auto': 6, 'review': 14}
+   7         35    0.800     0.111     0.400     0.65      {'auto': 14, 'review': 6}
+   8         40    0.900     0.206     0.400     0.65      {'review': 20}
+```
+
+Read it honestly. The head took routing from 0.600 to 0.900 on rows it never saw, and was refused for urgency because it did not beat the engine on the same rows, so that question stayed exactly where it was. The urgency ECE fell from 0.412 to 0.059 from a temperature alone, with the argmax untouched. Routing is where 10 calibration rows are too few: at alpha 0.1 the conformal quantile on 10 rows is the largest score, so the sets are wide, and no review line can certify 0.95 precision with a 95% bound on fewer than about 50 rows; the output says so in `route_reason` instead of pretending. The floor of 35 rows gets you a served head; a route you can act on wants a few hundred rows, and `report["calibration"]["band"]` tells you when you are there.
+
+How this differs from fine-tuning: a fine-tune runs a gradient through the model until it agrees with your labels, which changes every answer the model gives, invalidates any calibration fitted before, and leaves you a new checkpoint to validate. `fit` never touches the reader. It fits a small logistic head per question over the frozen features, a convex problem with one solution, keeps the head only if it beats chance under cross-validation and serves it only if it also beats the zero-shot engine on the same rows, so a fit can lose and say so, as urgency did above. A quarter of the rows is held out inside `fit` and `calibrate` refits three numbers per question on them: a temperature, a conformal threshold so the prediction set covers at 90%, and the review line, placed where precision holds at 0.95 with a 95% Wilson bound to spare. Every other question is untouched by construction, nothing is forgotten, and `agent.thresholds()` prints what decides `route` right now.
+
+### The laya checkpoints, without vegaml
+
+Leave the argument out and laya is the ModernBERT family it always was: ~150M to 421M parameters, 33 ms a decision on a T4, 100+ languages through the `Router`.
+
+```python
+from laya import Router
+
+router = Router()  # downloads a checkpoint on first use; Router(preload=True) loads all three up front
+
 result = router.predict(state, questions)
 print(result["answers"]["department"]["choice"])  # billing
 print(result["answers"]["churn_risk"]["noul"])    # probability the answer is yes
 print(result["routing"]["model"])                 # english
 ```
 
-The same call works in any of 100+ languages. The `Router` detects the script and language and sends non-English text to `laya-multilingual`:
+The `Router` detects the script and language and sends non-English text to `laya-multilingual`:
 
 ```python
 for text in ["मुझसे मार्च में दो बार शुल्क लिया गया, कृपया डुप्लिकेट राशि वापस करें।",
@@ -81,6 +242,14 @@ for text in ["मुझसे मार्च में दो बार शु�
 # multilingual billing
 # multilingual technical
 ```
+
+> **Long documents on the checkpoints: `laya-multilingual` reads up to 8,192 tokens.** It ships with a 1,024-token limit that cuts long documents off, so pass `max_len=8192` for them:
+>
+> ```python
+> result = router.predict(long_document, questions, model="multilingual", max_len=8192)
+> ```
+>
+> In the table above, 16 to 18 of 20 requests were answered correctly with up to about 4,000 tokens of text before them; beyond that results vary (8 to 17 of 20), so check long-document accuracy on your own data. Short inputs give identical answers with `max_len=8192`, and speed follows the input's real length, not the limit: short inputs are unchanged, and a 4,000-token input takes about 1.7 s on an Apple GPU. Name the checkpoint with `model="multilingual"`, since long mostly-English text would otherwise route to the English checkpoint. With `vegaml=True` none of this applies: the reader takes 73,728 tokens whole.
 
 From the command line, `laya "My payment failed twice" --preset triage` answers a ready-made question set. More in the [full quickstart](#quickstart-route-mode-recommended) and the [docs](https://nandhakishorm.github.io/laya/).
 
@@ -94,39 +263,20 @@ The shipped checkpoints work zero-shot, but fine-tuning on decisions from your o
 
 **[nandhakishorm.github.io/laya](https://nandhakishorm.github.io/laya/)**: guides for [prediction hooks](https://nandhakishorm.github.io/laya/hooks/), [schema-driven decisions](https://nandhakishorm.github.io/laya/structured/), [Docker](https://nandhakishorm.github.io/laya/docker/) and [LangChain and LangGraph](https://nandhakishorm.github.io/laya/langchain/), plus a full [API reference](https://nandhakishorm.github.io/laya/reference/).
 
-## What's new in 0.4.21
+## What's new in 0.4.30
 
-* **`laya-ts` scans long documents locally.** `Agent.predictLong` and `Router.predictLong` size
-  overlapping windows from the checkpoint budget, run the existing batch path, and keep the
-  strongest per-question answer with its window of origin, matching Python's `predict_long`
-  against committed parity fixtures (#1436).
-* **A `binning_map` value wider than a double is refused by name.** `apply_calibration_payload`
-  raised a raw `OverflowError` for a 401-digit integer where every other unreadable value got the
-  named `values must be numbers` refusal; the wide integer now gets the same named refusal, in
-  Python and the .NET port (#1440).
-* **The .NET and Rust ports follow 0.4.20's temperature fallback.** A temperature too wide for a
-  double loads as the neutral 1.0 with Python's warning instead of failing the load, and the
-  .NET model-free lane is green again (#1437, #1438).
-* **`laya-ts` runs on onnxruntime-web 1.31.1** (#1429).
-
-Earlier releases are in the [GitHub releases](https://github.com/NandhaKishorM/laya/releases).
-
----
-
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/NandhaKishorM/laya/main/assets/laya_vs_jev_full.png" alt="Laya versus TypeSafe Jev: accuracy on shared public datasets, every application workflow, all 51 languages, speed, calibration, and the cost of not preloading" width="100%" />
-</p>
-
-Laya evaluates typed questions (`choice`, `score`, `noul`) over any state (text, email, ticket or JSON document) in **a single forward pass** — 33 ms for one question, 7.2 ms/question batched, measured on a T4. No text generation, so nothing to parse and nothing to hallucinate.
-
-Three checkpoints, and a `Router` that picks between them per request:
-
-| | encoder | params | context | use it for |
-|---|---|---|---|---|
-| [`laya`](https://huggingface.co/convaiinnovations/laya) | ModernBERT-large | 421M | 512 | English |
-| [`laya-multilingual`](https://huggingface.co/convaiinnovations/laya-multilingual) | mmBERT-base | 322M | 1024 (up to 8,192) | 100+ languages, 2x faster |
-| [`laya-typed-decisions`](https://huggingface.co/convaiinnovations/laya-typed-decisions) | ModernBERT-large | 421M | 1024 | the typed-decisions workflows |
+* **`Agent(vegaml=True)` refuses bad input by name instead of training on it.** A yes/no gold
+  of `1.0` used to train as `false`; fit golds are now read the way laya's fine-tune reads them
+  (#1474), a gold keyed to no question is refused (#1477), and a malformed question is refused
+  through laya's own question check (#1476). A non-finite number from the engine is refused
+  before it can become a confident `auto` decision (#1475).
+* **Hooks run on vega.** `on_predict_start`, `on_predict_end` and `on_error`, plus
+  `hooks_raise` and `hooks_timeout`, now work on `VegaAgent.predict` as on every laya surface
+  (#1480).
+* **Video and policies.** Frame times report the frame each one came from (#1481), a clip with
+  no duration no longer crashes the banner fallback (#1478), and a malformed policy manifest is
+  a `PolicyError` (#1487). Loading a trained policy and how routing works are in
+  [docs/vegaml.md](https://github.com/NandhaKishorM/laya/blob/main/docs/vegaml.md).
 
 ## Where to go next
 
@@ -258,6 +408,7 @@ laya --batch tickets.txt --predict                   # score a file of requests,
 cat tickets.txt | laya --batch - --predict --json    # stdin; one JSON line of answers per request
 laya "Where is my card" --questions intents.json     # answer your own questions, written in a JSON file
 laya "Refund my card" --predict --min-confidence 0.9 # mark an answer the model is unsure of
+laya --image invoice.png --preset triage              # a picture, a recording (--audio) or a clip (--video) on the vega lane
 laya                                                 # interactive mode
 ```
 
@@ -298,6 +449,23 @@ CUDA; CPU and MPS run fp32. Override with `device=`, which is accepted by both e
 agent = laya.load("convaiinnovations/laya", device="cpu")      # or "cuda", "mps", "xpu"
 router = Router(preload=True, device="mps")
 ```
+
+Eager CPU fp32 inference combines packed decision-head projections and SDPA with selective
+outputs in the final head layer: option markers and token zero for the action head. Every
+unmasked token remains a head attention key/value. On Transformers 5, supported ModernBERT
+encoders also compute their existing local attention windows in blocks for sequences of at
+least 512 tokens; global layers retain full attention. No allowed attention connection or
+input token is removed. Training, autocast, other devices, compilation/export, custom hooks
+and unsupported encoders retain the corresponding original execution paths.
+This uses the same weights and calibration, adds no dependency or external service, and
+keeps request tensors local to each call without a shared request cache. Floating-point
+results can differ slightly, including decisions at exact ties. The existing
+[CPU/device](https://github.com/NandhaKishorM/laya/blob/main/verify/bench_devices.py),
+[routing-latency](https://github.com/NandhaKishorM/laya/blob/main/research/scripts/bench_latency.py)
+and [long-context](https://github.com/NandhaKishorM/laya/blob/main/research/scripts/bench_long_context.py)
+benchmarks provide the [before/after evidence](https://github.com/NandhaKishorM/laya/blob/main/benchmarks/results/cpu/README.md).
+The separate [CPU regression harness](https://github.com/NandhaKishorM/laya/blob/main/benchmarks/bench_cpu.py)
+checks unrounded outputs and public answers against the original execution path.
 
 ### macOS, including Intel Macs
 
@@ -478,6 +646,8 @@ To try the Python SDK in a CPU container, see the
 downloaded models between runs.
 
 Laya ships three checkpoints. The built-in **`Router`** is the recommended entry point: it evaluates any state in any language, automatically detects scripts and languages in sub-milliseconds, and dispatches to the optimal checkpoint in a single forward pass.
+
+> **Since 0.4.25, with vegaml installed:** the same `Router` also takes `image=`, `audio=` or `video=` in place of a state and sends them, states past 8,192 tokens, and questions with fitted heads to `laya.Agent(vegaml=True)`; everything else routes exactly as below. `Router(vega=False)` turns that off. See [the vega lane](https://nandhakishorm.github.io/laya/routing/#the-vega-lane).
 
 ### Minimal example (30 seconds)
 
@@ -1015,6 +1185,59 @@ The default mode remains unchanged. See [the engineering notes](https://github.c
 for measurements and limitations.
 
 ---
+
+## vega inside laya: `Agent(vegaml=True)`
+
+One argument swaps the engine under laya's surface for [vegaml](https://github.com/NandhaKishorM/vegaml)'s:
+a frozen 0.8B universal reader with a small physics engine on top. Every method keeps its
+laya name; the answers gain what the engine knows that an encoder does not.
+
+```python
+import laya
+
+agent = laya.Agent(vegaml=True)                  # vegaml ships with laya 0.4.23 and newer
+out = agent.predict(state, questions)
+
+ans = out["answers"]["department"]
+ans["choice"]                                   # as always
+ans["prediction_set"]                           # the conformal set at alpha=0.1
+ans["abstain"]                                  # the engine's own refusal
+ans["unbound"]                                  # far from every well: likely off-distribution
+ans["route"], ans["route_reason"]               # "auto" or "review", decided for you
+```
+
+| | laya checkpoints | `Agent(vegaml=True)` |
+|---|---|---|
+| context | 512 or 1,024 tokens, windowed past that | 73k tokens, read whole |
+| learning from your labels | gradient fine-tune | `agent.fit(rows)`: a head per question over frozen features, seconds |
+| calibration | shipped temperature map | refit on your rows: temperature, conformal threshold, escalation band |
+| refusal | `min_confidence` you choose | `abstain`, `unbound`, the conformal set, the fitted band |
+| images, speech, video | no | `agent.predict(image=img, ...)`, `agent.predict(audio=wav, ...)`, `agent.predict(video=clip, ...)` |
+| speed on text (T4) | ~16 ms a decision batched | ~72 ms a decision |
+
+```python
+agent.fit(rows)                                 # rows: {"state", "questions", "gold" or "expected"}
+agent.predict(state, questions)                 # heads serve where they beat the engine; route from the band
+agent.save_calibration("fit/"); agent.load_calibration("fit/")
+agent.predict_long(document, questions)         # no windowing up to 73k tokens
+agent.predict(image=img, questions=questions)   # the reader's vision tower
+agent.predict(audio=wav, questions=questions, sampling_rate=16000)   # transcribed, then decided
+agent.predict(video="call.mp4", questions=questions)                  # speech if any, else frames
+
+from laya.vega import Router
+router = Router(fast=laya.Agent(), vega=agent)   # laya for short English text, vega otherwise
+router.predict(state, questions)["routing"]     # {"model": "fast" | "vega", "reason": ...}
+```
+
+**Nothing here needs a threshold from you.** `route` comes from the fitted band when you have
+run `fit` or `calibrate`, and otherwise from the engine's own conformal set, abstain flag and
+`unbound` flag. `alpha` (miscoverage, 0.1) and `target_precision` (0.95) are targets with
+defaults, not confidences to guess at. Gate on `route`, not on `confidence`: a fitted head can
+report 1.000 on an answer it gets wrong, and `route` on the same answer is still right, because
+it comes from the set and the band rather than the top probability.
+
+`laya.vega` is imported only when the argument is given; without `vegaml` installed, core laya
+is unchanged and `Agent(vegaml=True)` says what to install.
 
 ## Automated Confidence Gating
 
