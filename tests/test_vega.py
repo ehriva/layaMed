@@ -321,6 +321,24 @@ def test_without_vegaml_the_argument_fails_with_the_install_hint():
         laya.load(vegaml=True)
 
 
+def test_learner_is_vegamls_continuous_learner():
+    import laya.learn as ll
+
+    assert "Learner" in laya.__all__ and laya.Learner is ll.Learner
+    learn = pytest.importorskip("vegaml.learn")
+    assert ll._learner() is learn.Learner
+
+
+def test_learner_without_vegaml_says_what_to_install(monkeypatch):
+    import sys
+
+    import laya.learn as ll
+
+    monkeypatch.setitem(sys.modules, "vegaml.learn", None)
+    with pytest.raises(ImportError, match=r"vegaml 0.17"):
+        ll.Learner({"q": {"type": "boolean", "instructions": "x"}})
+
+
 def test_vega_agent_is_exported_and_is_an_agent_subclass():
     assert laya.VegaAgent is lv.VegaAgent
     assert issubclass(lv.VegaAgent, laya.Agent)
@@ -388,6 +406,85 @@ def test_a_start_hook_can_short_circuit_and_rewrite_questions(monkeypatch):
 
     a.predict("s", given, hooks=Rewriter())
     assert calls and calls[0][1] is other, "the rewritten questions are what decide on"
+
+
+
+@pytest.mark.parametrize("method", ["predict", "system_one", "predict_long"])
+@pytest.mark.parametrize("cache_shape", ["dict", "list", "tuple"])
+def test_cached_single_result_hook_contract(monkeypatch, method, cache_shape):
+    cached = {"answers": {}, "cached": True}
+    payload = {"dict": cached, "list": [cached], "tuple": (cached,)}[cache_shape]
+    calls, events = [], []
+    a = _hook_agent(monkeypatch, {}, calls)
+    a.max_len = 2048
+
+    def start(ctx):
+        events.append("start")
+        ctx.skip(payload)
+
+    def end(ctx):
+        events.append("end")
+        assert ctx.results is payload
+
+    result = getattr(a, method)("s", {}, on_predict_start=start, on_predict_end=end)
+    assert result["cached"] is True
+    assert calls == []
+    assert events == ["start", "end"]
+    if method == "predict_long":
+        assert result["usage"] == {"windows": 0, "context_tokens": 2048, "truncated": False}
+        assert result["long"]["why"] == "answered by a start hook"
+        assert "usage" not in cached
+    else:
+        assert result is cached
+
+
+def test_predict_long_preserves_end_hook_replacement_and_copies_usage(monkeypatch):
+    original = {"answers": {}, "cached": True}
+    replacement = {"answers": {}, "usage": {"input_tokens": 15, "truncated": True}}
+    calls = []
+    a = _hook_agent(monkeypatch, {}, calls)
+    a.max_len = 2048
+
+    def replace(ctx):
+        ctx.results = [replacement]
+
+    out = a.predict_long("s", {}, on_predict_start=lambda ctx: ctx.skip([original]),
+                         on_predict_end=replace)
+    assert out["usage"] == {"input_tokens": 15, "truncated": True, "windows": 0,
+                            "context_tokens": 2048}
+    assert replacement["usage"] == {"input_tokens": 15, "truncated": True}
+    assert "long" not in replacement
+    assert calls == []
+
+
+def test_predict_long_counts_an_uncached_read(monkeypatch):
+    answer = {"answers": {}, "usage": {"input_tokens": 5, "output_tokens": 0}}
+    calls = []
+    a = _hook_agent(monkeypatch, answer, calls)
+    a.max_len = 5
+
+    out = a.predict_long("s", {})
+    assert calls == [("s", {})]
+    assert out["usage"] == {"input_tokens": 5, "output_tokens": 0, "windows": 1,
+                            "context_tokens": 5, "truncated": True}
+    assert answer["usage"] == {"input_tokens": 5, "output_tokens": 0}
+
+
+
+def test_predict_long_with_timeout_does_not_dispatch_an_internal_hook(monkeypatch):
+    from laya import hooks
+
+    def no_hook_thread(*args, **kwargs):
+        raise AssertionError("there is no user hook to dispatch")
+
+    monkeypatch.setattr(hooks.threading.Thread, "start", no_hook_thread)
+    answer = {"answers": {}, "usage": {"input_tokens": 5}}
+    calls = []
+    a = _hook_agent(monkeypatch, answer, calls)
+    a.max_len = 10
+
+    assert a.predict_long("s", {}, hooks_timeout=1)["usage"]["windows"] == 1
+    assert calls == [("s", {})]
 
 
 def test_a_failing_hook_follows_the_raise_policy(monkeypatch):
@@ -501,6 +598,90 @@ def test_fit_calibrate_save_reload_roundtrip():
         again = b.predict(rows[0]["state"], {"dept": Q["dept"]})
     assert again["answers"]["dept"]["probabilities"] == out["answers"]["dept"]["probabilities"]
     assert again["answers"]["dept"]["route"] == out["answers"]["dept"]["route"]
+
+
+def _fake_vegaml(monkeypatch, calibration_cls=None):
+    # load_calibration imports vegaml's own types; the reset is testable without the package
+    # by putting stand-ins where the import looks.
+    import types
+
+    class FakeHead:
+        def __init__(self, labels, k=2, l2=1.0):
+            self.labels, self.k, self.l2 = labels, k, l2
+
+    # The 0.4.28 rewrite imports Calibration unconditionally at the top of load_calibration,
+    # so the stand-in is always needed; when calibration_cls is None use a dummy.
+    if calibration_cls is None:
+        calibration_cls = type("FakeCal", (), {})
+
+    ttt = types.ModuleType("vegaml.ttt")
+    ttt.TTTHead = FakeHead
+    cal = types.ModuleType("vegaml.calibrate")
+    cal.Calibration = calibration_cls
+    pkg = types.ModuleType("vegaml")
+    pkg.ttt = ttt
+    pkg.calibrate = cal
+    monkeypatch.setitem(sys.modules, "vegaml", pkg)
+    monkeypatch.setitem(sys.modules, "vegaml.ttt", ttt)
+    monkeypatch.setitem(sys.modules, "vegaml.calibrate", cal)
+
+
+def _heads_dir(tmp_path, qid="dept"):
+    import json
+
+    import numpy as np
+
+    meta = {"heads": {qid: {"labels": ["billing", "hr"], "k": 2, "l2": 1.0, "cv": 0.8,
+                            "engine_accuracy": 0.9}},
+            "model": "vegaml-0.8b", "alpha": 0.1, "risk": "0.1", "target_precision": 0.95}
+    arrays = {"meta": np.array(json.dumps(meta))}
+    for name in lv.HEAD_ARRAYS:
+        arrays["%s::%s" % (qid, name)] = np.zeros(2)
+    np.savez(os.path.join(str(tmp_path), "heads.npz"), **arrays)
+    return str(tmp_path)
+
+
+def test_load_calibration_resets_a_calibration_the_directory_does_not_hold(tmp_path, monkeypatch):
+    # `save_calibration` writes calibration.json only when the agent was calibrated, so a
+    # heads-only directory is a valid artefact. Loading one onto an agent that still carried a
+    # previous fit used to keep that fit's calibration and report `calibrated: True`.
+    a = object.__new__(lv.VegaAgent)
+    a.calibration = object()
+    import types
+    a.vega = types.SimpleNamespace(heads={})
+    _fake_vegaml(monkeypatch)
+    out = a.load_calibration(_heads_dir(tmp_path), verify=False)
+    assert out["heads"] == ["dept"]
+    assert out["calibrated"] is False
+    assert a.calibration is None, "a heads-only directory does not vouch for a band"
+    assert set(a.vega.heads) == {"dept"}
+
+
+def test_load_calibration_loads_the_calibration_the_directory_holds(tmp_path, monkeypatch):
+    import json as _json
+
+    class FakeCal:
+        payload = None
+
+        @classmethod
+        def from_payload(cls, payload):
+            cls.payload = payload
+            return cls()
+
+    _fake_vegaml(monkeypatch, FakeCal)
+    a = object.__new__(lv.VegaAgent)
+    a.calibration = None
+    import types
+    a.vega = types.SimpleNamespace(heads={})
+    d = _heads_dir(tmp_path)
+    cal_data = {"band": [0.1, 0.9]}
+    with open(os.path.join(d, "calibration.json"), "w", encoding="utf-8") as f:
+        _json.dump(cal_data, f)
+    out = a.load_calibration(d, verify=False)
+    assert out["heads"] == ["dept"]
+    assert out["calibrated"] is True
+    assert isinstance(a.calibration, FakeCal)
+    assert FakeCal.payload == cal_data
 
 
 @pytest.mark.skipif(not MEDIA_TESTS, reason="set LAYA_VEGA_MEDIA_TESTS=1 (pulls the vision tower)")
@@ -850,3 +1031,46 @@ def test_a_record_past_the_limit_is_outbound():
     assert a._read_novelty() is None
     a._novelty = None
     assert a._read_novelty() is None
+
+
+# ----------------------------------------------------------------- vega is the default (0.5.0)
+def _vegaml_present(monkeypatch, present=True):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a: (object() if present else None) if name == "vegaml" else real(name, *a))
+
+
+def test_no_checkpoint_named_means_vega(monkeypatch):
+    from laya.agent import wants_vega
+
+    _vegaml_present(monkeypatch)
+    assert wants_vega((), {}) is True
+    assert wants_vega((), {"device": "cpu", "hooks": []}) is True
+    built = []
+    monkeypatch.setattr(lv.VegaAgent, "__init__", lambda self, *a, **k: built.append(k))
+    assert isinstance(laya.Agent(device="cpu"), lv.VegaAgent) and built == [{"device": "cpu"}]
+    assert type(laya.Agent.__new__(laya.Agent)) is laya.Agent             # the bare-object idiom still works
+
+
+def test_the_classic_encoder_is_one_argument_away(monkeypatch):
+    from laya.agent import wants_vega
+
+    _vegaml_present(monkeypatch)
+    assert wants_vega(("convaiinnovations/laya",), {}) is False          # a checkpoint named
+    assert wants_vega((), {"model_id_or_path": "multilingual"}) is False
+    assert wants_vega((), {"vegaml": False}) is False                    # said so
+    assert wants_vega((), {"backend": "onnx"}) is False                  # a classic-only option
+    assert wants_vega((), {"subfolder": "multilingual"}) is False
+    assert type(laya.Agent.__new__(laya.Agent, vegaml=False)) is laya.Agent
+    assert wants_vega((), {"vegaml": "4b"}) is True                      # an explicit ask names a reader
+
+
+def test_without_vegaml_the_default_falls_back_to_the_classic_encoder(monkeypatch):
+    import laya.agent as la
+
+    _vegaml_present(monkeypatch, present=False)
+    monkeypatch.setattr(la, "_warned_no_vegaml", [])
+    with pytest.warns(UserWarning, match="vegaml is not installed"):
+        assert la.wants_vega((), {}) is False

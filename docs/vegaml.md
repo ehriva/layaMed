@@ -5,6 +5,8 @@ a frozen 0.8B universal reader with a small physics engine on top. Every method 
 name, and the answers gain what that engine knows that an encoder does not. The class behind it
 is `laya.VegaAgent`, in `laya/vega.py`.
 
+> **Train your own decision engine at [studio.embedding.in](https://studio.embedding.in).** Studio, from Embedding Space, trains a System 1 decision engine from a description of your company: it writes the questions and the examples, fits and calibrates a vega model, and gives you a signed policy file that runs on your own machine with `vegaml`. No labelled data is needed to start, and a new workspace gets $10 of free credit.
+
 ```bash
 pip install -U laya               # vegaml ships with laya 0.4.23 and newer
 pip install 'laya[vision]'        # images and video: Pillow and torchvision
@@ -145,6 +147,35 @@ same. An audio answer carries `transcript` and `asr`, because a decision made on
 saw cannot be audited. `predict_image_text` answers the same questions with the image withheld,
 which measures what the picture itself contributed.
 
+## Continuous learning
+
+`laya.Learner` is vegaml's open-source continuous learner. It answers from day one and keeps learning
+from every answer you confirm, on the machine it runs on: no fine-tuning, and no GPU needed to learn.
+
+```python
+from laya import Learner
+
+learner = Learner(questions, examples=rows, workdir="./state")   # rows: [(text, {question: answer})]
+out = learner.decide("I was charged twice this month")
+out["answers"]["team"]["answer"], out["answers"]["team"]["readout"]   # "head" once it has learned
+learner.feedback("I was charged twice this month", {"team": "billing"})
+```
+
+- Each question gets a small head over vega's frozen features, refitted every 50 confirmed answers in a
+  background thread. A head answers only when it beats vega's own answer on the same rows.
+- Your answers replace the starting set one for one.
+- A batch that sharply disagrees with what was learned is held: `learner.held()`, `accept()`, `discard()`.
+- `learner.undo()` goes back one step. `workdir` keeps the last versions and resumes on the next start;
+  `follow=` makes read-only copies that reload the writer's state.
+- `learner.save_bundle("x.zip")` moves what it learned to another machine: `Learner(bundle="x.zip")`.
+- REST API with JWT: `pip install "vegaml[learn]"`, then `python -m vegaml.learn serve --questions q.json`.
+
+Measured across 14 decision templates: 85% right on day one, 92% after 40 confirmed answers and 96%
+after 120. On 8 CPU threads, 0.72 s an answer, 6.4 GB of RAM, and 34 s to learn from 300 answers.
+
+It reads with vega (the 0.8B reader by default), not with laya's own encoder. The full guide is
+[vegaml's docs/learn.md](https://github.com/NandhaKishorM/vegaml/blob/main/docs/learn.md).
+
 ## Model switching
 
 Since 0.4.25 the ordinary `laya.Router()` does this by itself when vegaml is installed: images,
@@ -156,7 +187,7 @@ to the encoders, with `Router(vega=False)` to turn it off. See
 ```python
 from laya.vega import Router
 
-router = Router(fast=laya.Agent(), vega=agent)
+router = Router(fast=laya.Agent("convaiinnovations/laya"), vega=agent)
 out = router.predict(state, questions)
 out["routing"]                     # {"model": "fast" | "vega", "reason": "..."}
 ```
